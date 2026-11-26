@@ -21,7 +21,9 @@
 //!   [`TICK_NS`] + [`Params::tolerance_ns`] (the main thread's forwarding
 //!   delay and the sim thread's wake-up latency), plus, for a press with
 //!   `stall = 1`, the observed stall `drain_sdl_ns - prev_drain_sdl_ns` and
-//!   no more; and the press took effect in the applying tick: its bat was
+//!   no more (a press marked `stall = 1` whose `sdl_ts_ns` is not in the
+//!   stall window `[prev_drain_sdl_ns, drain_sdl_ns)` fails and gets no
+//!   allowance: the press predates or follows the stall); and the press took effect in the applying tick: its bat was
 //!   raised at most [`Params::coil_ticks`] ticks after `apply_tick`. A press
 //!   whose bat never moved fails, unless its applying tick ended within
 //!   `coil_ticks + 2` ticks of the run's end (`run_end_ns`).
@@ -34,7 +36,8 @@
 //!   press's applying-tick base (the app's join; the angles are not in the
 //!   file, so the verdict checks that the trace's frame exists, matches the
 //!   frame table and is such a candidate, not before the first one); a
-//!   press without such a frame fails; `n_raw = frame - F0`, `F0` the last
+//!   press without such a frame fails, and so does one whose frame was
+//!   presented before `sdl_ts_ns` (not counted; equal times pass); `n_raw = frame - F0`, `F0` the last
 //!   frame presented at or before `sdl_ts_ns` (the raw count starts from
 //!   the press; `move_tick` only selects the frame); pass when `n_raw <= 2`. One allowance: when
 //!   the frame in flight at the press (the first frame presented after
@@ -439,10 +442,21 @@ pub fn percentile(sorted: &[u64], p: u64) -> u64 {
     sorted[(rank - 1) as usize]
 }
 
+/// Whether `r`'s timestamp lies in its stall window
+/// `[prev_drain_sdl_ns, drain_sdl_ns)` (half-open). The trace writer marks
+/// `stall = 1` only for such a press, also for one delivered in a later
+/// catch-up tick of the same batch (same window); the verdict checks it
+/// instead of trusting the flag.
+pub fn in_stall_window(r: &Row) -> bool {
+    r.prev_drain_sdl_ns <= r.sdl_ts_ns && r.sdl_ts_ns < r.drain_sdl_ns
+}
+
 /// Check a's bound for `r`: one tick + tolerance, plus the observed stall
-/// when the row is marked as stalled.
+/// when the row is marked as stalled and its timestamp lies in the stall
+/// window ([`in_stall_window`]); a flagged press outside it gets the
+/// ordinary bound.
 pub fn coil_bound_ns(r: &Row, p: &Params) -> u64 {
-    let stall = if r.stall {
+    let stall = if r.stall && in_stall_window(r) {
         r.drain_sdl_ns.saturating_sub(r.prev_drain_sdl_ns)
     } else {
         0
@@ -577,15 +591,33 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             s.late_arrivals += 1;
         }
         let bound = coil_bound_ns(r, p);
-        if r.apply_tick_end_sdl_ns < r.sdl_ts_ns {
+        // A press marked as stalled must lie in the stall window; one that
+        // does not fails here once (with its timing against the ordinary
+        // bound) and its timing failures below are not listed again.
+        let bad_stall = r.stall && !in_stall_window(r);
+        if bad_stall {
             a_failed = true;
             fail(
                 &mut v.a,
                 format!(
-                    "{tag}: applied in tick {} ending at {} ns, before its timestamp",
-                    r.apply_tick, r.apply_tick_end_sdl_ns
+                    "{tag}: marked as stalled but its timestamp is outside the stall window \
+                     [{}, {}) ns; no stall allowance (applied in tick {} ending at {} ns, \
+                     bound {bound} ns)",
+                    r.prev_drain_sdl_ns, r.drain_sdl_ns, r.apply_tick, r.apply_tick_end_sdl_ns
                 ),
             );
+        }
+        if r.apply_tick_end_sdl_ns < r.sdl_ts_ns {
+            a_failed = true;
+            if !bad_stall {
+                fail(
+                    &mut v.a,
+                    format!(
+                        "{tag}: applied in tick {} ending at {} ns, before its timestamp",
+                        r.apply_tick, r.apply_tick_end_sdl_ns
+                    ),
+                );
+            }
         } else {
             let late = r.apply_tick_end_sdl_ns - r.sdl_ts_ns;
             s.max_lateness_ns = s.max_lateness_ns.max(late);
@@ -595,6 +627,8 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 .min(i64::try_from(slack).unwrap_or(if slack < 0 { i64::MIN } else { i64::MAX }));
             if late > bound {
                 a_failed = true;
+            }
+            if late > bound && !bad_stall {
                 fail(
                     &mut v.a,
                     format!(
@@ -693,6 +727,19 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                     f.snap_tick
                 ),
             );
+        }
+        // A frame cannot show a press it was presented before; counting it
+        // would record a zero-latency photon sample. Equal times pass.
+        if f.present_ns < r.sdl_ts_ns {
+            fail(
+                &mut v.b,
+                format!(
+                    "{tag}: trace says frame {fi} (snapshot tick {}) showed the press, but it \
+                     was presented at {} ns, before the press's timestamp {} ns",
+                    f.snap_tick, f.present_ns, r.sdl_ts_ns
+                ),
+            );
+            continue;
         }
         let deadline = r
             .sdl_ts_ns

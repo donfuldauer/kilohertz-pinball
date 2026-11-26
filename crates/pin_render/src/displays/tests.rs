@@ -99,17 +99,93 @@ proptest! {
         prop_assert_eq!(mip_level_count(n, 0), 0);
     }
 
-    /// REQ-VIEW-002 / R11: any size is either accepted (1..=max per side) or
-    /// refused with `InvalidArgument`, never a panic.
+    /// REQ-VIEW-002 / R11 (#163 round 12, finding 24): `max` first, then one
+    /// of three size classes, so both branches are exercised on both axes:
+    /// both sides in `1..=max` (accepted), exactly one side `0` or `max + 1`
+    /// with the other in `1..=max` (refused with `InvalidArgument`), and
+    /// arbitrary `u32` pairs (accepted iff both sides are in `1..=max`, never
+    /// a panic).
     #[test]
-    fn req_view_002_texture_size_check(w in any::<u32>(), h in any::<u32>(), max in 1u32..=16384) {
+    fn req_view_002_texture_size_check(
+        (w, h, max, class) in (1u32..=16384).prop_flat_map(texture_size_case)
+    ) {
         let ok = w >= 1 && h >= 1 && w <= max && h <= max;
+        match class {
+            SizeClass::Valid => prop_assert!(ok, "valid class {w}x{h} max {max}"),
+            SizeClass::OneSideBad => prop_assert!(!ok, "bad class {w}x{h} max {max}"),
+            SizeClass::Any => {}
+        }
         match check_texture_size(w, h, max) {
-            Ok(()) => prop_assert!(ok),
-            Err(GpuError::InvalidArgument(_)) => prop_assert!(!ok),
+            Ok(()) => prop_assert!(ok, "accepted {w}x{h} with max {max}"),
+            Err(GpuError::InvalidArgument(_)) => {
+                prop_assert!(!ok, "refused {w}x{h} with max {max}")
+            }
             Err(e) => prop_assert!(false, "unexpected error {e}"),
         }
     }
+}
+
+/// Which size class [`texture_size_case`] drew.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SizeClass {
+    /// Both sides in `1..=max`.
+    Valid,
+    /// Exactly one side `0` or `max + 1`, the other in `1..=max`.
+    OneSideBad,
+    /// Any `u32` pair.
+    Any,
+}
+
+/// `(width, height, max, class)` for a given `max` (`1..=16384`, so
+/// `max + 1` cannot overflow).
+fn texture_size_case(max: u32) -> impl Strategy<Value = (u32, u32, u32, SizeClass)> {
+    let bad = prop_oneof![Just(0u32), Just(max + 1)];
+    prop_oneof![
+        (1..=max, 1..=max).prop_map(move |(w, h)| (w, h, max, SizeClass::Valid)),
+        (bad.clone(), 1..=max).prop_map(move |(w, h)| (w, h, max, SizeClass::OneSideBad)),
+        (1..=max, bad).prop_map(move |(w, h)| (w, h, max, SizeClass::OneSideBad)),
+        (any::<u32>(), any::<u32>()).prop_map(move |(w, h)| (w, h, max, SizeClass::Any)),
+    ]
+}
+
+/// REQ-VIEW-002 (#163 round 12, finding 24): the size-check strategy really
+/// draws every class, and the valid class is accepted (a fixed-seed run of
+/// the strategy, not a sample of the property above).
+#[test]
+fn req_view_002_texture_size_strategy_covers_every_class() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    let mut runner = TestRunner::new_with_rng(
+        Config::default(),
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[7; 32]),
+    );
+    let strategy = (1u32..=16384).prop_flat_map(texture_size_case);
+    let (mut valid, mut bad_w, mut bad_h, mut any) = (0, 0, 0, 0);
+    for _ in 0..400 {
+        let (w, h, max, class) = strategy.new_tree(&mut runner).unwrap().current();
+        match class {
+            SizeClass::Valid => {
+                assert!(check_texture_size(w, h, max).is_ok(), "{w}x{h} max {max}");
+                valid += 1;
+            }
+            SizeClass::OneSideBad => {
+                assert!(matches!(
+                    check_texture_size(w, h, max),
+                    Err(GpuError::InvalidArgument(_))
+                ));
+                if w == 0 || w == max + 1 {
+                    bad_w += 1;
+                } else {
+                    bad_h += 1;
+                }
+            }
+            SizeClass::Any => any += 1,
+        }
+    }
+    assert!(
+        valid > 0 && bad_w > 0 && bad_h > 0 && any > 0,
+        "classes drawn: valid {valid}, bad width {bad_w}, bad height {bad_h}, any {any}"
+    );
 }
 
 /// REQ-VIEW-002: size validation edges.

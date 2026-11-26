@@ -9457,3 +9457,75 @@ requiring a new single review PR after a split (contradicts P6 step 3).
 **Rationale.** A.4 defines `[art]` entries as additive, so an empty map and an absent table mean the same thing. Requiring the table would break every committed cabinet that has no art and would add nothing. SPEC edits are owner-only (P8), so the wording waits for the owner, and the code follows the intent until then.
 
 **Alternatives.** Require `[art]` in unpreset cabinets (rejected: breaks valid cabinets for no behavioural gain). Edit SPEC directly (rejected: owner-only, P8).
+
+## #163 gate round 12 — Trace destination checked against the config by file identity at shutdown
+
+**Decision.** `normalised_path` canonicalises the deepest existing ancestor of the unfolded path, so the filesystem resolves symlinks and `..`, and folds `.` and `..` lexically only in the components that do not exist yet. The final file name is never resolved. The run's configuration path, computed once by `open_latency_trace` (`config_path(args)`), is kept in the `TraceSink` (`config: Option<PathBuf>`). Before publication, `finish_trace` compares it with the trace destination by file identity: fresh metadata, device and inode on Unix, canonical path elsewhere. When both exist and are the same file, the trace is not published, the configuration keeps its bytes, and the run fails with `--latency-trace: <dest> is the configuration file: the trace was not published`. `finish_trace`'s signature is unchanged.
+
+**Rationale.** CodeRabbit round 12 found two ways the startup check could pass while the two paths named one file. A symlinked directory followed by `..` was folded before the symlink was resolved. Two spellings that differ only in case, both missing at startup, compare unequal on a case-sensitive string check but are one entry on a case-insensitive volume. The shutdown identity check covers the only case with something to overwrite: a configuration file that exists by then. Keeping the startup value avoids recomputing it after the run.
+
+**Alternatives.** An extra `config` parameter on `finish_trace` (rejected: it touches every call site and test for no gain). Recomputing `config_path(args)` at shutdown (rejected: the startup value is the one the run used). Guessing case-insensitivity at startup (rejected: the volume's behaviour is not portable to detect, and the shutdown identity check is exact). Known limit: on Windows `same_file` compares canonical paths, so a hard link to the configuration is not detected (pre-existing).
+
+## #163 gate round 12 — Mid-run epoch change keeps the latency-trace marks
+
+**Decision.** `SimLoop::set_epoch_ns` accepts an epoch change at any time and always updates the epoch. It restarts an installed latency-trace writer at the new epoch only while no tick has run (`tick == 0`). After that, the writer's previous-tick marks and stall state are kept. In `SimTraceWriter::delivered`, a press of an input first retires every pending watch of the same input released in the same tick, so a same-tick re-press's raise is credited only to the new press.
+
+**Rationale.** Mid-run epoch changes are used by `tests/input_epoch.rs` and are a valid way to re-anchor simulated time. A writer restart after tick 1 replaced tick 1's real marks with startup marks and erased a recorded stall, which corrupted the `prev_tick_end_sdl_ns`, `prev_drain_sdl_ns` and `stall` columns that verdict checks a and b read. The same-tick retirement uses `retain` on the fixed-capacity pending list, so it is allocation-free (R4).
+
+**Alternatives.** Reject mid-run epoch changes (rejected: breaks existing callers). Always restart the writer (the defect). Shift the writer's marks onto the new epoch (rejected: they are SDL-clock times, which an epoch change does not move).
+
+## #163 gate round 12 — Windowed verdict: frames before the press, stall window and attempt-bounded tests
+
+**Decision.** Check b rejects a selected frame whose `present_ns` is earlier than the press's `sdl_ts_ns`; equal times pass, and the in-flight allowance is unchanged. The stall allowance in check a applies only to a flagged row whose timestamp lies in `[prev_drain_sdl_ns, drain_sdl_ns)` (`in_stall_window`). A flagged row outside that window gets one check-a failure naming the window, its own lateness messages are not listed again, and it still counts in `stalled_presses`. The windowed driver resolves the app path once (`std::path::absolute`) for both the preflight check and the launch. A failed `pin_app_stderr.log` write is reported, after the drive's own failure when there is one. `render_presented` in `app_menu_surfaces.rs` is bounded by `MAX_ATTEMPTS = 1_000_000` render calls, and the harness timeout test waits on a completion signal: no test waits on or asserts wall-clock time.
+
+**Rationale.** These are the CodeRabbit round 12 findings 3, 11, 12, 13, 14 and 17, each verified against the code with a test that fails on the previous logic where a test applies. Recording a window failure once keeps the summary counts unchanged. R6 forbids wall-clock assertions, and a count bound keeps a surface that never presents from spinning forever with no diagnostic.
+
+**Alternatives.** Listing both the window failure and the lateness failure for one row (rejected: double-counts). An unbounded present loop relying only on the job timeout (rejected: no diagnostic history). Keeping the 15 s deadline (rejected under R6).
+
+## #163 gate round 12 — Review fix issues of an open gate review are not gate issues
+
+**Decision.** While a gate review of gate G is open (a `review/G-missed` backstop PR or its area PRs, or G's step 2 review PR or area PRs), a `work-unit` issue created under P6 "Review PR" step 4 for one of that review's findings is not a gate issue for G. Its body names the review PR and the finding. This holds even when it is the last open issue of the phase or tracking issue. Its PR merges on the routine conditions: ordering rule (2) does not hold it, and the backstop (3) does not fire for G while the review is open. Its changes reach the review through a merge (or fast-forward) of `main` into the review branch, or by rebuilding the area PRs, and they are reviewed in the next round. For missed gates every fix goes through such an issue on a fresh branch off `main`, never a push to the review-only branch. Split missed gates read CI from the gate-head commit's check runs, and dispatch a `ci.yml` run on `review/<gate>-missed` when none exists.
+
+**Rationale.** Without the exception, a blocking fix for a missed phase gate becomes a gate issue that waits for the open review, while that review cannot be approved until the fix lands: a deadlock (CodeRabbit round 12 finding 6). Scoping the exception to issues that name the review and finding leaves every other gate detection unchanged. The same round's findings 4 and 5 showed pr-watch still used a `<P>` PR that a split missed gate does not have, and pushed fixes to a branch that never merges.
+
+**Alternatives.** Pushing fixes directly to the review branch (rejected: the review PR is never merged, so fixes would never reach `main`). Closing the missed review and opening a new one after each fix (rejected: multiplies review rounds and breaks "one review at a time"). Giving fix issues a later phase label (rejected: hides phase work and moves the gate).
+
+## #163 gate round 12 — The RUN_LOG-row commit is the only unreviewed commit allowed above the reviewed head
+
+**Decision.** A gate's reviewed head is the commit CodeRabbit approved on every review PR. The merging head may carry exactly one documentation-only commit on top of it, changing `docs/RUN_LOG.md` and, when its rendering changes, the regenerated `docs/HUMAN_ACCEPTANCE.md`. That commit is exempt from the reviewed-head requirement, but not from CI (`pr-checks`) or the work-verifier on the final head. `reviewed <sha>` records the approved commit. Any other later commit, a merge of `main` included, needs another review round.
+
+**Rationale.** The gate's RUN_LOG row records the approval, so it can only be written after it; requiring a re-review of that log-only commit would never end (CodeRabbit round 12 finding 7). The commit falls inside the next gate's cumulative diff.
+
+**Alternatives.** Re-review after the log commit (rejected: never terminates). Committing the row in the next PR only (rejected: P6 step 7 and work-issue §6 step 4 require it on the gate branch before the final verifier run).
+
+## #163 gate round 12 — Display renderers use their owning queue; a foreign context is not rejected
+
+**Decision.** Every display renderer and display texture (`QuadRenderer`, `DmdRenderer`, and the `MipTexture` behind `BackglassTexture` and `ScoreTexture`) keeps the `wgpu::Queue` of the context it was created with. `MipTexture` also keeps the `wgpu::Device`. They use these for every upload, encoder and submit. The public `ctx`/`queue` arguments are kept and documented as "must come from the creating context". They are not checked: a different context is accepted, and the work runs on the owning queue. `needs_redraw` walks the lamp ids in place, with no allocation on an unchanged frame.
+
+**Rationale.** CodeRabbit round 12 finding 21: an upload through another context's queue made wgpu-core panic ("Cannot get non-existent resource"). An upload through the owning queue is correct whatever context is passed. `update`, `set_frame` and `set_draw_list` return `bool` and cannot report an error, so a rejection would not apply the same way across the API. D25 says rendering never aborts.
+
+**Alternatives.** Reject a foreign context with `GpuError::InvalidArgument` (rejected: `update` cannot report it, and accepting is always correct). A `debug_assert!` on device identity (rejected: panics in debug builds). Dropping the arguments (rejected: public signatures are frozen this round). Known limit: `encode(encoder, ..)` still records into the caller's encoder, which must come from the creating device (documented precondition).
+
+## #163 gate round 12 — Glass top checked at its own y
+
+**Decision.** `CabinetGeometry::validate` checks each playfield corner's glass sheet top against the side wall top at the glass top's own cabinet-frame y. The glass top lies along the playfield normal at `glass_y = y - g·sin(pitch)·cos(roll)`, where g is the glass height plus the sheet thickness. The surface corner is still checked at its own y. A glass y outside the body (in front of 0, or behind `body.length` under negative pitch) is checked against the wall at the nearest body end; it is neither rejected nor extrapolated. The backbox "behind" test compares `backbox.front_y` with the rearmost point over all surface and glass-top corners. The "above" test is unchanged. At pitch ±0 the offset is ±0, so every level result is bit-identical. For pitch ≥ 0 the backbox rear y is bit-identical to before.
+
+**Rationale.** It implements the round 9 decision: every corner, surface and glass top, is checked at its own y. CodeRabbit round 12 finding 20: classic_standard with `mount.inset` 50 and `mount.height` 290.7 put the glass top at 406.7 mm where the wall is 405.7 mm (y 36.8 mm), and the check passed against the 407.8 mm wall at y 50. An investigation measured every shipped preset, table and fixture: none changes verdict, and the smallest glass margin goes from 58.7 to 56.5 mm. Only private items change, so no contract change request is needed.
+
+**Alternatives.** Reject a glass top whose y lies outside the body (rejected: a new rule not in SPEC, and it would newly reject accepted mounts such as inset 19 at pitch 10°). Extrapolate the wall line beyond the body (rejected: no wall exists there). Known limit: for steep, minimal-inset mounts the glass top's front can lie over the front wall (y < wall thickness). Containment does not model the front wall's own height there; the side wall at y = 0 is used.
+
+## #163 gate round 12 — fmath std oracle stays bit-exact on x86_64
+
+**Decision.** CodeRabbit round 12 finding 18 is rejected. `crates/pin_core/tests/fmath_props.rs` keeps comparing `min_f32`/`max_f32`/`min_f64`/`max_f64` with std's `min`/`max` by exact bits on x86_64. No value-only assertion replaces it.
+
+**Rationale.** The reviewer's premise is correct: std documents no signed-zero or NaN-payload rule. But the test exists for D9 and REQ-WEB-002. `fmath` must return, bit for bit, what std returns on x86_64, so the x86_64-linux replay goldens hold on aarch64, Windows and wasm32 (fmath.rs module docs, with a measured table for rustc 1.97.0). A different zero sign or NaN payload changes the bits the simulation hashes (R3). The exact-bit check is the regression oracle that fails if a toolchain changes them. Weakening it is what R10 forbids. The portable reference rule already fixes operand selection on every target.
+
+**Alternatives.** A value-only std comparison (rejected: it removes the only bit-level link to the committed x86_64 digests). A comment-only note in the test (not needed; the module docs already say it).
+
+## #163 gate round 12 — #83 coverage recorded by a new row; row 575 stays
+
+**Decision.** CodeRabbit round 12 finding 23 is valid. The `#83` verifier row (row 575, `pass` at 0fcbfcb, "coverage not measured (cargo-llvm-cov missing)") stays byte-for-byte unchanged, because RUN_LOG is append-only. Coverage was measured with `cargo llvm-cov` 0.9.2 on the gate #163 round 12 tree, and one new `#83` verifier row records it: pin_render 97.16 %, pin_app 94.94 % lines; the files #83 owned, gpu/quality.rs 100.00 %, gpu/mod.rs 91.59 %, gpu/surfaces.rs 93.15 % and orchestrator/present.rs 93.66 %, are all above the 60 % floor. The row says the tool was missing at the 0fcbfcb pass and that the figures are of the later tree. A missing coverage tool is not an exception: a verifier run without it reports `blocked`, never `pass`.
+
+**Rationale.** Editing row 575 would rewrite history. Measuring the later tree is the honest, checkable substitute, and the #83 code is unchanged in it apart from later reviewed work. Had a floor been missed, the new row would record `fail` and the gap would become a work-unit issue (P7).
+
+**Alternatives.** Reply "pre-existing" and leave the gap (rejected: P5 has no exception, and the tool is available now). Edit row 575 (rejected: append-only). Measure at 0fcbfcb in a scratch worktree (not needed, since every floor is met on the current tree).

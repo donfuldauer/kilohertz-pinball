@@ -248,13 +248,15 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 2. Decide whether `#<N>` is a **gate issue** (`docs/PROCESS.md` P6 "Gate reviews"): it carries
    `review:gate`, or it is the only open `work-unit` issue left with its `phase:*` label or among
    its tracking issue's sub-issues (not counting a `status:blocked-failure` issue that P7 item 4
-   skips; a blocked core issue still counts). Check with the label search (explicit paging) and
+   skips; a blocked core issue still counts). A review fix issue of an open gate review (its body
+   names the review PR and the finding) is never a gate issue (P6 "Gate issue", "Review fix
+   issues"). Check with the label search (explicit paging) and
    the tracking issue's sub-issues. Re-check just before merging (§7): an issue that was not a
    gate when the PR opened becomes one if every other issue of its phase merged meanwhile. Ordering (P6 "Gate
    issue"): while another open `work-unit` issue of the same phase or tracking issue has an open
    non-draft PR and a lower `KP-NNN` number (other than an issue that depends on `#<N>`, such as a
    gate issue waiting for this blocking fix; a `status:blocked-failure` issue never holds a PR
-   waiting, P6 "Gate issue"; it still counts for gate detection), this PR waits instead of merging, and the gate test
+   waiting, P6 "Gate issue"; a blocked core issue still counts as open for gate detection, since P7 item 5 halts its dependents, while an optional one that P7 item 4 skips does not count), this PR waits instead of merging, and the gate test
    runs again when that PR merges or closes or its issue is marked blocked. Ignore any retired
    `review:skip` / `review:sanity` / `review:full` label or review-mode note on the issue.
 3. Create the PR (`create_pull_request`, or `gh pr create --base main --head <branch>`). No
@@ -300,7 +302,9 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
        PR's reviews, review comments and threads, issue comments (CodeRabbit's summary), and the
        head commit's status and check runs.
      - Fixes are committed on `<branch>`, so they land in both PRs; gate-review Fixer briefs may
-       own paths outside the issue's owned paths (contracts still change only under R2).
+       own paths outside the issue's owned paths (contracts still change only under R2). A
+       missed gate has no `<branch>`: its fixes go through review fix issues merged to `main` as
+       routine PRs, never to the review branch (P6 "Gate issue", "Review fix issues").
      - Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
        reply (`add_reply_to_pull_request_comment` or `gh api` review-comment reply), reason and
        evidence first. Deferred items become new `work-unit` issues in a later phase or milestone;
@@ -332,7 +336,7 @@ gate on `main` is confirmed after the merge):
 0. Immediately before the merge call, after the last wait for CI, the verifier or CodeRabbit,
    run §5 step 2's gate test and ordering check again. If a lower-numbered issue of the phase
    or tracking issue now has an open non-draft PR (other than one that depends on `#<N>`; a `status:blocked-failure` issue never holds a PR
-   waiting, P6 "Gate issue"; it still counts for gate detection), wait;
+   waiting, P6 "Gate issue"; a blocked core issue still counts as open for gate detection, since P7 item 5 halts its dependents, while an optional one that P7 item 4 skips does not count), wait;
    if `#<N>` has become a gate issue, run §6's gate review first instead of merging.
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA. Merge only a PR
@@ -342,7 +346,9 @@ gate on `main` is confirmed after the merge):
 3. **Missed-gate backstop** (routine merges): re-read the open `work-unit` issues of `#<N>`'s
    phase label and its tracking issue's open sub-issues, counted as in §5 step 2. If either set is empty
    (the phase's: a phase gate; the tracking issue's: a milestone gate; usually both at once, which
-   is one review), a gate was missed: open its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
+   is one review), a gate was missed (unless a review of that gate G is already open: then the
+   backstop does not fire for G, and a review fix issue of that review is never a gate issue; P6
+   "Gate issue", "Review fix issues"): open its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
    against `review-base/<gate>`), one gate review at a time, and record no phase-gate row until
    it is approved. That review PR is never merged: once approved, close it unmerged as step 4
    says and record `reviewed <reviewed head sha>` (the commit CodeRabbit last approved on it). Then **unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,

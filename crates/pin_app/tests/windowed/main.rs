@@ -310,6 +310,143 @@ fn req_lat_004_stall_flag_is_not_inferred_from_lateness() {
     assert!(!v.a.passed(), "a gap without the flag allows nothing");
 }
 
+/// A press at `ts_ms` (ms after T0) marked as stalled with the stall
+/// window `[prev_drain_ms, drain_ms)`, applied in the tick ending at
+/// `end_ms` and moving in it.
+fn stalled(seq: u64, input: &str, ts_ms: u64, end_ms: u64, window: (u64, u64)) -> Row {
+    let mut r = press(seq, T0 + ts_ms * TICK_NS, (end_ms - ts_ms) * TICK_NS);
+    r.input = input.into();
+    r.stall = true;
+    r.prev_drain_sdl_ns = T0 + window.0 * TICK_NS;
+    r.drain_sdl_ns = T0 + window.1 * TICK_NS;
+    r
+}
+
+/// REQ-LAT-004 check a (gate 30 round 12, finding 12): the stall allowance
+/// is given only to a flagged press whose timestamp lies in the stall
+/// window `[prev_drain_sdl_ns, drain_sdl_ns)`. The review's case (press at
+/// 100 ms, stall 120 to 140 ms, applying tick ending at 120 ms: 20 ms late,
+/// under the inflated 23 ms bound) fails once with the window named; a
+/// press at 130 ms passes through the allowance; the lower bound is
+/// inclusive, the upper exclusive; two presses of one catch-up batch (the
+/// second delivered in a later tick of the batch) keep it.
+#[test]
+fn req_lat_004_verdict_stall_allowance_needs_the_press_in_the_stall_window() {
+    let base = 5_000; // ms after T0, on the 100 ms frame grid
+    let win = (base + 120, base + 140);
+    let ordinary = TICK_NS + params().tolerance_ns;
+    // The review's case.
+    let r = stalled(0, "left_flipper", base + 100, base + 120, win);
+    assert!(20 * TICK_NS > ordinary, "needs the allowance to pass");
+    assert!(
+        20 * TICK_NS
+            <= verdict::coil_bound_ns(
+                &{
+                    let mut x = r.clone();
+                    x.sdl_ts_ns = x.prev_drain_sdl_ns;
+                    x
+                },
+                &params()
+            ),
+        "the inflated bound covers the 20 ms"
+    );
+    assert_eq!(verdict::coil_bound_ns(&r, &params()), ordinary);
+    let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
+    assert!(!v.a.passed(), "{}", v.report());
+    assert_eq!(v.a.failures.len(), 1, "recorded once: {:?}", v.a);
+    assert!(
+        v.a.failures[0].contains("outside the stall window")
+            && v.a.failures[0].contains(&format!(
+                "[{}, {})",
+                T0 + win.0 * TICK_NS,
+                T0 + win.1 * TICK_NS
+            ))
+            && v.a.failures[0].contains("press #0"),
+        "{:?}",
+        v.a
+    );
+    assert_eq!(v.summary.stalled_presses, 1);
+    assert_eq!(v.summary.presses, 1);
+    // Inside the window: 10 ms late, over the ordinary bound, passes.
+    let r = stalled(0, "left_flipper", base + 130, base + 140, win);
+    assert_eq!(
+        verdict::coil_bound_ns(&r, &params()),
+        ordinary + 20 * TICK_NS
+    );
+    let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
+    assert!(v.a.passed(), "{}", v.report());
+    assert_eq!(v.summary.stalled_presses, 1);
+    // Lower bound inclusive: a press stamped at the stall's start.
+    let r = stalled(0, "left_flipper", base + 120, base + 140, win);
+    let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
+    assert!(v.a.passed(), "{}", v.report());
+    // Upper bound exclusive: a press stamped at the drain that ended it is
+    // not in the stall (1 ms late, so only the flag fails it).
+    let r = stalled(0, "left_flipper", base + 140, base + 141, win);
+    let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
+    assert!(!v.a.passed(), "{}", v.report());
+    assert!(
+        v.a.failures[0].contains("outside the stall window"),
+        "{:?}",
+        v.a
+    );
+    // One catch-up batch: both rows carry the batch's window; the second
+    // press is delivered in a later tick of the batch, 14 ms late.
+    let rows = vec![
+        stalled(0, "left_flipper", base + 121, base + 122, win),
+        stalled(1, "right_flipper", base + 125, base + 139, win),
+    ];
+    let v = evaluate(&joined(rows, frames(600)), &OK_SHUTDOWN, &params());
+    assert!(v.a.passed(), "{}", v.report());
+    assert_eq!(v.summary.stalled_presses, 2);
+}
+
+/// REQ-LAT-001 check b (gate 30 round 12, finding 3): a frame presented
+/// before the press cannot show it. The review's case (press at 100 ms,
+/// moved in tick 101, the trace's frame drew tick 101 at 99 ms, both
+/// tables agree) fails check b with the press, frame and both times named,
+/// and the frame is not counted (no zero-latency sample: the only press
+/// leaves nothing checked); a frame presented at the press's timestamp
+/// passes.
+#[test]
+fn req_lat_001_verdict_rejects_frame_presented_before_the_press() {
+    let ts = T0 + 100 * TICK_NS;
+    let row = || {
+        let mut r = press(0, ts, TICK_NS);
+        assert_eq!(r.apply_tick, 101);
+        r.move_tick = Some(101);
+        r
+    };
+    let fr = frames_at(&[90, 99, 220, 59_900], &[80, 101, 210, 59_000]);
+    let t = joined(vec![row()], fr);
+    assert_eq!(t.rows[0].frame, Some(1));
+    assert_eq!(t.rows[0].present_ns, Some(T0 + 99 * TICK_NS));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert!(
+        v.b.failures[0].contains("press #0")
+            && v.b.failures[0].contains("frame 1")
+            && v.b.failures[0].contains(&format!("presented at {} ns", T0 + 99 * TICK_NS))
+            && v.b.failures[0].contains(&format!("timestamp {ts} ns")),
+        "{:?}",
+        v.b
+    );
+    assert!(
+        v.b.failures
+            .iter()
+            .any(|f| f == "no press could be checked"),
+        "the frame is not counted: {:?}",
+        v.b
+    );
+    assert_eq!(v.summary.max_frames_raw, 0);
+    assert_eq!(v.summary.p50_photon_ms, 0.0);
+    // Presented at the press's timestamp: accepted (0 frames, 0 ms).
+    let fr = frames_at(&[90, 100, 220, 59_900], &[80, 101, 210, 59_000]);
+    let v = evaluate(&joined(vec![row()], fr), &OK_SHUTDOWN, &params());
+    assert!(v.passed(), "{}", v.report());
+}
+
 /// REQ-LAT-004 / REQ-LAT-005: the press must take effect in the applying
 /// tick: a bat raised 1 degree more than `coil_ticks` after the delivering
 /// tick fails check a (the pre-#81 re-stamp bug delivered on time but
@@ -2237,10 +2374,10 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
         },
         Arc::clone(&log),
     );
-    // Both lines are in the log once the reader blocks (a failsafe bound,
-    // not a measurement).
+    // Both lines are in the log once the reader blocks; blocks until it
+    // does (a completion signal, no clock: R6; a hang is the runner's).
     reached_rx
-        .recv_timeout(Duration::from_secs(60))
+        .recv()
         .expect("the reader reached its blocking read");
     let clock = Cell::new(Duration::ZERO);
     let (done, text) = finish_capture(
@@ -2286,11 +2423,16 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
 
 /// A reader that yields `first`, blocks until `hold` is dropped, then
 /// yields `late` and ends (a child that writes after the drain gave up).
+/// `appended` is signalled by the first read after `late` was returned:
+/// `capture_lines` processes a complete line between two reads, so by then
+/// `late` is in the live log (a completion signal, not a clock).
 struct LateReader {
     first: Option<&'static [u8]>,
     late: Option<&'static [u8]>,
+    late_returned: bool,
     reached: std::sync::mpsc::Sender<()>,
     hold: std::sync::mpsc::Receiver<()>,
+    appended: std::sync::mpsc::Sender<()>,
 }
 
 impl std::io::Read for LateReader {
@@ -2306,9 +2448,15 @@ impl std::io::Read for LateReader {
         match self.late.take() {
             Some(b) => {
                 buf[..b.len()].copy_from_slice(b);
+                self.late_returned = true;
                 Ok(b.len())
             }
-            None => Ok(0),
+            None => {
+                if std::mem::take(&mut self.late_returned) {
+                    let _ = self.appended.send(());
+                }
+                Ok(0)
+            }
         }
     }
 }
@@ -2323,18 +2471,23 @@ fn req_lat_003_harness_timeout_snapshot_excludes_late_reader_lines() {
     use std::sync::{Arc, Mutex, mpsc};
     let (reached_tx, reached_rx) = mpsc::channel();
     let (hold_tx, hold_rx) = mpsc::channel::<()>();
+    let (appended_tx, appended_rx) = mpsc::channel();
     let log = Arc::new(Mutex::new(String::new()));
     let reader = capture_lines(
         LateReader {
             first: Some(b"early\n"),
             late: Some(b"late\n"),
+            late_returned: false,
             reached: reached_tx,
             hold: hold_rx,
+            appended: appended_tx,
         },
         Arc::clone(&log),
     );
+    // Blocks until the reader reached its blocking read (`early` is in the
+    // log by then); a hang is the test runner's to report (R6).
     reached_rx
-        .recv_timeout(Duration::from_secs(60))
+        .recv()
         .expect("the reader reached its blocking read");
     let clock = Cell::new(Duration::ZERO);
     let (done, saved) = finish_capture(
@@ -2347,14 +2500,17 @@ fn req_lat_003_harness_timeout_snapshot_excludes_late_reader_lines() {
     assert!(!done);
     let want = format!("early\n{}", drain_timeout_note(STDERR_DRAIN_TIMEOUT));
     assert_eq!(saved, want);
-    // The detached reader now appends its line (failsafe bound, not a
-    // measurement).
+    // The detached reader now appends its line; it signals once the line
+    // is in the live log (no clock, no polling: R6).
     drop(hold_tx);
-    let start = std::time::Instant::now();
-    while !log.lock().unwrap().contains("late\n") {
-        assert!(start.elapsed() < Duration::from_secs(60), "reader stuck");
-        std::thread::yield_now();
-    }
+    appended_rx
+        .recv()
+        .expect("the reader appended the late line");
+    assert_eq!(
+        *log.lock().unwrap(),
+        "early\nlate\n",
+        "the live log has the late line"
+    );
     assert_eq!(saved, want, "the saved snapshot is a copy");
     assert!(saved.ends_with(&drain_timeout_note(STDERR_DRAIN_TIMEOUT)));
     assert!(!saved.contains("late"));
@@ -2550,6 +2706,86 @@ fn req_lat_002_harness_startup_failure_writes_a_summary() {
         assert!(!out.join("pin_app_stderr.log").exists());
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The windowed driver (gate 30 round 12, finding 13): `KP_PIN_APP` is
+/// resolved to an absolute path once, so the preflight's file check and
+/// the launch name the same file: a bare name becomes `<cwd>/<name>` (not a
+/// `PATH` search), and `spawn_app` and the preflight use and report that
+/// path; an absolute value (what `scripts/windowed/run.sh` exports) is
+/// unchanged. Nothing is executed (the bare name does not exist).
+#[test]
+fn req_lat_001_harness_app_path_is_resolved_once_for_check_and_launch() {
+    let cwd = std::env::current_dir().unwrap();
+    let name = format!("kp_no_such_pin_app_wrapper_{}", std::process::id());
+    let lookup = |k: &str| (k == "KP_PIN_APP").then(|| name.clone());
+    let cfg = driver::DriverConfig::from_lookup(&lookup);
+    assert_eq!(cfg.app, cwd.join(&name));
+    assert_eq!(
+        driver::resolve_app(std::path::Path::new(&name)),
+        cwd.join(&name)
+    );
+    // An absolute value is kept as is.
+    let abs = std::env::temp_dir().join("kp_abs").join("pin_app");
+    let abs_s = abs.to_str().unwrap().to_owned();
+    let cfg_abs =
+        driver::DriverConfig::from_lookup(&|k: &str| (k == "KP_PIN_APP").then(|| abs_s.clone()));
+    assert_eq!(cfg_abs.app, abs);
+    assert_eq!(driver::resolve_app(&abs), abs);
+    // Unset or empty: this build's binary, absolute.
+    let def = driver::DriverConfig::from_lookup(&|_: &str| Some(String::new()));
+    assert_eq!(
+        def.app,
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_pin_app"))
+    );
+    assert!(def.app.is_absolute());
+    // A config built with the bare name directly: the launch and the
+    // preflight both use `<cwd>/<name>`.
+    let dir = driver_dir("app_path");
+    let raw = driver::DriverConfig {
+        app: std::path::PathBuf::from(&name),
+        out_dir: dir.join("out"),
+        ..cfg
+    };
+    let e = driver::spawn_app(&raw, ":99", &dir.join("t.csv")).unwrap_err();
+    assert!(
+        e.starts_with(&format!("starting {}: ", cwd.join(&name).display())),
+        "{e}"
+    );
+    let e = driver::preflight(&raw, &|_| true).unwrap_err();
+    assert_eq!(e, format!("no app binary at {}", cwd.join(&name).display()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The windowed driver (gate 30 round 12, finding 14): a failure to write
+/// `pin_app_stderr.log` is never dropped. Both fine: the drive's output;
+/// drive fine, write failed: an error naming the log path and the I/O
+/// error; drive failed and write failed: the drive failure first
+/// (primary), then the write failure on its own line.
+#[test]
+fn req_lat_003_harness_stderr_log_write_failure_is_reported() {
+    use driver::with_log_write;
+    let path = std::path::Path::new("/out/pin_app_stderr.log");
+    let disk_full = || std::io::Error::other("disk full");
+    assert_eq!(with_log_write(Ok(7), Ok(()), path), Ok(7));
+    assert_eq!(
+        with_log_write(Ok(7), Err(disk_full()), path),
+        Err::<i32, _>("writing /out/pin_app_stderr.log: disk full".to_owned())
+    );
+    assert_eq!(
+        with_log_write::<i32>(Err("no first frame".into()), Ok(()), path),
+        Err("no first frame".to_owned())
+    );
+    let e =
+        with_log_write::<i32>(Err("no first frame".into()), Err(disk_full()), path).unwrap_err();
+    assert_eq!(
+        e,
+        "no first frame\nwriting /out/pin_app_stderr.log: disk full"
+    );
+    assert!(
+        e.starts_with("no first frame"),
+        "the drive failure is primary"
+    );
 }
 
 // ---------------------------------------------------------------------------

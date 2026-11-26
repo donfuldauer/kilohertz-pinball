@@ -517,8 +517,9 @@ LP_NUM_THREADS cap").
 # Prerequisites: mesa-vulkan-drivers libvulkan1 xvfb xauth xdotool x11-apps imagemagick
 scripts/windowed/run.sh                     # builds the bundle and the release app, runs 60 s
 scripts/windowed/run.sh --print-paths       # prints the resolved paths, builds nothing
-# or, with the bundle and the release app already built:
-LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
+# or, with the bundle and the release app already built (DISPLAY unset, as run.sh does, so the
+# driver starts its own Xvfb; a set DISPLAY makes it inject keys into and capture that X server):
+env -u DISPLAY LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
   WGPU_BACKEND=vulkan cargo test --release -p pin_app --test windowed -- --ignored --nocapture
 cargo test -p pin_app --test windowed       # the verdict, parser, property and allocation tests
 python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure

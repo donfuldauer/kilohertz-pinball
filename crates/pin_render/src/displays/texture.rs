@@ -7,9 +7,20 @@
 //! as `render_*_to_image` draws an offscreen image of the same size; levels
 //! 1.. are an area-weighted average of the level above (the 2 × 2 box
 //! average for an exact 2:1 reduction; on an odd side every texel
-//! contributes by its overlap, so the 1 × 1 level is the whole-image
-//! average), computed on the stored (display-encoded) bytes in integers with
-//! round-to-nearest. A redraw happens only when the content changed (DMD
+//! contributes by its overlap), computed on the stored (display-encoded)
+//! bytes in integers with round-to-nearest.
+//!
+//! Each level is rounded to nearest on its own, from the rounded bytes of
+//! the level above. The 1 × 1 level is therefore the area-weighted average
+//! computed level by level: every texel of level 0 contributes to it, but it
+//! need not equal the original mean rounded once. The area weighting keeps
+//! the mean of a level equal to the mean of the level above before rounding,
+//! so each reduction moves the mean by at most half a byte, and the 1 × 1
+//! byte is within half a byte times the number of reductions of the
+//! original mean. Example: a 5 × 1 image with red bytes `[1, 1, 0, 0, 0]`
+//! reduces to `[1, 0]` and then `[1]`, while its mean 0.4 rounds to 0.
+//!
+//! A redraw happens only when the content changed (DMD
 //! frame, LCD draw list, lamp levels per
 //! [`BackglassRenderer::needs_redraw`]) or after `mark_dirty`; it redraws
 //! level 0 and regenerates every mip in one submit. The GPU texture object is
@@ -214,7 +225,12 @@ pub(super) fn mip_split_divide(rows: &[(u32, u32)], dx: u32, dy: u32) -> Option<
 }
 
 /// The texture, its views and the mip generator shared by both displays.
+/// The redraw encoder is created on, and submitted to, the device and queue
+/// of the context the texture was created with (kept here), never a
+/// caller's (#163 round 12, finding 21).
 struct MipTexture {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// One single-level view per mip level (render targets).
@@ -325,6 +341,8 @@ impl MipTexture {
             })
             .collect();
         let t = MipTexture {
+            device: device.clone(),
+            queue: ctx.queue().clone(),
             texture,
             view,
             level_views,
@@ -340,7 +358,7 @@ impl MipTexture {
         for v in &t.level_views {
             clear_pass(&mut encoder, v);
         }
-        ctx.queue().submit([encoder.finish()]);
+        t.queue.submit([encoder.finish()]);
         Ok(t)
     }
 
@@ -349,14 +367,14 @@ impl MipTexture {
     }
 
     /// Clears level 0, records `draw` into it over the whole texture,
-    /// regenerates every mip and submits it all at once.
+    /// regenerates every mip and submits it all at once, on the owning
+    /// device and queue.
     fn redraw(
         &mut self,
-        ctx: &GpuContext,
         draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, (u32, u32), Rect),
     ) {
-        let mut encoder = ctx
-            .device()
+        let mut encoder = self
+            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("display texture redraw"),
             });
@@ -391,7 +409,7 @@ impl MipTexture {
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..3, 0..1);
         }
-        ctx.queue().submit([encoder.finish()]);
+        self.queue.submit([encoder.finish()]);
         self.redraws += 1;
     }
 }
@@ -450,13 +468,20 @@ impl BackglassTexture {
     /// [`BackglassRenderer::needs_redraw`] says so (first call, after
     /// [`mark_dirty`](Self::mark_dirty), or a referenced lamp moved by at
     /// least [`LAMP_REDRAW_EPSILON`](super::LAMP_REDRAW_EPSILON)). Returns
-    /// whether it redrew; otherwise no GPU work is recorded.
+    /// whether it redrew; otherwise no GPU work is recorded and nothing is
+    /// allocated.
+    ///
+    /// `ctx` must be the context `self` was created with. The redraw is
+    /// recorded on that creating context's device and submitted to its
+    /// queue (both kept by `self`), never `ctx`'s (#163 round 12, finding
+    /// 21).
     pub fn update(&mut self, ctx: &GpuContext, lamps: &[f32]) -> bool {
+        let _ = ctx; // the owning device and queue are used (see above)
         if !self.renderer.needs_redraw(lamps) {
             return false;
         }
         let renderer = &mut self.renderer;
-        self.target.redraw(ctx, |encoder, view, size, viewport| {
+        self.target.redraw(|encoder, view, size, viewport| {
             renderer.encode(encoder, view, size, viewport, lamps);
         });
         true
@@ -546,6 +571,11 @@ impl ScoreTexture {
     /// the device's `max_texture_dimension_2d` (a previous image of that
     /// file stays and the display is not marked changed), and any image on a
     /// DMD score display, which has no image layers.
+    ///
+    /// `ctx` must be the context `self` was created with. The upload always
+    /// uses the queue of that creating context (kept by the renderer), so
+    /// another context can neither panic wgpu nor replace the previous image
+    /// with a texture that lacks its pixels (#163 round 12, finding 21).
     pub fn set_image(
         &mut self,
         ctx: &GpuContext,
@@ -564,12 +594,17 @@ impl ScoreTexture {
     /// registered for their file with [`set_image`](Self::set_image); an
     /// image item whose file is not registered is skipped (the rest of the
     /// draw list still draws).
+    ///
+    /// `ctx` must be the context `self` was created with. Frame uploads and
+    /// the redraw use that creating context's device and queue (kept by
+    /// `self`), never `ctx`'s (#163 round 12, finding 21).
     pub fn update(&mut self, ctx: &GpuContext, content: &DisplayContent) -> bool {
-        if !self.renderer.update(ctx.queue(), content) {
+        let _ = ctx; // the owning device and queue are used (see above)
+        if !self.renderer.update(&self.target.queue, content) {
             return false;
         }
         let renderer = &mut self.renderer;
-        self.target.redraw(ctx, |encoder, view, size, viewport| {
+        self.target.redraw(|encoder, view, size, viewport| {
             renderer.encode(encoder, view, size, viewport);
         });
         true

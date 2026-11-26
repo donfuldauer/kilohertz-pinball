@@ -200,6 +200,8 @@ fn read_all(ctx: &GpuContext, tex: &wgpu::Texture, w: u32, h: u32, levels: u32) 
 }
 
 /// Level k+1 is the 2x2 box average of level k (round to nearest), within 1.
+/// The check is per level: each level is rounded to nearest on its own, so
+/// level k+1 is compared with level k as stored, never with level 0.
 fn assert_box_chain(what: &str, levels: &[Img]) {
     for k in 1..levels.len() {
         let (src, dst) = (&levels[k - 1], &levels[k]);
@@ -242,6 +244,12 @@ fn assert_box_chain(what: &str, levels: &[Img]) {
 
 /// Mean of each level over the whole image and each quadrant is within 2/255
 /// of level 0's; the last level is 1x1 and within 3/255 of the global mean.
+/// Each level is rounded to nearest independently, so the 1x1 level is the
+/// area-weighted average computed level by level: it may differ from the
+/// global mean rounded once, by at most half a byte per reduction (so at
+/// most half a byte times the number of reductions). The 3/255 tolerance is
+/// what these contents need, not that worst case; the exact per-level
+/// checks are `assert_box_chain` and `assert_chain_is_oracle`.
 fn assert_mean_chain(what: &str, levels: &[Img]) {
     let base = &levels[0];
     let last = levels.last().unwrap();
@@ -1081,6 +1089,12 @@ fn req_view_002_lcd_bad_image_refused_previous_stays() {
 // #163 gate round 11 (review 6070807835, texture.rs mip shader): every texel
 // of an odd-sized level contributes to the next level, so the 1x1 mip is the
 // whole-image average; exact 2:1 reductions keep the four-texel average.
+// "Whole-image average" here means the area-weighted average computed level
+// by level: each level is rounded to nearest on its own, so the 1x1 byte is
+// within half a byte per reduction of the original mean and need not equal
+// it rounded once (#163 round 12, finding 22: a 5x1 red `[1, 1, 0, 0, 0]`
+// reduces to `[1, 0]` then `[1]`, while its mean 0.4 rounds to 0). The
+// oracle checks below stay exact per level.
 
 /// Per-axis weights `(w0, w1, w2, denominator)` of the source texels
 /// `2d, 2d + 1, 2d + 2` for destination texel `d` of a source side `s`:
@@ -1218,7 +1232,9 @@ fn req_view_002_odd_mip_edge_only_5x3() {
 /// REQ-VIEW-002 (review 6070807835): a 255x129 odd chain (a gradient with a
 /// bright last column and row, and a pseudo-random image) equals the
 /// area-weighted oracle at every level; the 1x1 level is the whole-image
-/// average. Every level of the gradient is written for the visual check.
+/// average computed level by level (each level rounded to nearest, so within
+/// half a byte per reduction of the original mean). Every level of the
+/// gradient is written for the visual check.
 #[test]
 fn req_view_002_odd_mip_chain_255x129() {
     let (_g, ctx) = setup!("req_view_002_odd_mip_chain_255x129");

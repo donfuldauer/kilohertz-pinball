@@ -241,7 +241,10 @@ pub enum ScoreRenderer {
 }
 
 impl ScoreRenderer {
-    /// A renderer for `config` and targets of `format`.
+    /// A renderer for `config` and targets of `format`. Its GPU resources
+    /// live on `ctx`'s device and every upload goes through `ctx`'s queue;
+    /// an encoder given to [`encode`](Self::encode) must come from `ctx`'s
+    /// device.
     pub fn new(
         ctx: &GpuContext,
         format: wgpu::TextureFormat,
@@ -255,6 +258,10 @@ impl ScoreRenderer {
 
     /// Takes `content`; returns whether it changed (redraw needed). Content
     /// of the other mode is ignored (`false`).
+    ///
+    /// `queue` must belong to the context the renderer was created with. Any
+    /// upload (a DMD frame) uses the queue of that creating context, kept by
+    /// the renderer, never `queue` (#163 round 12, finding 21).
     pub fn update(&mut self, queue: &wgpu::Queue, content: &DisplayContent) -> bool {
         match (self, content) {
             (ScoreRenderer::Dmd(r), DisplayContent::Dmd(f)) => r.set_frame(queue, f),
@@ -275,6 +282,11 @@ impl ScoreRenderer {
     /// the device's `max_texture_dimension_2d` (a previous image of that
     /// file stays), and any image on a DMD renderer, which has no image
     /// layers (its frames are composed on the CPU).
+    ///
+    /// `ctx` must be the context the renderer was created with. The upload
+    /// always uses the queue of that creating context (kept by the renderer),
+    /// so another context can neither panic wgpu nor replace the previous
+    /// image with a texture that lacks its pixels.
     pub fn set_image(
         &mut self,
         ctx: &GpuContext,

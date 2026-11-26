@@ -374,6 +374,10 @@ struct TraceSink {
     tmp: Option<PathBuf>,
     /// The open temp file (or the destination when written directly).
     file: Option<std::fs::File>,
+    /// The run's configuration file ([`config_path`]), compared again by
+    /// file identity before publication ([`finish_trace`]); `None` when
+    /// there is none to protect.
+    config: Option<PathBuf>,
 }
 
 /// Attempts at a fresh sibling temp-file name.
@@ -569,6 +573,16 @@ fn unanswered_selection(menu: &MenuController) -> Option<&Path> {
 /// is printed and the same text is merged into `failure` (a requested
 /// artifact was not produced), and `None` is returned. Otherwise the trace
 /// is committed as before ([`commit_trace`]: also for a failed run).
+///
+/// The run's configuration file (the sink's `config`, [`config_path`] at
+/// start-up) is also compared again here, by file identity
+/// ([`config_identity_alias`], gate 163 round 12, review comment
+/// 4710120054): a destination that did not exist at start-up can name the
+/// configuration file the menu saved during the run (two spellings of one
+/// directory entry on a case-insensitive volume), which the start-up
+/// comparison ([`config_alias`]) cannot know. Then the trace is not
+/// published either: `--latency-trace: <dest> is the configuration file:
+/// the trace was not published`.
 fn finish_trace(
     sink: TraceSink,
     blocked: &AtomicBool,
@@ -582,7 +596,13 @@ fn finish_trace(
             sink.dest.display()
         ))
     } else {
-        in_flight.and_then(|p| trace_alias(&sink.dest, p))
+        in_flight
+            .and_then(|p| trace_alias(&sink.dest, p))
+            .or_else(|| {
+                sink.config
+                    .as_deref()
+                    .and_then(|c| config_identity_alias(&sink.dest, c))
+            })
     };
     let Some(alias) = alias else {
         return commit_trace(sink, csv, failure);
@@ -592,6 +612,24 @@ fn finish_trace(
     eprintln!("pin_app: {e}");
     *failure = merge_failure(failure.take(), Some(e));
     None
+}
+
+/// The shutdown recheck of the `--latency-trace` destination `dest`
+/// against the configuration file `config` (REQ-LAT-003, REQ-VIEW-006;
+/// gate 163 round 12, review comment 4710120054): when both exist now,
+/// their fresh metadata (symlinks followed) is compared with [`same_file`]
+/// (device and inode on Unix, canonical path elsewhere). The same file
+/// gives `--latency-trace: <dest> is the configuration file`; distinct
+/// files, or either path missing (or unreadable), give `None`.
+fn config_identity_alias(dest: &Path, config: &Path) -> Option<String> {
+    let cm = std::fs::metadata(config).ok()?;
+    let dm = std::fs::metadata(dest).ok()?;
+    same_file(&dm, dest, &cm, config).then(|| {
+        format!(
+            "--latency-trace: {} is the configuration file",
+            dest.display()
+        )
+    })
 }
 
 /// The `config.toml` path of this run (REQ-VIEW-006): the `--config <file>`
@@ -605,12 +643,18 @@ fn config_path(args: &[String]) -> Result<PathBuf, String> {
 }
 
 /// `path` made absolute (a relative path is resolved against the current
-/// directory) and lexically normalised without touching the filesystem
-/// (`.` dropped, `..` folded into its parent; `..` at the root stays at the
-/// root), then, when the normalised parent directory exists, the parent
-/// replaced by its canonical form (so a symlinked parent directory resolves
-/// to its target). The file name itself is never resolved. For comparing
-/// paths that may not exist yet ([`is_config_path`]).
+/// directory) and resolved the way the filesystem would, for comparing
+/// paths that may not exist yet ([`is_config_path`]). The directory part
+/// (every component but a final file name) is resolved from its deepest
+/// existing ancestor: that ancestor, taken UNFOLDED (so a symlink followed
+/// by `..` resolves to the symlink target's parent, as the filesystem does;
+/// gate 163 round 12, review comment 4710120043), is replaced by its
+/// canonical form (`std::fs::canonicalize`: symlinks and `..` resolved),
+/// and only the remaining, not existing components are normalised
+/// lexically (`.` dropped, `..` folded into its parent, never above the
+/// root). When no ancestor can be canonicalised the whole path is
+/// normalised lexically. The final file name itself is never resolved (a
+/// symlink there is what the trace commit replaces, not its target).
 fn normalised_path(path: &Path) -> PathBuf {
     use std::path::Component;
     let abs = if path.is_absolute() {
@@ -620,23 +664,36 @@ fn normalised_path(path: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     };
-    let mut out = PathBuf::new();
-    for c in abs.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                // Never above the root (`pop` keeps the root component).
-                if out.parent().is_some() {
-                    out.pop();
+    let comps: Vec<Component<'_>> = abs.components().collect();
+    let (dirs, name) = match comps.split_last() {
+        Some((Component::Normal(n), rest)) => (rest, Some(*n)),
+        _ => (&comps[..], None),
+    };
+    // Lexical normalisation of `tail` onto `out`.
+    let fold = |mut out: PathBuf, tail: &[Component<'_>]| {
+        for c in tail {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // Never above the root (`pop` keeps the root component).
+                    if out.parent().is_some() {
+                        out.pop();
+                    }
                 }
+                other => out.push(other.as_os_str()),
             }
-            other => out.push(other.as_os_str()),
         }
-    }
-    if let (Some(parent), Some(name)) = (out.parent(), out.file_name())
-        && let Ok(p) = std::fs::canonicalize(parent)
-    {
-        return p.join(name);
+        out
+    };
+    let resolved = (1..=dirs.len()).rev().find_map(|k| {
+        let ancestor: PathBuf = dirs[..k].iter().collect();
+        std::fs::canonicalize(&ancestor)
+            .ok()
+            .map(|base| fold(base, &dirs[k..]))
+    });
+    let mut out = resolved.unwrap_or_else(|| fold(PathBuf::new(), dirs));
+    if let Some(n) = name {
+        out.push(n);
     }
     out
 }
@@ -785,7 +842,8 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
         // E.g. `trace.csv/` under a regular file (ENOTDIR): not "missing".
         Err(e) => return Err(io(e)),
     };
-    if let Some(e) = config_alias(&path, dest_meta.as_ref(), &config_path(args)?) {
+    let config = config_path(args)?;
+    if let Some(e) = config_alias(&path, dest_meta.as_ref(), &config) {
         return Err(e);
     }
     if dest_meta.is_none() && ends_in_separator(&path) {
@@ -820,6 +878,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
             dest: path,
             tmp: None,
             file: Some(file),
+            config: Some(config),
         }));
     }
     if path.file_name().is_none() {
@@ -836,6 +895,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
                     dest: path,
                     tmp: Some(tmp),
                     file: Some(file),
+                    config: Some(config),
                 }));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
@@ -1172,6 +1232,17 @@ fn any_frame_presented(current: Option<&TraceCollector>, banked: Option<&Collect
         || banked.is_some_and(|b| !b.frames.is_empty() || b.overflows.frames > 0)
 }
 
+/// Whether the run's one-shot `pin_app: latency trace: first frame
+/// presented` line is still due at shutdown (gate 163 round 12, review
+/// 6076344934 finding 10): it was not `announced` in the run loop
+/// ([`any_frame_presented`]) and the run's final trace `collected`
+/// ([`final_trace`]) holds a presented playfield frame (a frame row, or a
+/// frame lost to a full ring, counted in `overflows.frames`). A frame
+/// presented in the pump that ended the run is therefore still announced.
+fn first_frame_at_shutdown(announced: bool, collected: Option<&CollectedTrace>) -> bool {
+    !announced && collected.is_some_and(|c| !c.frames.is_empty() || c.overflows.frames > 0)
+}
+
 /// Submits the menu's load request `(id, path)` to the I/O worker. When the
 /// submission fails (the worker never started or has stopped: no reply can
 /// come) the error is printed and reported to the menu with `id`, so it
@@ -1497,10 +1568,13 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // file holds every engine of the run: those stopped by table swaps
     // (banked), then the last (`final_trace`); after a failed swap the old
     // collector is still `trace`, so nothing is lost.
-    let trace_summary = match (
-        final_trace(banked_trace, trace, run_end_ns),
-        trace_file.take(),
-    ) {
+    let collected = final_trace(banked_trace, trace, run_end_ns);
+    // A first frame presented in the pump that ended the run (or by an
+    // engine a close-cancelled swap stopped) still gets its one-shot line.
+    if first_frame_at_shutdown(first_frame_announced, collected.as_ref()) {
+        eprintln!("pin_app: latency trace: first frame presented");
+    }
+    let trace_summary = match (collected, trace_file.take()) {
         (Some(collected), Some(sink)) => finish_trace(
             sink,
             &trace_blocked,
@@ -3145,5 +3219,181 @@ mod tests {
         let mut lost = empty.unwrap();
         lost.overflows.frames = 1;
         assert!(any_frame_presented(Some(&idle), Some(&lost)));
+    }
+
+    /// REQ-LAT-003 / REQ-VIEW-006 (gate 163 round 12, review comment
+    /// 4710120043, reopened thread 4705691334): with `links/current` a
+    /// symlink to `profiles/player` and neither file created yet,
+    /// `--latency-trace links/current/../session.toml` names
+    /// `profiles/session.toml` (the filesystem resolves the symlink before
+    /// `..`), so with `--config profiles/session.toml` it is refused before
+    /// anything is created (the first save is protected); a distinct
+    /// `links/current/../trace.csv` still opens and publishes.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_first_save_symlink_then_dotdot_is_refused() {
+        let dir = fresh_dir("r12_symlink_dotdot");
+        let profiles = dir.join("profiles");
+        std::fs::create_dir_all(profiles.join("player")).unwrap();
+        let links = dir.join("links");
+        std::fs::create_dir_all(&links).unwrap();
+        std::os::unix::fs::symlink("../profiles/player", links.join("current")).unwrap();
+        let cfg = profiles.join("session.toml");
+        let c = cfg.to_str().unwrap();
+        let trace = links.join("current/../session.toml");
+        let t = trace.to_str().unwrap();
+        assert!(!cfg.exists() && !trace.exists(), "both missing");
+        // The startup alias check itself.
+        assert_eq!(
+            super::config_alias(&trace, None, &cfg),
+            Some(format!("--latency-trace: {t} is the configuration file"))
+        );
+        let e =
+            open_latency_trace(&args(&["--config", c, "--latency-trace", t])).expect_err("refused");
+        assert_eq!(e, format!("--latency-trace: {t} is the configuration file"));
+        assert_eq!(names(&profiles), ["player"], "nothing created");
+        assert_eq!(names(&links), ["current"], "nothing created");
+        // A distinct destination through the same symlink still opens.
+        let other = links.join("current/../trace.csv");
+        assert_eq!(super::config_alias(&other, None, &cfg), None);
+        let sink = open_latency_trace(&args(&[
+            "--config",
+            c,
+            "--latency-trace",
+            other.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .unwrap();
+        sink.commit(b"csv").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(profiles.join("trace.csv")).unwrap(),
+            "csv"
+        );
+        assert!(!cfg.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 12 (review comment 4710120043): the resolved form of
+    /// a path that does not exist yet. A symlink followed by `..` resolves
+    /// to the target's parent, `.` and `..` in the missing tail fold
+    /// lexically and never above the root, and the final file name is not
+    /// resolved (a symlink there stays itself).
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_normalised_path_resolves_existing_ancestors_first() {
+        use super::normalised_path;
+        let dir = fresh_dir("r12_normalise");
+        let root = std::fs::canonicalize(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::os::unix::fs::symlink("a/b", dir.join("l")).unwrap();
+        assert_eq!(
+            normalised_path(&dir.join("l/../x.toml")),
+            root.join("a/x.toml")
+        );
+        assert_eq!(
+            normalised_path(&dir.join("l/new/./deeper/../../x.toml")),
+            root.join("a/b/x.toml")
+        );
+        assert_eq!(normalised_path(&dir.join("l")), root.join("l"));
+        assert_eq!(
+            normalised_path(Path::new("/../../kp-missing-r12/../y")),
+            PathBuf::from("/y")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 / REQ-VIEW-006 (gate 163 round 12, review comment
+    /// 4710120054): two spellings that are distinct at start-up (both
+    /// missing; `Session.toml` vs `session.toml`) are accepted, but when
+    /// the configuration file the menu saved during the run is the same
+    /// file as the destination at shutdown (here a hard link, standing in
+    /// for one directory entry on a case-insensitive volume, where it
+    /// already is one), the shutdown step does not publish the trace: the
+    /// configuration keeps its bytes, the temp file is removed, and the
+    /// run fails with `... is the configuration file: the trace was not
+    /// published`. A distinct destination still publishes.
+    #[test]
+    fn req_lat_003_config_saved_during_run_is_never_replaced_by_the_trace() {
+        use super::finish_trace;
+        use std::sync::atomic::AtomicBool;
+        let dir = fresh_dir("r12_case");
+        let cfg = dir.join("Session.toml");
+        let dest = dir.join("session.toml");
+        let c = cfg.to_str().unwrap();
+        let d = dest.to_str().unwrap();
+        let open = |trace: &str| {
+            open_latency_trace(&args(&["--config", c, "--latency-trace", trace]))
+                .unwrap()
+                .unwrap()
+        };
+        let sink = open(d);
+        // The menu's first save during the run.
+        std::fs::write(&cfg, "wireframe = true\n").unwrap();
+        // On a case-insensitive volume `dest` is already this entry.
+        let case_insensitive = dest.exists();
+        if !case_insensitive {
+            std::fs::hard_link(&cfg, &dest).unwrap();
+        }
+        let flag = AtomicBool::new(false);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            None
+        );
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "wireframe = true\n");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "wireframe = true\n"
+        );
+        let expected =
+            format!("--latency-trace: {d} is the configuration file: the trace was not published");
+        assert_eq!(failure.as_deref(), Some(expected.as_str()));
+        let mut want = vec!["Session.toml".to_owned()];
+        if !case_insensitive {
+            want.push("session.toml".to_owned());
+        }
+        assert_eq!(names(&dir), want, "no temp file left");
+        // A distinct destination publishes, the configuration untouched.
+        let other = dir.join("trace.csv");
+        let sink = open(other.to_str().unwrap());
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            Some(other.clone())
+        );
+        assert_eq!(failure, None);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "csv,trace\n");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "wireframe = true\n");
+        // The recheck itself: missing paths and distinct files pass.
+        assert_eq!(
+            super::config_identity_alias(&dir.join("missing.csv"), &cfg),
+            None
+        );
+        assert_eq!(
+            super::config_identity_alias(&other, &dir.join("missing.toml")),
+            None
+        );
+        assert_eq!(super::config_identity_alias(&other, &cfg), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 12 (review 6076344934 finding 10, REQ-LAT-003): the
+    /// one-shot `first frame presented` line is still due at shutdown when
+    /// the run loop did not announce it and the final trace holds a frame
+    /// row or a frame lost to a full ring; never twice, never without a
+    /// frame.
+    #[test]
+    fn req_lat_003_first_frame_marker_on_the_shutdown_path() {
+        use super::{final_trace, first_frame_at_shutdown};
+        let framed = final_trace(None, Some(engine_trace(1, 5)), 10);
+        assert!(first_frame_at_shutdown(false, framed.as_ref()));
+        assert!(!first_frame_at_shutdown(true, framed.as_ref()), "once");
+        let mut empty = final_trace(None, Some(engine_trace(0, 0)), 10).unwrap();
+        assert!(empty.frames.is_empty());
+        assert!(!first_frame_at_shutdown(false, Some(&empty)));
+        assert!(!first_frame_at_shutdown(false, None));
+        empty.overflows.frames = 1;
+        assert!(first_frame_at_shutdown(false, Some(&empty)));
+        assert!(!first_frame_at_shutdown(true, Some(&empty)));
     }
 }

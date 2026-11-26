@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 14
+- Open queue lines: 15
 - Resolved queue lines: 323
-- Decision entries: 581
-- Run-log rows: 629
+- Decision entries: 590
+- Run-log rows: 639
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -41,6 +41,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 spec] [KP-008-slot-meaning] SPEC Appendix A "Dynamic mesh slot convention" calls each slot a "world transform" but the per-kind rules give displacements (drop_target z above raised position; sling/kickback/plunger offset from home/rest) and absolute pivots (spinner, gate, diverter). Proposed edit: header becomes "a transform in world axes (metres, radians) applied to the part's rest pose; per kind below, translation is either an absolute position (pivot, hinge) or an offset from rest/home; the per-kind rule wins". Also say slots are published by KP-023 (#103). See DECISIONS "#163 gate round 8 — dynamic mesh slot meaning". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-009-floor-height-xy] SPEC Appendix A cabinet.toml "Frames" (REQ-BUILD-002) defines the body-bottom height as linear in y only ("mean effective leg length of the front or rear pair - body.leg_overlap, linear in y between the leg centrelines"), which cannot represent the body roll that REQ-CAB-008 derives when left and right legs differ. Proposed edit: "the body bottom is the plane through the four leg-top centres (each leg's effective length less body.leg_overlap); its height at cabinet (x, y) varies linearly with y between the front and rear leg centrelines and with x between the left and right leg centrelines". Caveat: this edit is incomplete until the owner also defines the floor-height rule for non-coplanar leg tops (independent legs, REQ-CAB-007); adoption should include that rule, and #217 waits for it. Implementation: #217 (KP-103). See DECISIONS "#163 gate round 9 — cabinet floor height must vary with x". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-009-art-optional] SPEC Appendix A.4 says a cabinet.toml without `preset` must state every key, but the code and the acceptance test treat `[art]` as optional: an absent `[art]` table means an empty art map, because A.4 defines `[art]` entries as additive. Proposed edit: add "`[art]` may be omitted; absent means no entries" to A.4. See the #163 gate round 11 disposition on PR #197. (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [#163] Gate #163 rounds 11 and 12 edited `docs/PROCESS.md` P6 to resolve CodeRabbit gate-review findings, which P8 lists as an owner edit. The edits: the gate boundary is the reviewed head, not the merge commit; only PRs into `main` are merged; review fix issues of an open gate review are not gate issues; missed-gate fixes go through ordinary PRs; the RUN_LOG-row commit is the only unreviewed commit above the reviewed head. Please ratify or revert them (DECISIONS "#163 gate round 11 — Gate review boundary is the reviewed head, not the merge commit" and the two "#163 gate round 12" process entries). (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -629,6 +630,15 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate round 11: Latency trace installs only before the first tick (docs/DECISIONS.md)
 - #163 gate round 11: Captive Newton balls in the snapshot (docs/DECISIONS.md)
 - #163 gate round 11: Optional `[art]` in an unpreset cabinet.toml (docs/DECISIONS.md)
+- #163 gate round 12: Trace destination checked against the config by file identity at shutdown (docs/DECISIONS.md)
+- #163 gate round 12: Mid-run epoch change keeps the latency-trace marks (docs/DECISIONS.md)
+- #163 gate round 12: Windowed verdict: frames before the press, stall window and attempt-bounded tests (docs/DECISIONS.md)
+- #163 gate round 12: Review fix issues of an open gate review are not gate issues (docs/DECISIONS.md)
+- #163 gate round 12: The RUN_LOG-row commit is the only unreviewed commit allowed above the reviewed head (docs/DECISIONS.md)
+- #163 gate round 12: Display renderers use their owning queue; a foreign context is not rejected (docs/DECISIONS.md)
+- #163 gate round 12: Glass top checked at its own y (docs/DECISIONS.md)
+- #163 gate round 12: fmath std oracle stays bit-exact on x86_64 (docs/DECISIONS.md)
+- #163 gate round 12: #83 coverage recorded by a new row; row 575 stays (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

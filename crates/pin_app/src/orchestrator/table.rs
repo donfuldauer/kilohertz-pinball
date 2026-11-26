@@ -970,6 +970,13 @@ mod tests {
             Arc::clone(&entries),
             Arc::clone(&completions),
         ));
+        // Re-bound after `w` so it drops first on unwind: if an assertion
+        // fails before `w` moves to the drop thread, the release channel
+        // closes before `IoWorker::drop` joins, and a handler held on
+        // `release.recv()` returns instead of hanging the join (gate 163
+        // round 12, review 6076344934 finding 8). The normal flow still
+        // holds the request until the stop flag is set.
+        let release_tx = release_tx;
         w.try_request(IoRequest::Load {
             id: 1,
             path: PathBuf::from("first"),

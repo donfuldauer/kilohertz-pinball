@@ -516,11 +516,22 @@ impl SimTraceWriter {
     /// its bat to move, until its release: a release marks every pending
     /// watch of the same input released at `tick` (retired at the end of
     /// `tick` unless that tick raised the bat, [`end_tick`](Self::end_tick)).
+    /// A press of an input retires, before it is watched itself, every
+    /// pending watch of the same input released in this same `tick`: the
+    /// step runs once per tick, so this tick's raise belongs to the new
+    /// press, never to the superseded one. A watch released in `tick` with
+    /// no later press of its input in `tick` keeps its inclusive release
+    /// tick. Allocation-free (`retain` on the fixed-capacity list).
     pub fn delivered(&mut self, tick: u64, ev: &InputEvent) {
         let InputEventKind::Button { input, pressed } = ev.kind else {
             return;
         };
-        if !pressed {
+        if pressed {
+            // CodeRabbit round 12 finding 15: a same-tick re-press supersedes
+            // the released press, which must not claim the re-press's raise.
+            self.pending
+                .retain(|p| !(p.input == input && p.released_at == Some(tick)));
+        } else {
             for p in self.pending.iter_mut() {
                 if p.input == input && p.released_at.is_none() {
                     p.released_at = Some(tick);
@@ -1412,6 +1423,106 @@ mod tests {
             moves,
             vec![Some(2), None, Some(3), None, None, None, Some(5)]
         );
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: press A, release A and
+    /// re-press B of one input in one tick, with the bat raised at that
+    /// tick's end: the raise is B's alone (exactly one move record), A
+    /// keeps its input row.
+    #[test]
+    fn req_lat_003_same_tick_re_press_supersedes_the_released_press() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // A
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // B
+        sim.end_tick(1, &bat0(1, RAISE_THRESHOLD_RAD));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![None, None, Some(1)], "only B moved");
+        assert_eq!(t.rows.iter().filter(|r| r.move_tick.is_some()).count(), 1);
+        assert_eq!(t.rows[0].input.apply_tick, 1, "A keeps its input row");
+        assert!(t.rows[0].input.down);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: press and release in one
+    /// tick with no re-press keeps the inclusive release tick: that tick's
+    /// raise is the press's move.
+    #[test]
+    fn req_lat_003_release_tick_raise_counts_without_a_re_press() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.end_tick(1, &bat0(1, RAISE_THRESHOLD_RAD));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(1), None]);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: a re-press in a later
+    /// tick than the release leaves the released press's record alone (it
+    /// was raised at its release tick) and gets its own.
+    #[test]
+    fn req_lat_003_re_press_in_a_later_tick_is_unaffected() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // A
+        sim.end_tick(1, &bat0(1, 0.0));
+        sim.begin_tick(2 * TICK_NS, &bat0(1, 0.0));
+        sim.delivered(2, &InputEvent::button(2, l, false));
+        sim.end_tick(2, &bat0(2, 0.5));
+        sim.begin_tick(3 * TICK_NS, &bat0(2, 0.5));
+        sim.end_tick(3, &bat0(3, 0.0));
+        sim.begin_tick(4 * TICK_NS, &bat0(3, 0.0));
+        sim.delivered(4, &InputEvent::button(4, l, true)); // B
+        sim.end_tick(4, &bat0(4, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(2), None, Some(4)]);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: a press of one input
+    /// never retires another input's watch released in the same tick: left
+    /// down, left up, right down in one tick, with the left bat raised at
+    /// its end, is the left press's move (inclusive release tick); the
+    /// right press, whose bat did not rise, has none.
+    #[test]
+    fn req_lat_003_re_press_of_another_input_does_not_retire() {
+        set_now(0);
+        let (l, r) = (CabinetInput::LeftFlipper, CabinetInput::RightFlipper);
+        let mut b = left0();
+        b.bind(r, 1);
+        let (c, mut sim, _fw) = latency_trace_with_capacity(b, now, 64, 4);
+        let bats = |tick: u64, a0: f32, a1: f32| {
+            let mut s = bat0(tick, a0);
+            assert!(s.push_flipper(FlipperState {
+                id: FlipperId(1),
+                angle_rad: a1,
+                ..FlipperState::default()
+            }));
+            s
+        };
+        sim.begin_tick(TICK_NS, &bats(0, 0.0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.delivered(1, &InputEvent::button(1, r, true));
+        sim.end_tick(1, &bats(1, 0.5, 0.0));
+        // Right down, right up, left down: the right release is not
+        // superseded by the left press; the right bat rises at tick 2.
+        sim.begin_tick(2 * TICK_NS, &bats(1, 0.0, 0.0));
+        sim.delivered(2, &InputEvent::button(2, r, false));
+        sim.delivered(2, &InputEvent::button(2, l, true));
+        sim.end_tick(2, &bats(2, 0.0, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(1), None, Some(2), None, None]);
     }
 
     /// REQ-LAT-001, REQ-LAT-003 (C6): overlapping presses of different

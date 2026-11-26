@@ -15,7 +15,9 @@
 //!
 //! Environment (all optional):
 //! * `KP_PIN_APP`: the app binary (default: this build's `pin_app`;
-//!   `cargo test --release` makes it the release binary);
+//!   `cargo test --release` makes it the release binary); a relative value
+//!   is resolved against the current directory once ([`resolve_app`]), and
+//!   the preflight check and the launch use that same absolute path;
 //! * `KP_GREYBOX_BUNDLE`: the grey-box bundle (default
 //!   `<target>/greybox`, built by `tables/greybox/build.sh`);
 //! * `KP_WINDOWED_OUT`: the artifact directory (default
@@ -89,15 +91,32 @@ fn target_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from("target"), Path::to_path_buf)
 }
 
+/// The app path as launched: `app` made absolute against the current
+/// directory (`std::path::absolute`, no symlink resolution), so the
+/// preflight's file check and `Command::new` name the same file (a bare name
+/// would otherwise be searched on `PATH` by `Command::new`). An absolute
+/// path is returned as is; if the current directory cannot be read, `app`
+/// is returned unchanged.
+pub fn resolve_app(app: &Path) -> PathBuf {
+    std::path::absolute(app).unwrap_or_else(|_| app.to_path_buf())
+}
+
 impl DriverConfig {
     /// The configuration from the environment (see the module docs).
     pub fn from_env() -> Self {
-        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        Self::from_lookup(&|k: &str| std::env::var(k).ok())
+    }
+
+    /// The configuration from `lookup` (an environment-variable reader; an
+    /// empty value counts as unset). `app` is resolved with
+    /// [`resolve_app`].
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let var = |k: &str| lookup(k).filter(|v| !v.is_empty());
         Self {
-            app: var("KP_PIN_APP").map_or_else(
+            app: resolve_app(&var("KP_PIN_APP").map_or_else(
                 || PathBuf::from(env!("CARGO_BIN_EXE_pin_app")),
                 PathBuf::from,
-            ),
+            )),
             bundle: var("KP_GREYBOX_BUNDLE")
                 .map_or_else(|| target_dir().join("greybox"), PathBuf::from),
             out_dir: var("KP_WINDOWED_OUT")
@@ -1099,8 +1118,9 @@ pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), 
                 ));
             }
         }
-        if !cfg.app.is_file() {
-            return Err(format!("no app binary at {}", cfg.app.display()));
+        let app = resolve_app(&cfg.app);
+        if !app.is_file() {
+            return Err(format!("no app binary at {}", app.display()));
         }
         if !cfg.bundle.join("table.toml").is_file() {
             return Err(format!(
@@ -1126,16 +1146,19 @@ pub fn startup_failed(cfg: &DriverConfig, what: &str) -> String {
 }
 
 /// Starts the app under `display`, writing its trace to `trace_path`, with
-/// stderr piped.
+/// stderr piped. The executable is [`resolve_app`] of `cfg.app`, the path
+/// [`preflight`] checked.
 ///
 /// # Errors
-/// `starting <app>: <io error>` when the process cannot be spawned.
+/// `starting <app>: <io error>` (the resolved path) when the process cannot
+/// be spawned.
 pub fn spawn_app(
     cfg: &DriverConfig,
     display: &str,
     trace_path: &Path,
 ) -> Result<std::process::Child, String> {
-    Command::new(&cfg.app)
+    let app = resolve_app(&cfg.app);
+    Command::new(&app)
         .arg("--table")
         .arg(&cfg.bundle)
         .arg("--latency-trace")
@@ -1150,7 +1173,31 @@ pub fn spawn_app(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("starting {}: {e}", cfg.app.display()))
+        .map_err(|e| format!("starting {}: {e}", app.display()))
+}
+
+/// Combines the drive result with the result of writing the stderr log to
+/// `log_path`. A write failure is never dropped: with a successful drive it
+/// is the failure (`writing <path>: <error>`); with a failed drive the drive
+/// failure stays first (primary) and the write failure follows on its own
+/// line.
+///
+/// # Errors
+/// The drive failed, or the log could not be written.
+pub fn with_log_write<T>(
+    driven: Result<T, String>,
+    log_write: std::io::Result<()>,
+    log_path: &Path,
+) -> Result<T, String> {
+    let log_err = log_write
+        .err()
+        .map(|e| format!("writing {}: {e}", log_path.display()));
+    match (driven, log_err) {
+        (Ok(d), None) => Ok(d),
+        (Ok(_), Some(l)) => Err(l),
+        (Err(d), None) => Err(d),
+        (Err(d), Some(l)) => Err(format!("{d}\n{l}")),
+    }
 }
 
 /// Runs the app once (see the module docs).
@@ -1162,7 +1209,9 @@ pub fn spawn_app(
 /// preflight's after removing the previous run's artifacts, or
 /// [`startup_failed`] when Xvfb or the app did not start); every error after
 /// the app started has also written `pin_app_stderr.log` and carries the
-/// stderr tail.
+/// stderr tail. A failure to write `pin_app_stderr.log` is itself an error
+/// naming the path ([`with_log_write`]; after a failed drive it follows the
+/// drive failure).
 pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     preflight(cfg, &have)?;
     let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
@@ -1172,7 +1221,7 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     eprintln!(
         "windowed: display {display}, LP_NUM_THREADS={}, app {}, run {} ms",
         cfg.lp_num_threads,
-        cfg.app.display(),
+        resolve_app(&cfg.app).display(),
         cfg.run_ms
     );
     let trace_path = cfg.trace_path();
@@ -1210,7 +1259,8 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
         &mut || drain_start.elapsed(),
         &mut || std::thread::sleep(Duration::from_millis(5)),
     );
-    let _ = std::fs::write(cfg.out_dir.join("pin_app_stderr.log"), &stderr);
+    let log_path = cfg.out_dir.join("pin_app_stderr.log");
+    let driven = with_log_write(driven, std::fs::write(&log_path, &stderr), &log_path);
     let failed = |what: String| -> String {
         let _ = std::fs::write(
             cfg.out_dir.join("summary.txt"),

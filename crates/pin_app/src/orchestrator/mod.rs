@@ -222,8 +222,9 @@ impl<S: SimStep> SimLoop<S> {
     /// recording unchanged, and the refusal is counted
     /// ([`late_trace_refusals`](Self::late_trace_refusals)). It never
     /// panics. Installing at tick 0 works with or without a later
-    /// [`set_epoch_ns`](Self::set_epoch_ns), which restarts the writer at
-    /// the new epoch.
+    /// [`set_epoch_ns`](Self::set_epoch_ns): while no tick has run, that
+    /// call restarts the writer at the new epoch; once a tick has run it
+    /// leaves the writer's marks and stall state as they are.
     pub fn set_latency_trace(&mut self, mut writer: trace::SimTraceWriter) {
         if self.tick != 0 {
             self.late_trace_refusals = self.late_trace_refusals.saturating_add(1);
@@ -252,9 +253,19 @@ impl<S: SimStep> SimLoop<S> {
     /// `k · TICK_NS`), because every delivered event is re-stamped to
     /// `raw − epoch_ns` (REQ-LAT-004). An epoch of 0 (the default) makes the
     /// re-stamp the identity.
+    ///
+    /// The epoch may change at any time, also between executed ticks. An
+    /// installed latency-trace writer ([`set_latency_trace`](Self::set_latency_trace))
+    /// is restarted at the new epoch only while no tick has run
+    /// ([`tick`](Self::tick) `== 0`), so the first executed tick records the
+    /// epoch as its previous tick end and drain. Once a tick has run the
+    /// writer is left as it is: the next tick's previous marks stay those
+    /// of the last executed tick, and its stall state is kept.
     pub fn set_epoch_ns(&mut self, epoch_ns: u64) {
         self.epoch_ns = epoch_ns;
-        if let Some(t) = self.trace.as_mut() {
+        if self.tick == 0
+            && let Some(t) = self.trace.as_mut()
+        {
             t.start(epoch_ns);
         }
     }
@@ -1019,5 +1030,105 @@ mod late_trace_tests {
             c2.collect(0).rows.is_empty(),
             "the refused writer recorded nothing"
         );
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 9: epoch changes before the
+    /// first tick (in either order with the install) restart the writer, so
+    /// tick 1 records the last epoch as its previous tick end and drain.
+    #[test]
+    fn req_lat_003_epoch_change_before_tick_one_restarts_the_writer() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH - 7 * TICK_NS);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        l.set_epoch_ns(EPOCH);
+        run_with_presses(&mut tx, &mut l, 1, 2);
+        let t = c.collect(0);
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0].input.prev_tick_end_sdl_ns, EPOCH);
+        assert_eq!(t.rows[0].input.prev_drain_sdl_ns, EPOCH);
+        assert_prev_marks(&t, EPOCH);
+    }
+
+    /// REQ-LAT-003, REQ-LAT-004, gate 163 round 12 finding 9: an epoch
+    /// change between two executed ticks updates the epoch (the next tick's
+    /// end and gate) but keeps the writer's marks: a press applied by tick 2
+    /// records tick 1's end and drain as its previous marks, never the new
+    /// epoch, and is not flagged as a stall.
+    #[test]
+    fn req_lat_003_epoch_change_after_tick_one_keeps_marks() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        run_with_presses(&mut tx, &mut l, 1, 1);
+        let (end1, drain1) = (tick_end_ns(EPOCH, 1), tick_end_ns(EPOCH, 1) + 50_000);
+        // A new epoch 0.5 ms later, mid-run: tick 2 drains 1.5 ms after
+        // tick 1 (no stall), but 2.05 ms after the new epoch.
+        let e2 = EPOCH + 500_000;
+        l.set_epoch_ns(e2);
+        assert_eq!(l.epoch_ns(), e2);
+        let end2 = tick_end_ns(e2, 2);
+        tx.push(InputEvent::button(
+            end2 - 1,
+            CabinetInput::LeftFlipper,
+            true,
+        ))
+        .unwrap();
+        NOW.with(|c| c.set(end2 + 50_000));
+        l.run_ticks(1);
+        let t = c.collect(0);
+        assert_eq!(t.rows.len(), 2);
+        let r = &t.rows[1].input;
+        assert_eq!(r.apply_tick, 2);
+        assert_eq!(r.apply_tick_end_sdl_ns, end2, "the new epoch gates tick 2");
+        assert_eq!(
+            r.prev_tick_end_sdl_ns, end1,
+            "tick 1's end, not the new epoch"
+        );
+        assert_eq!(
+            r.prev_drain_sdl_ns, drain1,
+            "tick 1's drain, not the new epoch"
+        );
+        assert_eq!(r.drain_sdl_ns, end2 + 50_000);
+        assert!(!r.stall, "1.5 ms after tick 1's drain is no stall");
+    }
+
+    /// REQ-LAT-003, REQ-LAT-004, gate 163 round 12 finding 9: a stall
+    /// recorded by tick 1 survives an epoch change before tick 2: a press
+    /// stamped in that stall and applied by tick 2 (same catch-up batch)
+    /// keeps the stall's start (the sim start) and end (tick 1's drain).
+    #[test]
+    fn req_lat_004_epoch_change_after_tick_one_keeps_the_stall() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        // Tick 1 drains 20 ms after the sim start: a stall.
+        let drain1 = EPOCH + 20_000_000;
+        NOW.with(|c| c.set(drain1));
+        l.run_ticks(1);
+        // A new epoch 0.5 ms later, mid-run; tick 2 (ending at e2 + 2 ms,
+        // before tick 1's drain) is in tick 1's catch-up batch.
+        let e2 = EPOCH + 500_000;
+        l.set_epoch_ns(e2);
+        let end2 = tick_end_ns(e2, 2);
+        assert!(end2 <= drain1);
+        let stamp = EPOCH + 2_000_000;
+        tx.push(InputEvent::button(stamp, CabinetInput::LeftFlipper, true))
+            .unwrap();
+        NOW.with(|c| c.set(drain1 + 50_000));
+        l.run_ticks(1);
+        let t = c.collect(0);
+        assert_eq!(t.rows.len(), 1);
+        let r = &t.rows[0].input;
+        assert_eq!(r.apply_tick, 2);
+        assert!(r.stall, "tick 1's stall is kept");
+        assert_eq!(
+            r.prev_drain_sdl_ns, EPOCH,
+            "the stall starts at the sim start"
+        );
+        assert_eq!(r.drain_sdl_ns, drain1, "the stall ends at tick 1's drain");
+        assert_eq!(r.prev_tick_end_sdl_ns, tick_end_ns(EPOCH, 1));
     }
 }
