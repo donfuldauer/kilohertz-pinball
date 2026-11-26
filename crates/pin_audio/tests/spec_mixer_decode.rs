@@ -19,13 +19,11 @@ fn int_tol(bits: u32) -> f32 {
 
 #[track_caller]
 fn assert_samples(s: &Sample, expected: &[f32], tol: f32, what: &str) {
-    assert_eq!(
-        s.data().len(),
-        2 * s.frames(),
-        "{what}: data len = 2·frames"
-    );
-    assert_eq!(s.data().len(), expected.len(), "{what}: length");
-    for (i, (a, b)) in s.data().iter().zip(expected).enumerate() {
+    // Compared through the stereo view (mono is stored once, #227).
+    let d = s.to_stereo_vec();
+    assert_eq!(d.len(), 2 * s.frames(), "{what}: data len = 2·frames");
+    assert_eq!(d.len(), expected.len(), "{what}: length");
+    for (i, (a, b)) in d.iter().zip(expected).enumerate() {
         assert!(
             (a - b).abs() <= tol,
             "{what}: sample {i} is {a}, expected {b} (tol {tol})"
@@ -62,7 +60,7 @@ fn wav_float_mono_goes_to_both_channels() {
     let src = [0.5, -0.25, 0.125, 0.0, 1.0];
     let s = decoded(decode(&wav_f32(1, RATE, &src), RATE));
     assert_eq!(s.frames(), 5);
-    assert_eq!(s.data(), dup(&src).as_slice());
+    assert_eq!(s.to_stereo_vec(), dup(&src));
 }
 
 #[test]
@@ -185,7 +183,7 @@ fn resample_2x_up_is_linear_interpolation() {
     let src = [0.0f32, 0.5, -0.5, 1.0, 0.25, 0.25, -1.0, 0.0];
     let s = decoded(decode(&wav_f32(1, 22_050, &src), 44_100));
     assert_len_about(s.frames(), 16, "2x up");
-    let d = s.data();
+    let d = s.to_stereo_vec();
     for k in 0..src.len() {
         assert_close(d[2 * (2 * k)], src[k], 1e-6, "even frame, left");
         assert_close(d[2 * (2 * k) + 1], src[k], 1e-6, "even frame, right");
@@ -206,7 +204,7 @@ fn resample_2x_down_picks_every_other_frame() {
         .collect();
     let s = decoded(decode(&wav_f32(1, 48_000, &src), 24_000));
     assert_len_about(s.frames(), 32, "2x down");
-    let d = s.data();
+    let d = s.to_stereo_vec();
     for i in 0..s.frames().min(32) {
         assert_close(d[2 * i], src[2 * i], 1e-6, "left");
         assert_close(d[2 * i + 1], src[2 * i], 1e-6, "right");
@@ -227,7 +225,7 @@ fn resample_keeps_dc_and_scales_length() {
         let s = decoded(decode(&wav_i16(2, file_rate, &src), mixer_rate));
         let what = format!("{file_rate} -> {mixer_rate}");
         assert_len_about(s.frames(), mixer_rate as usize / 10, &what);
-        assert_eq!(s.data().len(), 2 * s.frames());
+        assert_eq!(s.data().len(), s.channels() * s.frames());
         assert_all_frames(s.data(), 0.25, -0.5, 1e-4, &what);
     }
 }
@@ -262,7 +260,7 @@ fn resample_of_a_ramp_stays_on_the_ramp_with_independent_channels() {
 // ---------------------------------------------------------------- Ogg Vorbis
 
 fn stats(s: &Sample, n: usize, freq: f64, rate: f64) -> (f64, f64, f64, usize) {
-    let d = s.data();
+    let d = s.to_stereo_vec();
     let (mut sxy, mut sxx, mut syy, mut peak) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut crossings = 0;
     for i in 0..n {
@@ -287,14 +285,14 @@ fn stats(s: &Sample, n: usize, freq: f64, rate: f64) -> (f64, f64, f64, usize) {
 #[test]
 fn ogg_mono_fixture_decodes_to_a_plausible_sine() {
     let s = decoded(decode(OGG_MONO_48K, 48_000));
-    assert_eq!(s.data().len(), 2 * s.frames());
+    assert_eq!(s.to_stereo_vec().len(), 2 * s.frames());
     // Lenient length here (the strict one is its own test below).
     assert!(
         (12_000..=12_000 + 4_096).contains(&s.frames()),
         "0.25 s at 48 kHz, got {} frames",
         s.frames()
     );
-    for f in s.data().chunks_exact(2) {
+    for f in s.to_stereo_vec().chunks_exact(2) {
         assert_eq!(f[0], f[1], "mono → both channels");
         assert!(f[0].is_finite() && f[0].abs() <= 1.0);
     }
@@ -493,7 +491,7 @@ fn truncated_valid_wavs_never_panic() {
     for bytes in &files {
         for cut in 0..bytes.len() {
             if let Ok(s) = decode(&bytes[..cut], RATE) {
-                assert_eq!(s.data().len(), 2 * s.frames());
+                assert_eq!(s.data().len(), s.channels() * s.frames());
                 assert!(s.frames() <= 2 * 48_000);
             }
         }
@@ -506,7 +504,7 @@ fn truncated_valid_oggs_never_panic() {
         let cuts = (0..256).chain((256..bytes.len()).step_by(7));
         for cut in cuts {
             if let Ok(s) = decode(&bytes[..cut], RATE) {
-                assert_eq!(s.data().len(), 2 * s.frames());
+                assert_eq!(s.data().len(), s.channels() * s.frames());
                 assert!(s.frames() <= 48_000);
             }
         }
@@ -528,7 +526,7 @@ fn lying_headers_never_panic_or_over_allocate() {
     let f = wav_bytes(TAG_PCM, 16, 2, RATE, &[0; 7]); // not a whole frame
     for (i, bytes) in [a, b, c, d, e, f].iter().enumerate() {
         if let Ok(s) = decode(bytes, RATE) {
-            assert_eq!(s.data().len(), 2 * s.frames(), "case {i}");
+            assert_eq!(s.data().len(), s.channels() * s.frames(), "case {i}");
             assert!(s.frames() <= 600 * 48_000, "case {i}: ten-minute cap");
         }
     }
@@ -574,7 +572,7 @@ fn bit_flipped_valid_files_never_panic() {
                 bytes[at] ^= 1 << (rng.next_u64() % 8);
             }
             if let Ok(s) = decode(&bytes, RATE) {
-                assert_eq!(s.data().len(), 2 * s.frames());
+                assert_eq!(s.data().len(), s.channels() * s.frames());
             }
         }
     }
