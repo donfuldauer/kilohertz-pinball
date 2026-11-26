@@ -161,8 +161,9 @@ pub struct PreviewArt {
     pub width: u32,
     /// Height, pixels (1..=[`PREVIEW_MAX_SIDE`]).
     pub height: u32,
-    /// `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
+    /// `width * height * 4` bytes, shared and immutable so that cloning a
+    /// [`MenuState`](crate::ui::MenuState) copies only the reference count.
+    pub rgba: std::sync::Arc<[u8]>,
 }
 
 /// Metadata of a bundle that validated.
@@ -281,8 +282,10 @@ pub fn resolve_tables_dir(configured: Option<&Path>, exe: &Path) -> PathBuf {
 
 /// The table browser's folder for a run with the command line `args`:
 /// `None` when the run names its table (any argument equal to `--table` or
-/// starting with `--table=`; a malformed `--table` is reported by the app's
-/// own argument check), else [`resolve_tables_dir`]`(configured, exe)`.
+/// starting with `--table=`). The app accepts only the separate form
+/// `--table <path>` as naming a table; `--table=<path>` is rejected with a
+/// command-line error (`reject_table_equals` in `main.rs`) before any table is
+/// loaded, so `browser_dir` returning `None` for it never starts a run. Else [`resolve_tables_dir`]`(configured, exe)`.
 #[must_use]
 pub fn browser_dir(args: &[String], configured: Option<&Path>, exe: &Path) -> Option<PathBuf> {
     if args
@@ -400,7 +403,7 @@ pub fn decode_preview(bytes: &[u8]) -> Result<PreviewArt, String> {
         file: String::new(),
         width: tw,
         height: th,
-        rgba,
+        rgba: rgba.into(),
     })
 }
 

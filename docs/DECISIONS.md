@@ -9274,3 +9274,82 @@ requiring a new single review PR after a split (contradicts P6 step 3).
 
 **Alternatives.** Release only `held.release_all()` (owed releases lost). Neutralise every pad-driven analog axis as well (beyond the finding; would snap a still-held trigger to 0 until it next moves).
 
+## #163 gate round 9 — cabinet floor height must vary with x
+
+**Decision.** CodeRabbit comment 4703749514 on `docs/SPEC.md` (REQ-BUILD-002) is accepted as a SPEC erratum and deferred. Proposed SPEC wording: "their height above the floor is that plus the body bottom's height at that point, which the legs give: the body bottom is the plane through the four leg-top centres (each leg's effective length less `body.leg_overlap`), so its height at cabinet `(x, y)` varies linearly with `y` between the front and rear leg centrelines and with `x` between the left and right leg centrelines; with equal left and right legs it reduces to the present rule." The implementation (`body_bottom_height_mm(x, y)`, `floor_height_mm(x, y, z)`, a breaking `pin_core` API change under R2) is work-unit #217 (KP-103), which depends on #89 and on the owner's SPEC edit (`[P8 spec] [KP-009-floor-height-xy]`).
+
+**Rationale.** With the right legs longer than the left, REQ-CAB-008 gives a positive body roll, but a height rule linear in `y` only gives the body bottom the same height at every `x`, so it cannot represent that roll. Nothing outside `cabinet.rs` and its tests consumes `floor_height_mm`, so no output is wrong today. SPEC edits are owner-only (P8), and a public `pin_core` signature change needs R2.
+
+**Alternatives.** Change the code now against the SPEC text (would contradict the SPEC until the owner edits it); edit SPEC.md directly (P8).
+
+## #163 gate round 9 — gpu-tests-cross budget fails instead of clamping
+
+**Decision.** When the time left for the test step after the cache-save reserve (8 min on a miss, 1 min on an exact hit) is below `MIN_TEST_MIN` (10), the `Test-step budget` step emits `::error::` and exits 1 before the test step; no `minutes=` is written and the reserve is never reduced (CodeRabbit comment 4703749438).
+
+**Rationale.** The roughly 15 min test run cannot finish in under 10 min, and clamping to 1 min let the test step eat the cache-save reserve so the rust-cache post-step might not save. Failing early keeps the save (cache-on-failure), so the next run starts warm.
+
+**Alternatives.** Skip the test step silently (looks green with no GPU coverage); clamp to a minimum (what the review rejected).
+
+## #163 gate round 9 — roll clearance measured from the documented origin
+
+**Decision.** The containment checks (REQ-CAB-005) place the playfield from its documented origin, the front-left surface corner at cabinet (offset_x − width/2, inset, height) (REQ-BUILD-002). Mount roll turns the playfield about its left edge through that origin, so the right corners rise by width × sin(roll) and the left corners stay at mount.height; negative roll lowers the right side. Pitch raises the rear edge by length × sin(pitch) and puts it at y = inset + length × cos(pitch). The glass top sits (glass height + sheet thickness) × cos(pitch) × cos(roll) above each surface corner (small-angle composition, f64, libm). Every corner, surface and glass top, must be at or below the side wall top at its own y; for the backbox height test the highest glass-top corner governs (CodeRabbit comment 4703749502).
+
+**Rationale.** SPEC Appendix A fixes the origin at the front-left corner and says positive roll raises the right side. A centreline pivot understated the raised side: at 45° roll and height 80 the right corner is at 443.5 mm against a 404.7 mm wall, and the old check accepted it. At roll 0 the new numbers are bit-identical to the old pitch-only edge heights, so every preset and fixture is unchanged.
+
+**Alternatives.** Keep the centreline pivot with |sin| (contradicts the documented origin); pivot about the right edge for negative roll (the origin is fixed at front-left); full rotation-matrix composition (SPEC specifies independent angles with small-angle composition).
+
+## #163 gate round 9 — Vfs opens only regular files
+
+**Decision.** `Vfs::open_with_limits` refuses any path that is not a folder or a regular file: after the folder branch and the archive-extension check it returns `AssetError::Io("{path}: not a regular file")` when `!metadata.is_file()`, before `File::open`. The extension check stays first, so non-archive inputs keep their old error; symlinks to regular archives still open because `metadata` follows them. Both the table browser scan and table load go through this check (CodeRabbit comment 4703749487, second finding, CWE-400). The narrow race where the path's type changes between `metadata` and `open` is accepted: exploiting it needs write access to the table directory, and reads stay bounded by `read_bounded`.
+
+**Rationale.** A FIFO, device or socket named `x.zip` would block `File::open` or stall reads on the browser's I/O worker, a denial of service reachable from a table folder; R11 treats table inputs as untrusted. Checking the file type first is the minimal change and loosens no `ZipLimits` cap.
+
+**Alternatives.** Open with `O_NONBLOCK` and fstat the handle (closes the race but needs platform-specific code); refuse symlinks (breaks symlinked archives, which must keep working).
+
+## #163 gate round 9 — unregistered LCD scene images are skipped; ScoreTexture::set_image registers them
+
+**Decision.** The owner of an LCD `ScoreTexture` registers scene images with `ScoreTexture::set_image(ctx, file, image)`, which forwards through `ScoreRenderer::set_image` to `LcdRenderer::set_image`. It works before or after the first `update`; a successful call makes the next `update` redraw, and setting the same file again replaces the image in place. An `LcdItem::Image` whose file is not registered is skipped without error or log, and the rest of the scene still draws. A DMD score display refuses every image with `GpuError::InvalidArgument` (a DMD has no image layers). An invalid or oversized image is refused with `InvalidArgument`; the previous image of that file stays and the display is not marked changed (CodeRabbit comment 4703749506).
+
+**Rationale.** Bundles are untrusted (D25), so a missing image must never abort or blank the display. An explicit registration method keeps `ScoreTexture::new` unchanged (additive API) and matches the existing `LcdRenderer::set_image` contract; the render path does no logging, keeping I/O off the redraw path.
+
+**Alternatives.** Pass an `ImageSet` to `ScoreTexture::new` (changes the constructor; no later replacement); make an unregistered image an error from `update` (a bundle defect would blank the display); draw a placeholder for missing images (visible debug art).
+
+## #163 gate round 9 — close before swap
+
+**Decision.** The render thread records every window `CloseRequested` the close policy accepts, including events still queued in the window ring when it is stopped (one `record_close` helper, policy single-sourced in `ClosePolicy::quits`). After joining the old engine, `stop_for_swap` returns its final counters when `close_requested` is set; `swap_table` then returns `Swap::Closed`, starts nothing, and the event loop shuts down with those counters (CodeRabbit comment 4703749444).
+
+**Rationale.** A close the user issued before the swap must end the app regardless of render-thread timing; the join is a deterministic point to read the flag.
+
+**Alternatives.** Record closes in the main-thread forwarder (duplicates the close policy); start the new table then quit (opens a table the user asked to leave).
+
+## #163 gate round 9 — latency trace merged across engines
+
+**Decision.** After each successful table swap the stopped engine's trace collector is collected and appended to an accumulator; at shutdown `final_trace` appends the last engine and writes one file. `CollectedTrace::append` concatenates in engine order and offsets later frame numbers (frame table and row `frame` fields) and `event_seq` by one past the previous last value; tick numbers stay engine-local, overflows are summed and the last `run_end_ns` wins. The CSV format is unchanged. After a failed or cancelled swap the old collector is still held and collected at shutdown (CodeRabbit comment 4703749460). The run end is sampled when the event loop exits, before the browser worker is joined (comment 4703749463).
+
+**Rationale.** Each engine is joined separately, so a tick never meets another engine's frame; offsetting keeps frame and event numbers unique and ascending without a format change.
+
+**Alternatives.** One shared collector across engines (clocks and rings restart per engine); one file per engine (breaks the single `--latency-trace <file>` contract); dropping earlier engines (the reported loss).
+
+## #163 gate round 9 — browser selection must not alias the trace file
+
+**Decision.** While tracing, the table-browser I/O worker runs a guard before each load that compares the requested bundle with the trace destination using the same `is_bundle_file` logic as the startup `--table` check. On a match the load is not performed and the reply is a failed load with `--latency-trace: <path> is the selected table bundle`; the archive is untouched and the menu shows the error. A missing or separate destination is unaffected (CodeRabbit comment 4703749453).
+
+**Rationale.** The check stays on the I/O worker (no file I/O on the main thread) and fires before the archive is read.
+
+**Alternatives.** Check on the main thread when the load reply arrives (extra main-thread file I/O, wasted load); refuse at trace commit (the archive would already be overwritten).
+
+## #163 gate round 9 — I/O worker scan coalescing and submission errors
+
+**Decision.** `IoWorker::request_scan` queues a scan when none is in flight; otherwise the latest directory becomes the single follow-up, queued when the in-flight scan's reply arrives. Load requests are never held back (comment 4703749467). `try_request` returns an error (`the I/O worker is not running` / `the I/O worker has stopped`) when no reply can come; for a load the app passes it to `finish_load(id, Err)` so the menu leaves Loading, and for a scan it logs on stderr (comment 4703749471). `request` keeps its `()` signature.
+
+**Rationale.** The coalescing state is main-thread only (no lock); a burst costs at most two scans and a load waits behind at most the scan in flight.
+
+**Alternatives.** An atomic cleared by the worker (cross-thread state for no gain); change `request` to return `Result` (touches every caller); drop scans while one is in flight (loses the requested follow-up).
+
+## #163 gate round 9 — `--table=` is rejected
+
+**Decision.** `--table=<path>` is refused with `pin_app: --table=<path> is not supported; use --table <path>` and exit status 1, at the start of the windowed run and before the headless path; the `browser_dir` doc comment says the same (CodeRabbit comment 4703749482).
+
+**Rationale.** Every reader of `--table` takes only the separate form; an early, clear error removes the silent "no table, no browser" run.
+
+**Alternatives.** Accept `--table=` in every reader; leave it unreported.

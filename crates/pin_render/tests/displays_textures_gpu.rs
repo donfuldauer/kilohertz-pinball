@@ -839,3 +839,240 @@ fn req_view_002_validation_refuses_bad_input() {
         "bad base image"
     );
 }
+
+// ---------- 8. LCD images registered on the score texture ----------
+// #163 gate review comment 4703749506: `ScoreTexture::set_image` registers
+// the images of LCD scene image layers; an unregistered file is skipped.
+
+/// LCD canvas of the image tests (16:9, the texture has the same aspect so
+/// the canvas fills it 1:1).
+const IMG_LCD: (u32, u32) = (256, 144);
+/// Background of the image scene.
+const IMG_BG: [u8; 3] = [0x14, 0x1e, 0x28];
+/// Flat colours of the registered image (opaque).
+const IMG_A: [u8; 4] = [200, 50, 100, 255];
+const IMG_B: [u8; 4] = [30, 220, 60, 255];
+/// Image rectangle on the canvas: x 0.25..0.75, y 0.25..0.75.
+const IMG_RECT: (u32, u32, u32, u32) = (64, 36, 192, 108);
+
+/// One LCD scene with a single image layer (file `art/flat.png`, white tint,
+/// opaque) over `IMG_BG`, composed into its draw list.
+fn image_scene_list() -> (LcdSpec, LcdDrawList) {
+    let scene = Scene::from_toml_str(
+        r##"
+schema_version = 1
+duration_ms = 0
+background = "#141e28"
+
+[[layers]]
+kind = "image"
+file = "art/flat.png"
+x = 0.25
+y = 0.25
+w = 0.5
+h = 0.5
+align = "left"
+valign = "top"
+color = "#ffffff"
+"##,
+    )
+    .expect("image scene parses");
+    let spec = LcdSpec::new(IMG_LCD.0, IMG_LCD.1).unwrap();
+    let list = LcdDrawList::compose(&spec, &scene, 0, &ScoreState::default(), &ImageSet::new());
+    assert_eq!(list.background, IMG_BG);
+    assert!(
+        matches!(list.items.as_slice(), [LcdItem::Image { file, .. }] if file == "art/flat.png"),
+        "the scene composes one image item: {:?}",
+        list.items
+    );
+    (spec, list)
+}
+
+/// Mean of the image rectangle (inset by 2 px against edge filtering) and
+/// of the background strip left of it, on mip `level` of `img`.
+fn image_and_background_means(img: &Img, level: u32) -> ([f64; 4], [f64; 4]) {
+    let (x0, y0, x1, y1) = IMG_RECT;
+    let s = |v: u32| v >> level;
+    let inside = mean(img, s(x0) + 2, s(y0) + 2, s(x1) - 2, s(y1) - 2);
+    let outside = mean(img, 0, 0, s(x0) - 2, img.h);
+    (inside, outside)
+}
+
+fn rgb_close(what: &str, got: [f64; 4], want: [u8; 4], tol: f64) {
+    for c in 0..4 {
+        assert!(
+            (got[c] - f64::from(want[c])).abs() <= tol,
+            "{what}: channel {c} mean {got:?} vs {want:?} (tolerance {tol})"
+        );
+    }
+}
+
+const BG_RGBA: [u8; 4] = [IMG_BG[0], IMG_BG[1], IMG_BG[2], 255];
+
+/// #97 / SPEC §7 (F.4), REQ-VIEW-002, R12 (a): an image registered with
+/// `ScoreTexture::set_image` renders in its layer's rectangle (region mean =
+/// the image colour), the rest shows the background, and mip levels 0, 1
+/// and 2 agree on both means.
+#[test]
+fn req_view_002_lcd_registered_image_renders() {
+    let (_g, ctx) = setup!("req_view_002_lcd_registered_image_renders");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .expect("a valid image registers");
+    assert!(t.update(ctx, &DisplayContent::Lcd(list.clone())));
+    for level in 0..3 {
+        let lv = read_level(ctx, t.texture(), w, h, level);
+        let (inside, outside) = image_and_background_means(&lv, level);
+        rgb_close(
+            &format!("registered image, mip {level}"),
+            inside,
+            IMG_A,
+            1.0,
+        );
+        rgb_close(&format!("background, mip {level}"), outside, BG_RGBA, 1.0);
+        if level == 0 {
+            save("lcd_image_registered_mip0", &lv);
+        }
+    }
+    // The texture equals the offscreen LCD renderer given the same image.
+    let mut images = ImageSet::new();
+    images.insert("art/flat.png", solid(8, 8, IMG_A));
+    let oracle = render_lcd_to_image(ctx, spec, &list, &images, w, h).unwrap();
+    assert_matches_oracle(
+        "lcd registered image",
+        &read_level(ctx, t.texture(), w, h, 0),
+        &oracle,
+    );
+}
+
+/// #97, documented behaviour: an image layer whose file is not registered
+/// is skipped (no error); its rectangle shows the background.
+#[test]
+fn req_view_002_lcd_unregistered_image_is_skipped() {
+    let (_g, ctx) = setup!("req_view_002_lcd_unregistered_image_is_skipped");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    // Another file is registered; the scene's file is not.
+    t.set_image(ctx, "art/other.png", &solid(4, 4, IMG_B))
+        .unwrap();
+    assert!(t.update(ctx, &DisplayContent::Lcd(list)));
+    let lv = read_level(ctx, t.texture(), w, h, 0);
+    let (inside, outside) = image_and_background_means(&lv, 0);
+    rgb_close("unregistered image rectangle", inside, BG_RGBA, 1.0);
+    rgb_close("background", outside, BG_RGBA, 1.0);
+    save("lcd_image_unregistered_mip0", &lv);
+}
+
+/// #97: registering the image after the first draw redraws on the next
+/// update with unchanged content, and setting the file again replaces the
+/// image in place (the output changes to the new colour).
+#[test]
+fn req_view_002_lcd_image_set_later_and_replaced() {
+    let (_g, ctx) = setup!("req_view_002_lcd_image_set_later_and_replaced");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    assert!(t.update(ctx, &content));
+    assert!(
+        !t.update(ctx, &content),
+        "unchanged content does not redraw"
+    );
+    let before = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close(
+        "before registration",
+        image_and_background_means(&before, 0).0,
+        BG_RGBA,
+        1.0,
+    );
+
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .unwrap();
+    assert!(
+        t.update(ctx, &content),
+        "set_image marks the display changed"
+    );
+    let a = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close("image A", image_and_background_means(&a, 0).0, IMG_A, 1.0);
+    assert!(!t.update(ctx, &content));
+
+    t.set_image(ctx, "art/flat.png", &solid(16, 4, IMG_B))
+        .unwrap();
+    assert!(t.update(ctx, &content), "replacing the image redraws");
+    let b = read_level(ctx, t.texture(), w, h, 0);
+    let (inside, outside) = image_and_background_means(&b, 0);
+    rgb_close("image B (replaced in place)", inside, IMG_B, 1.0);
+    rgb_close("background after replace", outside, BG_RGBA, 1.0);
+    save("lcd_image_replaced_mip0", &b);
+}
+
+/// #97, D25, R11: an invalid or oversized image is refused with
+/// `InvalidArgument` (never a panic), does not mark the display changed,
+/// and the previous image of that file stays. A DMD score texture refuses
+/// every image (it has no image layers).
+#[test]
+fn req_view_002_lcd_bad_image_refused_previous_stays() {
+    let (_g, ctx) = setup!("req_view_002_lcd_bad_image_refused_previous_stays");
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .unwrap();
+    assert!(t.update(ctx, &content));
+    let bad_images = [
+        (
+            "short pixel buffer",
+            RgbaImage {
+                width: 4,
+                height: 4,
+                pixels: vec![0; 10],
+            },
+        ),
+        (
+            "zero size",
+            RgbaImage {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            },
+        ),
+        ("wider than the device limit", solid(max + 1, 1, IMG_B)),
+        ("taller than the device limit", solid(1, max + 1, IMG_B)),
+    ];
+    for (what, img) in &bad_images {
+        assert!(
+            matches!(
+                t.set_image(ctx, "art/flat.png", img),
+                Err(GpuError::InvalidArgument(_))
+            ),
+            "{what} is refused with InvalidArgument"
+        );
+        assert!(
+            !t.update(ctx, &content),
+            "{what}: a refused image does not mark the display changed"
+        );
+    }
+    t.mark_dirty();
+    assert!(t.update(ctx, &content));
+    let lv = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close(
+        "previous image stays after refusals",
+        image_and_background_means(&lv, 0).0,
+        IMG_A,
+        1.0,
+    );
+
+    let dmd = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();
+    let mut d = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(dmd), 256, 64).unwrap();
+    match d.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A)) {
+        Err(GpuError::InvalidArgument(msg)) => {
+            assert!(msg.contains("DMD"), "message names the DMD: {msg}")
+        }
+        other => panic!("a DMD score texture refuses images: {other:?}"),
+    }
+}

@@ -507,8 +507,18 @@ impl MenuController {
     /// [`take_rescan_request`](Self::take_rescan_request). Disabled (the
     /// default), a load fails at once with [`LOAD_NOT_WIRED`] and a rescan
     /// scans `tables_dir` here when it is set.
+    ///
+    /// Disabling drops a queued rescan and completes a queued, untaken load
+    /// with [`LOAD_NOT_WIRED`] (the menu shows `Failed` and is republished),
+    /// so no request outlives the browser.
     pub fn set_browser_enabled(&mut self, on: bool) {
         self.browser = on;
+        if !on {
+            self.rescan_request = false;
+            if let Some((id, _)) = self.load_request.take() {
+                self.finish_load(id, Err(LOAD_NOT_WIRED.to_owned()));
+            }
+        }
     }
 
     /// The menu's table load request since the previous call, once: its id

@@ -1230,9 +1230,7 @@ fn render_thread(
     while !shutdown.load(Ordering::Acquire) {
         if let Some(rx) = window_events.as_mut() {
             while let Some(ev) = rx.pop() {
-                if ev.kind == WindowEventKind::CloseRequested && close_policy.quits(ev.window) {
-                    stats.close_requested.store(true, Ordering::Relaxed);
-                }
+                record_close(&ev, close_policy, stats);
                 match presenter.as_mut() {
                     Some(Presenter::Debug(_, set)) => set.handle_window_event(&ev),
                     Some(Presenter::Table(_, s)) => s.handle_window_event(&ev),
@@ -1352,9 +1350,29 @@ fn render_thread(
             std::thread::park_timeout(idle_period);
         }
     }
+    // The loop stopped (a table swap or shutdown): a close request still
+    // queued in the window ring is recorded too, so once the main thread has
+    // joined this thread, `close_requested` reflects every close it pushed
+    // before stopping it, whatever this loop had popped (gate 163 round 9,
+    // review thread 4703749444). The other events are moot: the surfaces go
+    // now.
+    if let Some(rx) = window_events.as_mut() {
+        while let Some(ev) = rx.pop() {
+            record_close(&ev, close_policy, stats);
+        }
+    }
     // Surfaces drop here, on the render thread, before the main thread
     // destroys the windows (it joins this thread first).
     drop(presenter);
+}
+
+/// Records a window `CloseRequested` that `policy` accepts
+/// ([`ClosePolicy::quits`]) in `stats` (the one place the close policy is
+/// applied).
+fn record_close(ev: &WindowEvent, policy: ClosePolicy, stats: &OrchestratorStats) {
+    if ev.kind == WindowEventKind::CloseRequested && policy.quits(ev.window) {
+        stats.close_requested.store(true, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -1594,5 +1612,55 @@ mod tests {
         assert_eq!(drain_display_commands::<Recorder>(&mut rx, None, 78), 1);
         assert_eq!(drain_display_commands(&mut rx, Some(&mut table), 79), 0);
         assert_eq!(table.0.len(), 2);
+    }
+
+    /// Runs `render_thread` with shutdown already requested (its loop never
+    /// pops the window ring: the state a table swap leaves when it stops a
+    /// render thread that had not drained the ring yet) and returns whether
+    /// the stats then hold a close request.
+    fn close_after_stop(policy: ClosePolicy, events: &[WindowEvent]) -> bool {
+        let (mut tx, rx) = pin_core::spsc::channel(16);
+        for ev in events {
+            tx.push(*ev).unwrap();
+        }
+        let (_writer, reader) = TripleBuffer::new(FrameStateSnapshot::default());
+        let cfg = RenderConfig {
+            window_events: Some(rx),
+            close_policy: policy,
+            ..RenderConfig::default()
+        };
+        let stats = OrchestratorStats::default();
+        let shutdown = AtomicBool::new(true);
+        render_thread(cfg, reader, &shutdown, &stats, Instant::now());
+        stats.snapshot().close_requested
+    }
+
+    fn window_event(window: usize, kind: WindowEventKind) -> WindowEvent {
+        WindowEvent {
+            timestamp_ns: 1,
+            window,
+            kind,
+        }
+    }
+
+    /// Gate 163 round 9 #1 (review thread 4703749444, REQ-VIEW-006): a
+    /// close queued before the render thread was stopped is recorded once
+    /// the thread is joined, although its loop never popped it; the close
+    /// policy still decides (deterministic: the loop never runs).
+    #[test]
+    fn close_queued_before_stop_is_recorded() {
+        let close = |w| window_event(w, WindowEventKind::CloseRequested);
+        assert!(close_after_stop(ClosePolicy::PlayfieldOnly, &[close(0)]));
+        assert!(close_after_stop(
+            ClosePolicy::PlayfieldOnly,
+            &[
+                window_event(0, WindowEventKind::Resized { w: 8, h: 8 }),
+                close(0)
+            ]
+        ));
+        assert!(!close_after_stop(ClosePolicy::PlayfieldOnly, &[close(1)]));
+        assert!(close_after_stop(ClosePolicy::AnyWindow, &[close(2)]));
+        assert!(!close_after_stop(ClosePolicy::Ignore, &[close(0)]));
+        assert!(!close_after_stop(ClosePolicy::PlayfieldOnly, &[]));
     }
 }

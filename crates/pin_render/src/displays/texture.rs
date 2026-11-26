@@ -12,8 +12,16 @@
 //! level 0 and regenerates every mip in one submit. The GPU texture object is
 //! created once and kept for the life of the display, so a material bound to
 //! [`BackglassTexture::view`] / [`ScoreTexture::view`] never needs rebuilding.
+//!
+//! LCD images: the owner of an LCD [`ScoreTexture`] registers every image the
+//! scenes' image layers use with [`ScoreTexture::set_image`] (keyed by the
+//! layer's `file`). An image item whose file is not registered is skipped
+//! when drawing: a missing bundle image never aborts rendering (untrusted
+//! bundles, D25), and registering the file is the way to draw it.
 
-use super::{BackglassDesc, BackglassRenderer, DisplayContent, ScoreDisplayConfig, ScoreRenderer};
+use super::{
+    BackglassDesc, BackglassRenderer, DisplayContent, RgbaImage, ScoreDisplayConfig, ScoreRenderer,
+};
 use crate::gpu::{GpuContext, GpuError};
 use crate::topology::Rect;
 
@@ -397,11 +405,42 @@ impl ScoreTexture {
         Ok(ScoreTexture { renderer, target })
     }
 
+    /// Registers the image that LCD scene image layers with `file = <file>`
+    /// draw (forwards to [`ScoreRenderer::set_image`]). Call it for every
+    /// image the scenes use (the bundle's [`ImageSet`](super::ImageSet)),
+    /// before or after the first [`update`](Self::update); setting the same
+    /// file again replaces its texture in place. A successful call makes the
+    /// next `update` with LCD content redraw, so the image appears without a
+    /// content change.
+    ///
+    /// An [`LcdItem::Image`](super::LcdItem::Image) whose file was never
+    /// registered is skipped when drawing (no error, no log): a missing
+    /// bundle image never aborts rendering, and the rest of the scene still
+    /// draws. Registering the file is the way to draw it.
+    ///
+    /// Errors, all [`GpuError::InvalidArgument`] and never a panic
+    /// (untrusted bundles, D25): an invalid image, or one with a side above
+    /// the device's `max_texture_dimension_2d` (a previous image of that
+    /// file stays and the display is not marked changed), and any image on a
+    /// DMD score display, which has no image layers.
+    pub fn set_image(
+        &mut self,
+        ctx: &GpuContext,
+        file: &str,
+        image: &RgbaImage,
+    ) -> Result<(), GpuError> {
+        self.renderer.set_image(ctx, file, image)
+    }
+
     /// Takes `content` and, only when [`ScoreRenderer::update`] reports a
     /// change (a different DMD frame or LCD draw list, the first call, or
-    /// after [`mark_dirty`](Self::mark_dirty)), redraws level 0 and
-    /// regenerates every mip in one submit. Returns whether it redrew;
-    /// content of the other display mode is ignored (`false`).
+    /// after [`mark_dirty`](Self::mark_dirty) or a successful
+    /// [`set_image`](Self::set_image)), redraws level 0 and regenerates every
+    /// mip in one submit. Returns whether it redrew; content of the other
+    /// display mode is ignored (`false`). LCD image items draw the image
+    /// registered for their file with [`set_image`](Self::set_image); an
+    /// image item whose file is not registered is skipped (the rest of the
+    /// draw list still draws).
     pub fn update(&mut self, ctx: &GpuContext, content: &DisplayContent) -> bool {
         if !self.renderer.update(ctx.queue(), content) {
             return false;

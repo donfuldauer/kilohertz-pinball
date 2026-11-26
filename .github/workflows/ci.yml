@@ -373,7 +373,10 @@ jobs:
       # Issue #205: the test step's timeout is the job timeout minus the time used so far minus a
       # reserve for the rust-cache post-step (8 min when it has to save, 1 min when the restored
       # cache is an exact match and the save is skipped). A timed-out step fails the job but the
-      # cache is still saved (cache-on-failure), so the next run is warm.
+      # cache is still saved (cache-on-failure), so the next run is warm. The reserve is never
+      # reduced: when fewer than MIN_TEST_MIN minutes remain for the tests (the test run needs
+      # roughly 15 minutes, so below MIN_TEST_MIN it cannot finish), this step fails the job
+      # before the test step, which then does not run, and the rust-cache post-step still saves.
       - name: Test-step budget
         id: budget
         if: runner.os != 'Linux'
@@ -382,12 +385,16 @@ jobs:
           JOB_START: ${{ steps.start.outputs.epoch }}
           JOB_TIMEOUT_MIN: "45"
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          MIN_TEST_MIN: "10"
         run: |
           if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
           # Rounded up, plus 1 min for the runner's job set-up before the first step.
           elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
           minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
-          if [ "$minutes" -lt 1 ]; then minutes=1; fi
+          if [ "$minutes" -lt "$MIN_TEST_MIN" ]; then
+            echo "::error::only ${minutes} min left for the tests after reserving ${reserve} min for the cache save (need ${MIN_TEST_MIN})"
+            exit 1
+          fi
           echo "elapsed ${elapsed} min, cache save reserve ${reserve} min: test step gets ${minutes} min"
           echo "minutes=$minutes" >> "$GITHUB_OUTPUT"
 

@@ -136,6 +136,11 @@
 //!    run loop ended, before the threads were joined (the run's end in the
 //!    trace's own clock domain).
 //!
+//! A run that swaps tables in the table browser runs several engines one
+//! after another; the file then holds each engine's trace in run order,
+//! joined per engine, with frame numbers and `event_seq` continuing across
+//! engines and tick numbers engine-local ([`CollectedTrace::append`]).
+//!
 //! Column names are stable (later units read this file: Gate A3, KP-043).
 
 use pin_core::spsc::{SpscConsumer, SpscProducer, channel};
@@ -864,6 +869,47 @@ impl CollectedTrace {
     /// Button events recorded.
     pub fn events(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Appends the trace of a later engine of the same run (the table
+    /// browser's swap restarts the engine threads, each with its own
+    /// collector; gate 163 round 9, review thread 4703749460). Each part
+    /// was joined on its own ([`TraceCollector::collect`]), so an event of
+    /// one engine is never matched to a frame of another. Here:
+    ///
+    /// * `later`'s frames follow `self`'s, renumbered so the frame numbers
+    ///   stay unique and ascending: each is offset by one past `self`'s last
+    ///   frame (the number of frames accumulated, as every engine numbers
+    ///   its recorded frames from 0 without gaps), and so is the `frame`
+    ///   field of `later`'s rows; `frames_to_photon` is a difference and
+    ///   stays as it is;
+    /// * `later`'s rows follow `self`'s, their `event_seq` offset the same
+    ///   way (one past `self`'s last `event_seq`) so it stays unique;
+    /// * tick numbers (`apply_tick`, `move_tick`, `frame_snap_tick` and the
+    ///   frame table's `snap_tick`) stay engine-local: each engine counts
+    ///   from tick 0, so a tick number repeats across engines;
+    /// * the overflow counters are summed and `run_end_ns` is `later`'s.
+    ///
+    /// The file format (version 1) is unchanged.
+    pub fn append(&mut self, later: CollectedTrace) {
+        let frame_offset = self.frames.last().map_or(0, |f| f.frame + 1);
+        let seq_offset = self.rows.last().map_or(0, |r| r.input.seq + 1);
+        self.frames
+            .extend(later.frames.into_iter().map(|f| FrameRecord {
+                frame: f.frame + frame_offset,
+                ..f
+            }));
+        self.rows.extend(later.rows.into_iter().map(|mut r| {
+            r.input.seq += seq_offset;
+            r.frame = r.frame.map(|f| f + frame_offset);
+            r
+        }));
+        let (o, l) = (&mut self.overflows, later.overflows);
+        o.input += l.input;
+        o.moves += l.moves;
+        o.frames += l.frames;
+        o.pending += l.pending;
+        self.run_end_ns = later.run_end_ns;
     }
 
     /// The file text (format version 1, see the module documentation).
@@ -2361,5 +2407,92 @@ mod tests {
         assert_eq!(reads(), r0 + 3);
         let t = c.collect(0);
         assert_eq!(t.frames, vec![frame(0, 7, 1234), frame(1, 9, 999)]);
+    }
+
+    /// One engine's collected trace: `presses` presses (seq 0..), each
+    /// shown in frame `i` of `frames` frames, the run ending at `end`.
+    fn engine(presses: u64, frames: u64, base_ns: u64, end: u64) -> CollectedTrace {
+        let fr: Vec<FrameRecord> = (0..frames)
+            .map(|i| shown(i, 10 + i, base_ns + 1_000 * i))
+            .collect();
+        let rows = (0..presses)
+            .map(|i| TraceRow {
+                input: rec(i, base_ns + 1_000 * i, 10 + i),
+                move_tick: Some(10 + i),
+                frame: (i < frames).then_some(i),
+                frame_snap_tick: (i < frames).then_some(10 + i),
+                present_ns: (i < frames).then_some(base_ns + 1_000 * i),
+                frames_to_photon: (i < frames).then_some(1),
+            })
+            .collect();
+        CollectedTrace {
+            rows,
+            frames: fr,
+            overflows: TraceOverflows {
+                input: 1,
+                moves: 2,
+                frames: 3,
+                pending: 4,
+            },
+            run_end_ns: end,
+        }
+    }
+
+    /// Gate 163 round 9 #3 (review thread 4703749460, REQ-LAT-003): the
+    /// traces of successive engines concatenate in engine order; frame
+    /// numbers (in the frame table and the rows) and `event_seq` stay
+    /// unique and ascending, ticks stay engine-local, overflows add up,
+    /// the last `run_end_ns` wins, and the CSV (format version 1)
+    /// round-trips through `parse`.
+    #[test]
+    fn append_merges_engines_in_order() {
+        let first = engine(2, 3, 1_000_000, 5_000_000);
+        let second = engine(3, 4, 9_000_000, 20_000_000);
+        let mut all = CollectedTrace::default();
+        all.append(first.clone());
+        assert_eq!(all, first, "appending to an empty trace is the identity");
+        all.append(second.clone());
+        all.append(CollectedTrace {
+            run_end_ns: 30_000_000,
+            ..CollectedTrace::default()
+        });
+        let frames: Vec<u64> = all.frames.iter().map(|f| f.frame).collect();
+        assert_eq!(frames, (0..7).collect::<Vec<_>>(), "unique and ascending");
+        let snap: Vec<u64> = all.frames.iter().map(|f| f.snap_tick).collect();
+        assert_eq!(snap, [10, 11, 12, 10, 11, 12, 13], "ticks engine-local");
+        let seqs: Vec<u64> = all.rows.iter().map(|r| r.input.seq).collect();
+        assert_eq!(seqs, [0, 1, 2, 3, 4]);
+        let row_frames: Vec<Option<u64>> = all.rows.iter().map(|r| r.frame).collect();
+        assert_eq!(row_frames, [Some(0), Some(1), Some(3), Some(4), Some(5)]);
+        for (r, f) in all.rows.iter().filter_map(|r| r.frame.map(|f| (r, f))) {
+            let fr = all.frames.iter().find(|x| x.frame == f).unwrap();
+            assert_eq!(r.frame_snap_tick, Some(fr.snap_tick));
+            assert_eq!(r.present_ns, Some(fr.present_ns));
+        }
+        assert_eq!(all.rows[2].input.apply_tick, 10, "ticks engine-local");
+        assert_eq!(all.rows[2].frames_to_photon, Some(1));
+        assert_eq!(
+            all.overflows,
+            TraceOverflows {
+                input: 2,
+                moves: 4,
+                frames: 6,
+                pending: 8,
+            }
+        );
+        assert_eq!(all.run_end_ns, 30_000_000);
+        let parsed = CollectedTrace::parse(&all.to_csv()).unwrap();
+        assert_eq!(parsed.rows, all.rows);
+        assert_eq!(
+            parsed.frames.iter().map(|f| f.frame).collect::<Vec<_>>(),
+            frames
+        );
+        assert_eq!(parsed.overflows, all.overflows);
+        assert_eq!(parsed.run_end_ns, all.run_end_ns);
+        // The single-engine file is unchanged by the merge machinery.
+        assert_eq!(
+            CollectedTrace::parse(&first.to_csv()).unwrap().rows,
+            first.rows
+        );
     }
 }

@@ -22,7 +22,11 @@
 //!   loaded on the worker and swapped in by restarting the engine threads
 //!   on the same windows and menu (`pin_app: table swap: <name>
 //!   (wireframe=<bool>)`), and a failed load leaves the running table and
-//!   shows the error in the menu. `--headless` uses SDL's dummy drivers (no surfaces are
+//!   shows the error in the menu. Rescans asked for while one runs coalesce
+//!   into one follow-up scan; a window close requested before a swap ends
+//!   the run instead of starting the new table. The joined form
+//!   `--table=<path>` is refused (`pin_app: --table=<path> is not
+//!   supported; use --table <path>`, exit 1), headless too. `--headless` uses SDL's dummy drivers (no surfaces are
 //!   created then, audio goes to the null sink), `--vrr` requests
 //!   `FifoRelaxed` for the playfield, `--debug-overlay` draws the debug
 //!   lines over the PBR table.
@@ -59,7 +63,12 @@
 //!   truncated, so a hard-linked bundle is safe), with the run's end on the SDL clock read when the
 //!   run loop ended (`# run_end_ns=`), and summarised after the shutdown lines as
 //!   `pin_app: latency trace: <path>, <n> events, <m> frames, <k>
-//!   overflows`. While tracing, the main thread prints `pin_app: latency
+//!   overflows`. A table swap keeps the stopped engine's trace: the file
+//!   holds every engine of the run in order
+//!   (`orchestrator::trace::CollectedTrace::append`). While tracing, a
+//!   table browser selection that is the trace destination is refused
+//!   (`--latency-trace: <path> is the selected table bundle`) and not
+//!   loaded. While tracing, the main thread prints `pin_app: latency
 //!   trace: first frame presented` once the first frame was presented (the
 //!   windowed harness waits for it). Without the flag nothing changes.
 //! * `--config <path>` (REQ-VIEW-006): the `config.toml` to load at start
@@ -80,12 +89,14 @@
 //! thread, wait (bounded) for a detached presenter to release its window,
 //! and if one never does, exit without destroying it.
 
-use pin_app::orchestrator::trace::{FlipperBindings, TraceCollector, latency_trace, summary_line};
+use pin_app::orchestrator::trace::{
+    CollectedTrace, FlipperBindings, TraceCollector, latency_trace, summary_line,
+};
 use pin_app::orchestrator::{
-    AudioConfig, AudioSink, ClosePolicy, DeviceStream, DropMonitor, IoReply, IoRequest, IoWorker,
-    LoadedApp, NullSink, RenderConfig, RenderGpu, RunExit, RunLimits, TableRenderOptions, Threads,
-    ThreadsConfig, load_app_table, run_headless, run_headless_table, spawn_threads,
-    ssf_playfield_mm,
+    AudioConfig, AudioSink, AudioStats, ClosePolicy, DeviceStream, DropMonitor, IoReply, IoRequest,
+    IoWorker, LoadedApp, NullSink, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot,
+    TableRenderOptions, Threads, ThreadsConfig, load_app_table, run_headless, run_headless_table,
+    spawn_threads, ssf_playfield_mm,
 };
 use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
@@ -143,6 +154,19 @@ fn path_of(args: &[String], flag: &str) -> Option<Result<PathBuf, String>> {
     )
 }
 
+/// `--table=<path>` is refused (gate 163 round 9, review thread
+/// 4703749482): every reader of `--table` (`path_of`, the table browser's
+/// `browser_dir`) takes only the separate form `--table <path>`, so the
+/// joined form would silently start no table (and no browser). Checked at
+/// the start of the headless run and of the app run, before anything is
+/// loaded; the caller adds the `pin_app: ` prefix.
+fn reject_table_equals(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a.starts_with("--table=")) {
+        return Err("--table=<path> is not supported; use --table <path>".to_owned());
+    }
+    Ok(())
+}
+
 fn headless(n: Result<u64, String>, table: Option<Result<PathBuf, String>>) -> ExitCode {
     let result = n.and_then(|n| match table.transpose()? {
         None => run_headless(n).map(|last| format!("headless: {n} ticks, last tick {last}")),
@@ -165,6 +189,10 @@ fn headless(n: Result<u64, String>, table: Option<Result<PathBuf, String>>) -> E
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(n) = value_of(&args, "--headless-ticks") {
+        if let Err(e) = reject_table_equals(&args) {
+            eprintln!("pin_app: {e}");
+            return ExitCode::FAILURE;
+        }
         return headless(n, path_of(&args, "--table"));
     }
     if args.iter().any(|a| a == "--list-displays") {
@@ -419,6 +447,34 @@ impl Drop for TraceSink {
     }
 }
 
+/// Whether the existing `--latency-trace` destination `dest` (with metadata
+/// `dest_meta`) is the bundle file `bundle` (a `.zip` bundle: an existing
+/// regular file, compared by [`same_file`]). The one alias test of the
+/// `--table` bundle at start-up ([`open_latency_trace`]) and of a table
+/// browser selection ([`trace_alias_guard`]).
+fn is_bundle_file(dest_meta: &std::fs::Metadata, dest: &Path, bundle: &Path) -> bool {
+    std::fs::metadata(bundle)
+        .is_ok_and(|tm| tm.is_file() && same_file(dest_meta, dest, &tm, bundle))
+}
+
+/// The table browser's load guard while tracing (gate 163 round 9, review
+/// thread 4703749453): a selected bundle that is the `--latency-trace`
+/// destination `dest` ([`is_bundle_file`]) is refused with
+/// `--latency-trace: <dest> is the selected table bundle` before it is
+/// loaded, so the trace commit at shutdown can never replace it; the menu
+/// shows the error and the running table stays. It runs on the I/O worker
+/// ([`IoWorker::spawn_guarded`], R4). A destination that does not exist (or
+/// cannot be read) is no bundle: the selection loads.
+fn trace_alias_guard(dest: PathBuf) -> impl Fn(&Path) -> Result<(), String> + Send + 'static {
+    move |bundle| match std::fs::metadata(&dest) {
+        Ok(m) if is_bundle_file(&m, &dest, bundle) => Err(format!(
+            "--latency-trace: {} is the selected table bundle",
+            dest.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// `--latency-trace <file>`: checked and prepared now so an unwritable path
 /// fails before the app starts. A value that starts with `--` is an option,
 /// not a path (`./--x` is a path). A destination that is the `--table`
@@ -459,9 +515,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     }
     if let Some(fm) = &dest_meta
         && let Some(Ok(table)) = path_of(args, "--table")
-        && let Ok(tm) = std::fs::metadata(&table)
-        && tm.is_file()
-        && same_file(fm, &path, &tm, &table)
+        && is_bundle_file(fm, &path, &table)
     {
         return Err(format!(
             "--latency-trace: {} is the --table bundle",
@@ -708,11 +762,46 @@ struct SwapContext<'a> {
     options: &'a EngineOptions,
 }
 
+/// An engine's final counters ([`Threads::shutdown_with_audio`]).
+type EngineReport = (StatsSnapshot, AudioStats);
+
+/// What [`swap_table`] did.
+enum Swap {
+    /// The new table's engine runs.
+    Started(Threads, Engine),
+    /// A window close the close policy accepts was pending when the old
+    /// engine stopped ([`stop_for_swap`]): the run quits instead of starting
+    /// the new table. The old engine's final counters.
+    Closed(EngineReport),
+}
+
+/// Stops the running engine `old` for a table swap: joins its threads and
+/// then closes the old audio device stream (its sink went with the audio
+/// thread). Returns the engine's final counters when a window close the
+/// close policy accepts was requested before it stopped, also one the
+/// render thread had not popped from the window ring yet (it records those
+/// when it stops), so a close queued before the swap ends the run whatever
+/// the render thread's timing (gate 163 round 9, review thread
+/// 4703749444); `None` otherwise.
+///
+/// # Errors
+/// A thread join error of the old engine.
+fn stop_for_swap(
+    old: Threads,
+    audio_device: &mut Option<DeviceStream>,
+) -> Result<Option<EngineReport>, String> {
+    let report = old.shutdown_with_audio()?;
+    // The audio thread was joined (its sink is gone): the stream can close.
+    drop(audio_device.take());
+    Ok(report.0.close_requested.then_some(report))
+}
+
 /// The table browser's swap (issue #85, DECISIONS "#85 — Table swap by
 /// restarting the engine threads"): stops the running engine (`old`: the
 /// threads are joined, the render thread drops the surfaces, the window
-/// guards keep the windows), closes the old audio device stream once its
-/// sink is gone with the audio thread, re-points the forwarder at fresh
+/// guards keep the windows; [`stop_for_swap`]), closes the old audio device
+/// stream once its sink is gone with the audio thread, and, unless a window
+/// close was pending ([`Swap::Closed`]: nothing is started), re-points the forwarder at fresh
 /// input and window rings, recreates the surfaces on the same windows and
 /// a fresh device stream, and starts the engine for `app` from tick 0 with
 /// the current `wireframe` setting. The menu (in the forwarder) and the
@@ -729,10 +818,10 @@ fn swap_table(
     forwarder: &mut EventForwarder,
     audio_device: &mut Option<DeviceStream>,
     cx: &SwapContext<'_>,
-) -> Result<(Threads, Engine), String> {
-    old.shutdown_with_audio()?;
-    // The audio thread was joined (its sink is gone): the stream can close.
-    drop(audio_device.take());
+) -> Result<Swap, String> {
+    if let Some(report) = stop_for_swap(old, audio_device)? {
+        return Ok(Swap::Closed(report));
+    }
     let (input_tx, input_rx) = pin_core::spsc::channel(INPUT_RING_CAPACITY);
     let (window_tx, window_rx) = pin_core::spsc::channel(WINDOW_RING_CAPACITY);
     forwarder.replace_channels(input_tx, window_tx);
@@ -749,10 +838,74 @@ fn swap_table(
         wireframe,
         cx.options,
     );
-    Ok((spawn_threads(cfg)?, engine))
+    Ok(Swap::Started(spawn_threads(cfg)?, engine))
+}
+
+/// Banks the trace of an engine stopped by a table swap (gate 163 round 9,
+/// review thread 4703749460): `stopped` (the old engine's collector; its
+/// threads were joined) is collected at `end_ns` and appended to `banked`
+/// ([`CollectedTrace::append`]: joined on its own, so its ticks never meet
+/// another engine's frames).
+fn bank_trace(banked: &mut Option<CollectedTrace>, stopped: Option<TraceCollector>, end_ns: u64) {
+    if let Some(c) = stopped {
+        let t = c.collect(end_ns);
+        match banked {
+            Some(b) => b.append(t),
+            None => *banked = Some(t),
+        }
+    }
+}
+
+/// The run's whole trace at shutdown: the banked traces of the engines
+/// stopped by table swaps followed by the last engine's (`last`, collected
+/// at `run_end_ns`, the trailer's `run_end_ns`). `None` without a trace.
+fn final_trace(
+    banked: Option<CollectedTrace>,
+    last: Option<TraceCollector>,
+    run_end_ns: u64,
+) -> Option<CollectedTrace> {
+    let last = last.map(|c| c.collect(run_end_ns));
+    match (banked, last) {
+        (Some(mut b), Some(l)) => {
+            b.append(l);
+            Some(b)
+        }
+        (Some(mut b), None) => {
+            b.run_end_ns = run_end_ns;
+            Some(b)
+        }
+        (None, l) => l,
+    }
+}
+
+/// Submits the menu's load request `(id, path)` to the I/O worker. When the
+/// submission fails (the worker never started or has stopped: no reply can
+/// come) the error is printed and reported to the menu with `id`, so it
+/// leaves `Loading` and accepts another load (gate 163 round 9, review
+/// thread 4703749471). A queued load stays asynchronous.
+fn submit_load(worker: &IoWorker, menu: &mut MenuController, id: u64, path: PathBuf) {
+    eprintln!("pin_app: table browser: loading {}", path.display());
+    let shown = path.display().to_string();
+    if let Err(e) = worker.try_request(IoRequest::Load { id, path }) {
+        eprintln!("pin_app: table browser: loading {shown} failed: {e}");
+        menu.finish_load(id, Err(e));
+    }
+}
+
+/// Asks the I/O worker for a (coalesced, [`IoWorker::request_scan`]) scan
+/// of `dir`; a failed submission is printed.
+fn submit_scan(worker: &IoWorker, dir: &Path) {
+    eprintln!("pin_app: table browser: scanning {}", dir.display());
+    if let Err(e) = worker.request_scan(dir.to_path_buf()) {
+        eprintln!(
+            "pin_app: table browser: scanning {} failed: {e}",
+            dir.display()
+        );
+    }
 }
 
 fn run_app(args: &[String]) -> Result<(), String> {
+    reject_table_equals(args)?;
     // config.toml first (REQ-VIEW-006): its settings shape the windows.
     let (mut menu, config_lines) = MenuController::for_app(args)?;
     for line in &config_lines {
@@ -778,9 +931,15 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // dir>/tables` (or config.toml's `tables_dir`) on the I/O worker.
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pin_app"));
     let browser = browser_dir(args, menu.config().tables_dir.as_deref(), &exe).map(|dir| {
-        let worker = IoWorker::spawn(options.mixer);
-        eprintln!("pin_app: table browser: scanning {}", dir.display());
-        worker.request(IoRequest::Scan(dir.clone()));
+        // While tracing, a selection that is the trace destination is
+        // refused on the worker before it loads.
+        let worker = match trace_file.as_ref() {
+            Some(sink) => {
+                IoWorker::spawn_guarded(options.mixer, trace_alias_guard(sink.dest.clone()))
+            }
+            None => IoWorker::spawn(options.mixer),
+        };
+        submit_scan(&worker, &dir);
         (dir, worker)
     });
 
@@ -857,6 +1016,11 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let mut input_drops = DropMonitor::default();
     let mut failure = None;
     let mut first_frame_announced = false;
+    // The traces of engines stopped by table swaps (`bank_trace`).
+    let mut banked_trace: Option<CollectedTrace> = None;
+    // The final counters of an engine stopped by a swap that found a
+    // window close pending (`Swap::Closed`).
+    let mut stopped_report: Option<EngineReport> = None;
     while let Some(running) = threads.as_ref() {
         let outcome = platform.pump(&mut forwarder, PUMP_TIMEOUT);
         if let Some(new) = forwarder
@@ -878,12 +1042,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
             // The main thread only posts requests and applies replies (R4).
             if let Some(m) = forwarder.menu_mut() {
                 if m.take_rescan_request() {
-                    eprintln!("pin_app: table browser: scanning {}", dir.display());
-                    worker.request(IoRequest::Scan(dir.clone()));
+                    submit_scan(worker, dir);
                 }
                 if let Some((id, path)) = m.take_load_request() {
-                    eprintln!("pin_app: table browser: loading {}", path.display());
-                    worker.request(IoRequest::Load { id, path });
+                    submit_load(worker, m, id, path);
                 }
             }
             while let Some(reply) = worker.try_recv() {
@@ -927,14 +1089,25 @@ fn run_app(args: &[String]) -> Result<(), String> {
                             &mut audio_device,
                             &cx,
                         ) {
-                            Ok((t, e)) => {
+                            Ok(Swap::Started(t, e)) => {
                                 threads = Some(t);
+                                // The stopped engine's trace is kept.
+                                bank_trace(&mut banked_trace, trace.take(), sdl_now_ns());
                                 profiler = e.profiler;
                                 trace = e.trace;
                                 rendering = e.rendering;
                                 if let Some(m) = forwarder.menu_mut() {
                                     m.finish_load(id, Ok(()));
                                 }
+                            }
+                            Ok(Swap::Closed(report)) => {
+                                // A close queued before the swap ends the
+                                // run; the new table is not started.
+                                eprintln!(
+                                    "pin_app: table swap cancelled: a window close was requested"
+                                );
+                                stopped_report = Some(report);
+                                break;
                             }
                             Err(e) => {
                                 eprintln!("pin_app: table swap failed: {e}");
@@ -990,11 +1163,9 @@ fn run_app(args: &[String]) -> Result<(), String> {
             None => {}
         }
     }
-    // The I/O worker stops first (a load in flight completes; its result is
-    // dropped).
-    drop(browser);
-    // The run's end on the trace clock (`# run_end_ns`), read once the loop
-    // ended, before the threads are joined.
+    // The run's end on the trace clock (`# run_end_ns`), read as soon as
+    // the loop ended: before the threads are joined and before waiting on
+    // the I/O worker (gate 163 round 9, review thread 4703749463).
     let run_end_ns = sdl_now_ns();
     // 1. Join the engine threads (the render thread drops the surfaces; a
     //    presenter stalled past PRESENTER_JOIN_TIMEOUT is detached and keeps
@@ -1002,22 +1173,31 @@ fn run_app(args: &[String]) -> Result<(), String> {
     //    A join error (a panicked thread) is recorded, never returned early:
     //    a detached presenter may still hold a window guard, so the teardown
     //    below must still run in order before `platform` is dropped.
-    //    (No threads: a failed table swap already joined them and recorded
-    //    the failure.)
+    //    (No threads: a table swap already joined them; a failed one
+    //    recorded the failure, one cancelled by a pending close kept the
+    //    final counters.)
     let (report, join_error) = match threads.take().map(Threads::shutdown_with_audio) {
         Some(Ok(done)) => (Some(done), None),
         Some(Err(e)) => {
             eprintln!("pin_app: {e}");
             (None, Some(e))
         }
-        None => (None, None),
+        None => (stopped_report, None),
     };
     failure = merge_failure(failure, join_error);
+    // The I/O worker stops after the engine (a load in flight completes;
+    // its result is dropped), before the platform's teardown below.
+    drop(browser);
     // Every thread is joined: drain the trace rings and write the file here,
-    // on the main thread, also when the run failed (for diagnosis).
-    let trace_summary = match (trace, trace_file.take()) {
-        (Some(collector), Some(sink)) => {
-            let collected = collector.collect(run_end_ns);
+    // on the main thread, also when the run failed (for diagnosis). The
+    // file holds every engine of the run: those stopped by table swaps
+    // (banked), then the last (`final_trace`); after a failed swap the old
+    // collector is still `trace`, so nothing is lost.
+    let trace_summary = match (
+        final_trace(banked_trace, trace, run_end_ns),
+        trace_file.take(),
+    ) {
+        (Some(collected), Some(sink)) => {
             commit_trace(sink, collected.to_csv().as_bytes(), &mut failure)
                 .map(|dest| summary_line(&dest, &collected))
         }
@@ -1837,5 +2017,228 @@ mod tests {
     fn stuck_presenter_teardown_keeps_the_failure_exit_code() {
         assert_eq!(teardown_exit_code(Some("run cap reached")), 1);
         assert_eq!(teardown_exit_code(None), 0);
+    }
+
+    /// Gate 163 round 9 #7 (review thread 4703749482, REQ-VIEW-006):
+    /// `--table=<path>` is refused with one clear error; the separate form
+    /// and other flags pass.
+    #[test]
+    fn gate163_r9_table_equals_is_rejected() {
+        use super::reject_table_equals;
+        let want = "--table=<path> is not supported; use --table <path>";
+        for bad in [
+            &["--table=demo.zip"][..],
+            &["--table="],
+            &["--headless", "--table=t", "--run-ms", "1"],
+        ] {
+            assert_eq!(
+                reject_table_equals(&args(bad)).unwrap_err(),
+                want,
+                "{bad:?}"
+            );
+        }
+        for ok in [
+            &[][..],
+            &["--table", "demo.zip"],
+            &["--tables", "x"],
+            &["--latency-trace", "t.csv"],
+        ] {
+            assert_eq!(reject_table_equals(&args(ok)), Ok(()), "{ok:?}");
+        }
+    }
+
+    /// Gate 163 round 9 #2 (review thread 4703749453, REQ-LAT-003): the
+    /// alias test shared by the start-up check and the browser guard: the
+    /// trace destination is the bundle when both are the same existing
+    /// file (also through a hard link); another file, a missing
+    /// destination or a folder bundle is not.
+    #[test]
+    fn gate163_r9_browser_selection_alias_guard() {
+        use super::{is_bundle_file, trace_alias_guard};
+        let dir = fresh_dir("r9_alias");
+        let dest = dir.join("t.zip");
+        std::fs::write(&dest, b"PK bundle bytes").unwrap();
+        let other = dir.join("other.zip");
+        std::fs::write(&other, b"PK other").unwrap();
+        let folder = dir.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let m = std::fs::metadata(&dest).unwrap();
+        assert!(is_bundle_file(&m, &dest, &dest));
+        assert!(!is_bundle_file(&m, &dest, &other));
+        assert!(!is_bundle_file(&m, &dest, &folder));
+        assert!(!is_bundle_file(&m, &dest, &dir.join("missing.zip")));
+        let guard = trace_alias_guard(dest.clone());
+        let want = format!(
+            "--latency-trace: {} is the selected table bundle",
+            dest.display()
+        );
+        assert_eq!(guard(&dest).unwrap_err(), want);
+        #[cfg(unix)]
+        {
+            let hard = dir.join("hard.zip");
+            std::fs::hard_link(&dest, &hard).unwrap();
+            assert_eq!(guard(&hard).unwrap_err(), want);
+        }
+        assert_eq!(guard(&other), Ok(()), "a separate path is unaffected");
+        assert_eq!(guard(&folder), Ok(()));
+        // A destination that does not exist is no bundle.
+        assert_eq!(trace_alias_guard(dir.join("new.csv"))(&dest), Ok(()));
+        // The browser's guarded worker refuses the aliased selection before
+        // loading it; the archive is left intact.
+        let w = pin_app::orchestrator::IoWorker::spawn_guarded(
+            pin_audio::mixer::MixerConfig::default(),
+            trace_alias_guard(dest.clone()),
+        );
+        for (id, path) in [(1, dest.clone()), (2, other.clone())] {
+            w.try_request(pin_app::orchestrator::IoRequest::Load { id, path })
+                .unwrap();
+        }
+        match w.recv() {
+            Some(pin_app::orchestrator::IoReply::LoadFailed { id: 1, error, .. }) => {
+                assert_eq!(error, want);
+            }
+            other => panic!("{other:?}"),
+        }
+        match w.recv() {
+            Some(pin_app::orchestrator::IoReply::LoadFailed { id: 2, error, .. }) => {
+                assert!(!error.contains("--latency-trace"), "{error}");
+            }
+            other => panic!("{other:?}"),
+        }
+        drop(w);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"PK bundle bytes");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 9 #1 (review thread 4703749444, REQ-VIEW-006): a
+    /// playfield close pushed into the window ring before a table swap
+    /// stops the engine makes `stop_for_swap` report it (the swap then
+    /// starts nothing and the run quits), whether or not the render thread
+    /// had popped it; a close the policy ignores (a secondary window) and
+    /// no close let the swap go on.
+    #[test]
+    fn gate163_r9_close_before_swap_ends_the_run() {
+        use super::stop_for_swap;
+        use pin_app::orchestrator::{RenderConfig, ThreadsConfig, spawn_threads};
+        use pin_render::topology::{WindowEvent, WindowEventKind};
+        let run = |events: &[WindowEvent]| {
+            let (_input_tx, input_rx) = pin_core::spsc::channel(8);
+            let (mut window_tx, window_rx) = pin_core::spsc::channel(8);
+            let mut cfg = ThreadsConfig::idle(input_rx);
+            cfg.render = RenderConfig {
+                window_events: Some(window_rx),
+                ..RenderConfig::default()
+            };
+            let threads = spawn_threads(cfg).unwrap();
+            for ev in events {
+                window_tx.push(*ev).unwrap();
+            }
+            stop_for_swap(threads, &mut None).unwrap()
+        };
+        let close = |window| WindowEvent {
+            timestamp_ns: 1,
+            window,
+            kind: WindowEventKind::CloseRequested,
+        };
+        let report = run(&[close(0)]).expect("the close cancels the swap");
+        assert!(report.0.close_requested);
+        assert!(run(&[close(1)]).is_none(), "a backglass close is ignored");
+        assert!(run(&[]).is_none());
+    }
+
+    /// One engine's trace collector with `frames` presented frames (snapshot
+    /// tick 0, present times from `base_ns`).
+    fn engine_trace(frames: u64, base_ns: u64) -> pin_app::orchestrator::trace::TraceCollector {
+        use pin_app::orchestrator::trace::{FlipperBindings, latency_trace};
+        fn clock() -> u64 {
+            0
+        }
+        let (collector, _sim, mut render) = latency_trace(FlipperBindings::new(), clock);
+        for i in 0..frames {
+            render.presented_at(true, &pin_core::FrameStateSnapshot::default(), base_ns + i);
+        }
+        collector
+    }
+
+    /// Gate 163 round 9 #3 (review thread 4703749460, REQ-LAT-003): the
+    /// trace of every engine stopped by a swap is banked and merged with
+    /// the last engine's at shutdown: no frame is lost, frame numbers stay
+    /// unique and ascending, the file round-trips, and `run_end_ns` is the
+    /// run's.
+    #[test]
+    fn gate163_r9_trace_keeps_every_engine() {
+        use super::{bank_trace, final_trace};
+        use pin_app::orchestrator::trace::CollectedTrace;
+        let mut banked = None;
+        bank_trace(&mut banked, None, 5);
+        assert!(banked.is_none(), "no collector, nothing banked");
+        bank_trace(&mut banked, Some(engine_trace(2, 100)), 150);
+        bank_trace(&mut banked, Some(engine_trace(3, 200)), 250);
+        let all = final_trace(banked, Some(engine_trace(4, 300)), 999).unwrap();
+        let frames: Vec<u64> = all.frames.iter().map(|f| f.frame).collect();
+        assert_eq!(frames, (0..9).collect::<Vec<_>>());
+        let present: Vec<u64> = all.frames.iter().map(|f| f.present_ns).collect();
+        assert_eq!(present, [100, 101, 200, 201, 202, 300, 301, 302, 303]);
+        assert_eq!(all.run_end_ns, 999);
+        let parsed = CollectedTrace::parse(&all.to_csv()).unwrap();
+        assert_eq!(parsed.frames.len(), 9);
+        assert_eq!(parsed.run_end_ns, 999);
+        // Without swaps the file is the single engine's collection.
+        let single = final_trace(None, Some(engine_trace(2, 7)), 50).unwrap();
+        assert_eq!(single, engine_trace(2, 7).collect(50));
+        // Nothing after the last swap (never the case in the app): the
+        // banked engines are still written, ending at the run's end.
+        let mut banked = None;
+        bank_trace(&mut banked, Some(engine_trace(1, 1)), 2);
+        let only = final_trace(banked, None, 77).unwrap();
+        assert_eq!((only.frames.len(), only.run_end_ns), (1, 77));
+        assert!(final_trace(None, None, 1).is_none());
+    }
+
+    /// Gate 163 round 9 #6 (review thread 4703749471, REQ-VIEW-006): a load
+    /// the I/O worker cannot take (it never started) is reported to the
+    /// menu at once, so the menu leaves `Loading` and accepts another load.
+    #[test]
+    fn gate163_r9_failed_load_submission_leaves_loading() {
+        use super::submit_load;
+        use pin_app::orchestrator::{IO_WORKER_NOT_RUNNING, IoWorker};
+        use pin_app::ui::{
+            MenuController, MenuInput, TableEntry, TableInfo, TableLoadState, TableStatus,
+        };
+        let dir = fresh_dir("r9_submit");
+        let (mut c, _) = MenuController::load(dir.join("config.toml"));
+        let info = TableInfo {
+            id: "t".into(),
+            name: "T".into(),
+            author: "a".into(),
+            version: "1".into(),
+            players_max: 1,
+            features: Vec::new(),
+            preview: None,
+            preview_error: None,
+            warning_count: 0,
+        };
+        c.set_tables(vec![TableEntry {
+            path: dir.join("t.zip"),
+            file_name: "t.zip".into(),
+            status: TableStatus::Ready(info),
+        }]);
+        c.set_browser_enabled(true);
+        c.toggle(1, &mut |_| {});
+        c.apply(MenuInput::LoadTable(0), 2, &mut |_| {});
+        let (id, path) = c.take_load_request().expect("a load request");
+        assert!(matches!(c.menu().load_state(), TableLoadState::Loading(_)));
+        submit_load(&IoWorker::not_running(), &mut c, id, path.clone());
+        match c.menu().load_state() {
+            TableLoadState::Failed { path: p, error } => {
+                assert_eq!(p, &path);
+                assert!(error.contains(IO_WORKER_NOT_RUNNING), "{error}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(c.menu().pending_load_id(), None);
+        c.apply(MenuInput::LoadTable(0), 3, &mut |_| {});
+        assert!(c.take_load_request().is_some(), "another load is accepted");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

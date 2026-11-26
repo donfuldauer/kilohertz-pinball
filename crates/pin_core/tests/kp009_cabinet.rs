@@ -248,6 +248,69 @@ fn req_cab_005_backbox_overlap_names_backbox_front_y() {
     assert_eq!(g.validate(&envelope(0, None)), Ok(()));
 }
 
+/// The reported rolled configuration (#163 gate round 9): classic_standard with
+/// `mount.pitch_deg` 0, `mount.roll_deg` `roll` and `mount.height` 80.
+fn rolled(roll: f32) -> CabinetGeometry {
+    let mut g = preset("classic_standard");
+    g.mount.pitch_deg = 0.0;
+    g.mount.roll_deg = roll;
+    g.mount.height = 80.0;
+    g
+}
+
+/// REQ-CAB-005, REQ-CAB-008, REQ-BUILD-002: roll turns the playfield about its front-left
+/// origin, so at 45° the right surface corner alone reaches 80 + 514 sin 45° ≈ 443.5 mm,
+/// above the 404.7 mm front wall top: rejected naming `mount.height` and the right side.
+#[test]
+fn req_cab_005_req_cab_008_rolled_right_corner_rejected() {
+    let m = invalid_msg(rolled(45.0).validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(
+        m.contains("front edge") && m.contains("right corner"),
+        "{m}"
+    );
+    println!("{m}");
+}
+
+/// REQ-CAB-005, REQ-CAB-008: the same mount at roll 0 fits; a small roll that still clears
+/// fits; a negative roll lowers the right side and is not wrongly rejected.
+#[test]
+fn req_cab_005_req_cab_008_roll_zero_small_and_negative_pass() {
+    for roll in [0.0, 2.0, -2.0, -45.0] {
+        assert_eq!(
+            rolled(roll).validate(&envelope(0, None)),
+            Ok(()),
+            "roll {roll}"
+        );
+    }
+}
+
+/// REQ-CAB-005: a rolled playfield's raised right corner is the highest glass top for
+/// the backbox check, so a backbox that clears the level playfield overlaps the rolled one.
+#[test]
+fn req_cab_005_rolled_backbox_overlap_rejected() {
+    let mut g = preset("classic_standard");
+    g.body.front_height = 900.0;
+    // Side wall top at the rear edge ≈ 550 mm, above every glass corner below.
+    g.body.rear_height = 480.0;
+    g.backbox.front_y = 900.0;
+    g.backbox.bottom_z = 530.0;
+    g.mount.height = 283.0;
+    // Level: rear glass top ≈ 520 mm < 530 mm, clear.
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+    // Rolled 2°: the rear-right glass top rises by 514 sin 2° ≈ 17.9 mm to ≈ 538 mm.
+    g.mount.roll_deg = 2.0;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(
+        m.contains("backbox.front_y") && m.contains("backbox.bottom_z"),
+        "{m}"
+    );
+    println!("{m}");
+    // Negative roll lowers the right side: the left corners govern, clear again.
+    g.mount.roll_deg = -2.0;
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+}
+
 /// REQ-CAB-005: other containment rules name their fields.
 #[test]
 fn req_cab_005_other_containment_fields() {

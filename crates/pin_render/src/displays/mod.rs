@@ -27,7 +27,10 @@
 //!   for the 3D backbox to sample as emissive surfaces behind glass. The
 //!   texture object lives as long as the display, so a material bound to it
 //!   is never rebuilt; sampling it in the scene belongs to the backbox
-//!   consumer, not to this module.
+//!   consumer, not to this module. The owner of an LCD [`ScoreTexture`]
+//!   registers the scenes' images with [`ScoreTexture::set_image`]; an LCD
+//!   image item whose file is not registered is skipped (a missing bundle
+//!   image never aborts rendering).
 //! * **Change detection**: displays redraw only on change
 //!   ([`DmdRenderer::set_frame`], [`LcdRenderer::set_draw_list`],
 //!   [`BackglassRenderer::needs_redraw`], [`ChangeTracker`],

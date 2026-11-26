@@ -1046,6 +1046,66 @@ pub struct TableEnvelope {
     pub pitch_deg: Option<f32>,
 }
 
+/// One playfield corner in the cabinet (body) frame, for the containment checks
+/// (REQ-CAB-005).
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct PlayfieldCorner {
+    /// Cabinet-frame `y` of the corner, mm.
+    y: f64,
+    /// Playfield surface height above the body bottom, mm.
+    surface_z: f64,
+    /// Glass sheet top above the body bottom, mm.
+    glass_z: f64,
+    /// `"front"` or `"rear"`.
+    edge: &'static str,
+    /// `"left"` or `"right"`.
+    side: &'static str,
+}
+
+/// The four playfield corners (front-left, front-right, rear-left, rear-right) in the
+/// cabinet frame (REQ-BUILD-002, REQ-CAB-005, REQ-CAB-008).
+///
+/// The playfield origin (front-left surface corner) is at `y = inset`, `z = height`. Pitch
+/// (rear up positive) raises the rear edge by `length * sin(pitch)` and moves it to
+/// `y = inset + length * cos(pitch)`; roll (right side up positive) turns the playfield about
+/// its left edge through the origin, so the right side rises by `width * sin(roll)` (falls
+/// for negative roll) while the left side stays put. The glass top sits `glass` (glass
+/// height plus sheet thickness) along the playfield normal, whose vertical component is
+/// `cos(pitch) * cos(roll)` (small-angle composition). At roll 0 the numbers equal the
+/// pitch-only edge heights bit for bit.
+fn playfield_corners(
+    inset: f64,
+    height: f64,
+    width: f64,
+    length: f64,
+    pitch: f64,
+    roll: f64,
+    glass: f64,
+) -> [PlayfieldCorner; 4] {
+    let (sp, cp) = (libm::sin(pitch), libm::cos(pitch));
+    let (sr, cr) = (libm::sin(roll), libm::cos(roll));
+    let glass_up = glass * cp * cr;
+    let right_rise = width * sr;
+    let rear_rise = length * sp;
+    let rear_y = inset + length * cp;
+    let corner = |y: f64, rise: f64, edge, side| {
+        let surface_z = height + rise;
+        PlayfieldCorner {
+            y,
+            surface_z,
+            glass_z: surface_z + glass_up,
+            edge,
+            side,
+        }
+    };
+    [
+        corner(inset, 0.0, "front", "left"),
+        corner(inset, right_rise, "front", "right"),
+        corner(rear_y, rear_rise, "rear", "left"),
+        corner(rear_y, rear_rise + right_rise, "rear", "right"),
+    ]
+}
+
 fn require(ok: bool, msg: impl FnOnce() -> String) -> Result<(), SchemaError> {
     if ok { Ok(()) } else { Err(invalid(msg())) }
 }
@@ -1466,10 +1526,12 @@ impl CabinetGeometry {
     ///    (`body.width`); the playfield lies between the side walls (`mount.offset_x`);
     ///    `body.length` − wall ≥ `mount.inset` + playfield length (`body.length`); the
     ///    glass sheet covers the playfield (`glass_panel.width`, `glass_panel.length`);
-    /// 3. glass ≥ tallest ramp or toy (`glass.height`); the glass sheet's top at the
-    ///    playfield's front and rear edges stays below the side wall top (`mount.height`);
+    /// 3. glass ≥ tallest ramp or toy (`glass.height`); the playfield surface and the glass
+    ///    sheet's top at the playfield's front and rear edges stay below the side wall top
+    ///    (`mount.height`), measured at all four corners from the playfield origin (the
+    ///    front-left surface corner), so a rolled playfield is checked at its raised side;
     /// 4. backbox clear of the playfield: either its front face is at or behind the
-    ///    playfield's rear edge, or its bottom is above the glass sheet's top
+    ///    playfield's rear edge, or its bottom is above the highest glass-top corner
     ///    (`backbox.front_y` / `backbox.bottom_z`);
     /// 5. `meta.pitch_deg`, when given, within [`PITCH_AGREEMENT_DEG`] (plus
     ///    [`PITCH_ROUNDING_SLACK_DEG`]) of the derived pitch (`meta.pitch_deg`).
@@ -1539,26 +1601,34 @@ impl CabinetGeometry {
         })?;
         let pitch = deg_to_rad(f64::from(m.pitch_deg));
         let roll = deg_to_rad(f64::from(m.roll_deg));
-        let (sp, cp) = (libm::sin(pitch), libm::cos(pitch));
-        let roll_rise = pw * 0.5 * libm::fabs(libm::sin(roll));
-        let glass_top = (f64::from(table.glass_height_mm) + f64::from(gp.thickness)) * cp;
         let h = f64::from(m.height);
-        let front_glass = h + glass_top + roll_rise;
-        let rear_y = inset + pl * cp;
-        let rear_glass = h + pl * sp + glass_top + roll_rise;
-        for (y, z, edge) in [(inset, front_glass, "front"), (rear_y, rear_glass, "rear")] {
-            let wall_top = self.wall_top(y);
-            require(z <= wall_top, || {
+        let corners = playfield_corners(
+            inset,
+            h,
+            pw,
+            pl,
+            pitch,
+            roll,
+            f64::from(table.glass_height_mm) + f64::from(gp.thickness),
+        );
+        for c in &corners {
+            let wall_top = self.wall_top(c.y);
+            let (z, edge, side) = (c.glass_z, c.edge, c.side);
+            require(c.surface_z <= wall_top && z <= wall_top, || {
                 format!(
-                    "`mount.height` {h}: the glass top at the playfield's {edge} edge ({z:.1} mm \
-                     above the body bottom) is above the side wall top ({wall_top:.1} mm)"
+                    "`mount.height` {h}: the glass top at the playfield's {edge} edge, {side} \
+                     corner ({z:.1} mm above the body bottom) is above the side wall top \
+                     ({wall_top:.1} mm)"
                 )
             })?;
         }
 
         // 4. Backbox clear of the playfield.
         let bb = &self.backbox;
-        let highest = max_f64(front_glass, rear_glass);
+        let rear_y = corners[2].y;
+        let highest = corners
+            .iter()
+            .fold(f64::NEG_INFINITY, |acc, c| max_f64(acc, c.glass_z));
         let behind = f64::from(bb.front_y) >= rear_y;
         let above = f64::from(bb.bottom_z) >= highest;
         require(behind || above, || {
@@ -1594,6 +1664,39 @@ mod tests {
 
     fn std_geom() -> CabinetGeometry {
         CabinetGeometry::default_preset().unwrap()
+    }
+
+    /// REQ-CAB-005, REQ-BUILD-002: corner heights from the front-left origin. Roll raises
+    /// only the right corners by `width * sin(roll)`; at roll 0 the corners equal the
+    /// pitch-only edge heights bit for bit.
+    #[test]
+    fn playfield_corners_from_origin_req_cab_005() {
+        let (w, l, g) = (514.0, 1070.0, 116.8);
+        let c = playfield_corners(30.0, 80.0, w, l, 0.0, deg_to_rad(45.0), g);
+        let s45 = libm::sin(deg_to_rad(45.0));
+        assert_eq!(c[0].surface_z, 80.0);
+        assert!((c[1].surface_z - (80.0 + w * s45)).abs() < 1e-9);
+        assert!((c[1].surface_z - 443.45).abs() < 0.1, "{}", c[1].surface_z);
+        assert!((c[0].glass_z - (80.0 + g * s45)).abs() < 1e-9);
+        assert_eq!(c[2].surface_z, 80.0);
+        assert_eq!((c[0].y, c[2].y), (30.0, 30.0 + l));
+        assert_eq!((c[1].edge, c[1].side), ("front", "right"));
+        assert_eq!((c[3].edge, c[3].side), ("rear", "right"));
+        // Negative roll lowers the right side; the left stays at the origin height.
+        let n = playfield_corners(30.0, 80.0, w, l, 0.0, deg_to_rad(-10.0), g);
+        assert_eq!(n[0].surface_z, 80.0);
+        assert!(n[1].surface_z < 80.0);
+        // Roll 0: bit-identical to the pitch-only formulas.
+        let p = deg_to_rad(6.5);
+        let (sp, cp) = (libm::sin(p), libm::cos(p));
+        let z = playfield_corners(30.0, 283.0, w, l, p, 0.0, g);
+        for k in [0, 1] {
+            assert_eq!(z[k].glass_z.to_bits(), (283.0 + g * cp).to_bits());
+        }
+        for k in [2, 3] {
+            assert_eq!(z[k].glass_z.to_bits(), (283.0 + l * sp + g * cp).to_bits());
+            assert_eq!(z[k].y.to_bits(), (30.0 + l * cp).to_bits());
+        }
     }
 
     #[test]

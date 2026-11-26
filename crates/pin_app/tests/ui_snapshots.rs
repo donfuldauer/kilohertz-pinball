@@ -18,7 +18,8 @@ fn entries() -> Vec<TableEntry> {
         height: 32,
         rgba: (0..64 * 32)
             .flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 8) as u8, 160, 255])
-            .collect(),
+            .collect::<Vec<u8>>()
+            .into(),
     };
     let mut v = vec![
         TableEntry {

@@ -123,7 +123,7 @@ fn metadata_badges_and_preview() {
         (art.file.as_str(), art.width, art.height),
         ("preview.png", 2, 1)
     );
-    assert_eq!(art.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+    assert_eq!(&art.rgba[..], [255, 0, 0, 255, 0, 255, 0, 255]);
     assert!(info.preview_error.is_none());
     // No preview file: none, no error.
     let second = entries[0].info().unwrap();
@@ -220,4 +220,77 @@ fn scanned_tables_drive_the_browser() {
     m.set_tables(scan_tables(&root));
     assert_eq!(m.focused_table(), Some(3));
     assert_eq!(m.tables()[3].file_name, "e_packed.pinbundle");
+}
+
+/// REQ-VIEW-006 / 4.4: cloning a `MenuState` shares each preview's pixel
+/// buffer (reference count only), so publishing never deep-copies pixels.
+#[test]
+fn req_view_006_menu_state_clone_shares_preview_pixels() {
+    use pin_app::ui::{PreviewArt, TableEntry, TableInfo};
+    let entries: Vec<TableEntry> = (0..5)
+        .map(|i| {
+            let info = TableInfo {
+                id: format!("t{i}"),
+                name: format!("T{i}"),
+                author: String::new(),
+                version: String::new(),
+                players_max: 1,
+                features: vec![],
+                preview: Some(PreviewArt {
+                    file: "preview.png".into(),
+                    width: 4,
+                    height: 4,
+                    rgba: vec![i as u8; 64].into(),
+                }),
+                preview_error: None,
+                warning_count: 0,
+            };
+            TableEntry {
+                path: format!("/t/{i}").into(),
+                file_name: format!("t{i}"),
+                status: TableStatus::Ready(info),
+            }
+        })
+        .collect();
+    let mut m = MenuState::default();
+    m.set_tables(entries);
+    let c = m.clone();
+    let pix = |s: &MenuState| -> Vec<*const u8> {
+        s.tables()
+            .iter()
+            .map(|t| match &t.status {
+                TableStatus::Ready(i) => i.preview.as_ref().unwrap().rgba.as_ptr(),
+                _ => panic!("ready"),
+            })
+            .collect()
+    };
+    assert_eq!(pix(&m).len(), 5);
+    assert_eq!(pix(&m), pix(&c), "clone shares every pixel allocation");
+}
+
+/// REQ-VIEW-006 / 4.4: a FIFO named like an archive neither hangs the scan nor
+/// hides its neighbours.
+#[cfg(unix)]
+#[test]
+fn req_view_006_scan_fifo_archive_is_broken_not_a_hang() {
+    let root = temp_dir("scan_fifo");
+    let files = bundle_files();
+    let st = std::process::Command::new("mkfifo")
+        .arg(root.join("a.zip"))
+        .status()
+        .expect("mkfifo");
+    assert!(st.success());
+    write_dir(&root.join("b"), &files);
+    std::fs::write(root.join("c.zip"), stored_zip(&files)).unwrap();
+    let entries = scan_tables(&root);
+    let got: Vec<(&str, bool)> = entries
+        .iter()
+        .map(|e| (e.file_name.as_str(), e.is_ready()))
+        .collect();
+    assert_eq!(got, [("a.zip", false), ("b", true), ("c.zip", true)]);
+    match &entries[0].status {
+        TableStatus::Broken(m) => assert!(m.contains("not a regular file"), "{m}"),
+        other => panic!("expected Broken, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -338,15 +338,10 @@ fn req_vis_002_spinner_quaternion_matches_state() {
         };
         let plus = worst(|r| r.1);
         let minus = worst(|r| r.2);
-        if plus <= 1e-5 {
-            // Matches with the brief's axis sign.
-        } else if minus <= 1e-5 {
-            eprintln!(
-                "OBSERVATION: the quaternion axis sign is opposite to (u.y, -u.x, 0); worst error {minus:e}"
-            );
-        } else {
-            panic!("spinner angle mismatch: worst error {plus:e} (axis +) / {minus:e} (axis -)");
-        }
+        assert!(
+            plus <= 1e-5,
+            "spinner angle mismatch: worst error {plus:e} (documented axis (u.y, -u.x, 0)); opposite-sign worst error {minus:e}"
+        );
     });
 }
 

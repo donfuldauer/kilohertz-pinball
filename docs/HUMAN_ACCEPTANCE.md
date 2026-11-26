@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 12
+- Open queue lines: 13
 - Resolved queue lines: 323
-- Decision entries: 558
-- Run-log rows: 604
+- Decision entries: 568
+- Run-log rows: 612
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -39,6 +39,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-002-lat001-frame-form] REQ-LAT-001's CI form ("at most two presented frames from the event to the first frame showing the bat moved") fails correct code when a present returns within the key-to-move time after a press: the in-flight frame cannot show the press and the next frame reads its snapshot before the bat moved, so the raw count is 3 (measured on #82's head: 3–10 of 170 presses per 60 s run at about 8 fps). Proposed SPEC edit: count from the first frame that started after the press took effect (at most two presented frames after the frame in flight), or state the CI form at the 99th percentile as the millisecond form does. See DECISIONS "#82 — Windowed latency check definitions". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-008-slot-meaning] SPEC Appendix A "Dynamic mesh slot convention" calls each slot a "world transform" but the per-kind rules give displacements (drop_target z above raised position; sling/kickback/plunger offset from home/rest) and absolute pivots (spinner, gate, diverter). Proposed edit: header becomes "a transform in world axes (metres, radians) applied to the part's rest pose; per kind below, translation is either an absolute position (pivot, hinge) or an offset from rest/home; the per-kind rule wins". Also say slots are published by KP-023 (#103). See DECISIONS "#163 gate round 8 — dynamic mesh slot meaning". (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-009-floor-height-xy] SPEC Appendix A cabinet.toml "Frames" (REQ-BUILD-002) defines the body-bottom height as linear in y only ("mean effective leg length of the front or rear pair - body.leg_overlap, linear in y between the leg centrelines"), which cannot represent the body roll that REQ-CAB-008 derives when left and right legs differ. Proposed edit: "the body bottom is the plane through the four leg-top centres (each leg's effective length less body.leg_overlap); its height at cabinet (x, y) varies linearly with y between the front and rear leg centrelines and with x between the left and right leg centrelines". Implementation: #217 (KP-103). See DECISIONS "#163 gate round 9 — cabinet floor height must vary with x". (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -604,6 +605,16 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate round 8: dynamic mesh publication deferred (docs/DECISIONS.md)
 - #163 gate round 8: dynamic mesh slot meaning (docs/DECISIONS.md)
 - #163 gate round 8: Router swap also flushes owed gamepad-swap releases and resets the digital nudge (docs/DECISIONS.md)
+- #163 gate round 9: cabinet floor height must vary with x (docs/DECISIONS.md)
+- #163 gate round 9: gpu-tests-cross budget fails instead of clamping (docs/DECISIONS.md)
+- #163 gate round 9: roll clearance measured from the documented origin (docs/DECISIONS.md)
+- #163 gate round 9: Vfs opens only regular files (docs/DECISIONS.md)
+- #163 gate round 9: unregistered LCD scene images are skipped; ScoreTexture::set_image registers them (docs/DECISIONS.md)
+- #163 gate round 9: close before swap (docs/DECISIONS.md)
+- #163 gate round 9: latency trace merged across engines (docs/DECISIONS.md)
+- #163 gate round 9: browser selection must not alias the trace file (docs/DECISIONS.md)
+- #163 gate round 9: I/O worker scan coalescing and submission errors (docs/DECISIONS.md)
+- #163 gate round 9: `--table=` is rejected (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

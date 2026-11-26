@@ -6,8 +6,8 @@ use super::dmd::{DmdFrame, DmdRenderer, DmdSpec};
 use super::lcd::{LcdDrawList, LcdRenderer, LcdSpec};
 use super::scene::{SCORE_SCENE, Scene, SceneLibrary, ScenePlayer, placeholder_scene};
 use super::score::ScoreState;
-use super::{DisplayError, ImageSet};
-use crate::gpu::GpuContext;
+use super::{DisplayError, ImageSet, RgbaImage};
+use crate::gpu::{GpuContext, GpuError};
 use crate::topology::{Rect, SurfaceRole, TopologyPlan};
 use pin_core::LampId;
 use pin_core::schema::backglass::{DmdColor, ScoreDisplay, ScoreDisplayMode};
@@ -260,6 +260,33 @@ impl ScoreRenderer {
             (ScoreRenderer::Dmd(r), DisplayContent::Dmd(f)) => r.set_frame(queue, f),
             (ScoreRenderer::Lcd(r), DisplayContent::Lcd(l)) => r.set_draw_list(queue, l),
             _ => false,
+        }
+    }
+
+    /// Registers the image drawn by LCD scene image layers with
+    /// `file = <file>` (forwards to [`LcdRenderer::set_image`]: setting the
+    /// same file again replaces its texture in place, and the next
+    /// [`update`](Self::update) reports a change). An `LcdItem::Image` whose
+    /// file was never registered is skipped when drawing (a missing bundle
+    /// image never aborts rendering); registering it is the way to draw it.
+    ///
+    /// Errors, all [`GpuError::InvalidArgument`] and never a panic
+    /// (untrusted bundles, D25): an invalid image or one with a side above
+    /// the device's `max_texture_dimension_2d` (a previous image of that
+    /// file stays), and any image on a DMD renderer, which has no image
+    /// layers (its frames are composed on the CPU).
+    pub fn set_image(
+        &mut self,
+        ctx: &GpuContext,
+        file: &str,
+        image: &RgbaImage,
+    ) -> Result<(), GpuError> {
+        match self {
+            ScoreRenderer::Lcd(r) => r.set_image(ctx, file, image),
+            ScoreRenderer::Dmd(_) => Err(GpuError::InvalidArgument(format!(
+                "score display image {file:?}: a DMD score display has no images \
+                 (only an LCD draws image layers)"
+            ))),
         }
     }
 
