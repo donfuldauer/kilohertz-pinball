@@ -1255,3 +1255,118 @@ fn angled_front_window_near_the_bottom_stays_above_zb() {
         }
     }
 }
+
+/// A flat/flat backbox on `classic_standard` of the given width, height and
+/// depth (mm) whose face parts are the 300 mm minimised fit values scaled
+/// to the face, so that no fit error can fire before the panel-room rule.
+fn scaled_backbox(width: f32, height: f32, depth: f32) -> CabinetGeometry {
+    let (su, sv) = (width / 300.0, height / 300.0);
+    let mut g = preset("classic_standard");
+    let bb = &mut g.backbox;
+    bb.width = width;
+    bb.height = height;
+    bb.depth = depth;
+    bb.front_y = 800.0;
+    bb.bottom_z = 400.0;
+    bb.front_profile = BackboxFrontProfile::Flat;
+    bb.top_profile = BackboxTopProfile::Flat;
+    bb.speaker_panel_height = 30.0 * sv;
+    bb.backglass.width = 90.0 * su;
+    bb.backglass.height = 81.0 * sv;
+    bb.backglass.thickness = 0.5;
+    bb.translite_opening.width = 90.0 * su;
+    bb.translite_opening.height = 81.0 * sv;
+    bb.translite_opening.bottom = 30.0 * sv;
+    bb.score_display.kind = ScoreDisplayKind::Dmd;
+    bb.score_display.pixels = [1, 1];
+    bb.score_display.width = 30.0 * su;
+    bb.score_display.height = 3.0 * sv;
+    bb.score_display.centre_v = 15.0 * sv;
+    bb.grilles = Vec::new();
+    g
+}
+
+/// REQ-CAB-005 (R11), issue #229: a backbox shallower than two wall-thickness
+/// panels is rejected naming `backbox.depth`, for the historical failing
+/// seed (depth 1e-6) and just under 2T = 38 mm.
+#[test]
+fn req_cab_005_backbox_depth_too_shallow_for_its_panels_is_rejected() {
+    for depth in [1e-6_f32, 37.9] {
+        let g = scaled_backbox(300.0, 300.0, depth);
+        let e = generate_cabinet(&g)
+            .err()
+            .unwrap_or_else(|| panic!("depth {depth} accepted"));
+        assert_eq!(e.element, "backbox.depth", "depth {depth}");
+        assert!(!e.message.is_empty());
+    }
+    let mut g = preset("classic_standard");
+    g.backbox.depth = 37.9;
+    assert_eq!(
+        generate_cabinet(&g).unwrap_err().element,
+        "backbox.depth",
+        "preset with 37.9 mm"
+    );
+}
+
+/// REQ-CAB-001: exactly 2T is accepted and every part of the bounds set
+/// lies in `[front_y, front_y + depth]` (1 mm); so does a normal depth.
+#[test]
+fn req_cab_001_backbox_depth_boundary_keeps_parts_inside_depth() {
+    let t = preset("classic_standard").body.wall_thickness;
+    assert!((t - 19.0).abs() < 1e-6);
+    for depth in [2.0 * t, 250.0] {
+        let g = scaled_backbox(300.0, 300.0, depth);
+        let out = generate_cabinet(&g).unwrap_or_else(|e| panic!("depth {depth}: {e}"));
+        let scene = load(&out.glb);
+        let (lo, hi) = bounds(&scene, &BOUNDS_SET);
+        let (lo, hi) = (mm(lo), mm(hi));
+        near(lo[1], 800.0, 1.0, "front");
+        near(hi[1], 800.0 + f64::from(depth), 1.0, "rear");
+    }
+    let g = preset("classic_standard");
+    let out = generate(&g);
+    let (lo, hi) = bounds(&load(&out.glb), &BOUNDS_SET);
+    let (lo, hi) = (mm(lo), mm(hi));
+    near(lo[1], f64::from(g.backbox.front_y), 1.0, "preset front");
+    near(
+        hi[1],
+        f64::from(g.backbox.front_y + g.backbox.depth),
+        1.0,
+        "preset rear",
+    );
+}
+
+/// REQ-CAB-005: a width or height below 2T is rejected naming its key;
+/// exactly 2T is accepted.
+#[test]
+fn req_cab_005_backbox_width_and_height_below_two_panels_are_rejected() {
+    let g = scaled_backbox(300.0, 10.0, 250.0);
+    assert_eq!(generate_cabinet(&g).unwrap_err().element, "backbox.height");
+    let g = scaled_backbox(10.0, 300.0, 250.0);
+    assert_eq!(generate_cabinet(&g).unwrap_err().element, "backbox.width");
+    let g = scaled_backbox(37.9, 300.0, 250.0);
+    assert_eq!(generate_cabinet(&g).unwrap_err().element, "backbox.width");
+    let g = scaled_backbox(300.0, 37.9, 250.0);
+    assert_eq!(generate_cabinet(&g).unwrap_err().element, "backbox.height");
+    let g = scaled_backbox(38.0, 38.0, 250.0);
+    if let Err(e) = generate_cabinet(&g) {
+        panic!("38 x 38 mm rejected: {} {}", e.element, e.message);
+    }
+}
+
+/// REQ-CAB-005 check order: value errors keep naming `backbox.depth`, and
+/// the panel-room rule precedes the angled-front rule.
+#[test]
+fn req_cab_005_backbox_depth_error_order() {
+    for depth in [0.0_f32, f32::NAN, -1.0, 4000.0 * 1000.0] {
+        let g = scaled_backbox(300.0, 300.0, depth);
+        assert_eq!(
+            generate_cabinet(&g).unwrap_err().element,
+            "backbox.depth",
+            "depth {depth}"
+        );
+    }
+    let mut g = scaled_backbox(300.0, 300.0, 37.9);
+    g.backbox.front_profile = BackboxFrontProfile::Angled;
+    assert_eq!(generate_cabinet(&g).unwrap_err().element, "backbox.depth");
+}
