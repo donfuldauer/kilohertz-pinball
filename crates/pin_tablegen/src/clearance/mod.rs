@@ -70,6 +70,19 @@
 //! the entry hole the generated VUK kicks the ball up through), the reach
 //! guides and wireforms already have.
 //!
+//! # Spatial index
+//!
+//! The geometric checks find nearby triangles through a spatial index
+//! ([`SpatialIndex`]). The default ([`SpatialIndex::Fine`]) is one
+//! bounding-volume hierarchy per (collision layer, slope class) bucket, so
+//! a query visits only the layers, slopes and heights its check can use;
+//! [`SpatialIndex::Legacy`] is the original uniform plan-view grid (cells
+//! of at least 50 mm), kept as the reference. Both return the same
+//! candidates the checks act on, in the same ascending order, so every
+//! report is identical; [`validate_clearance_indexed`] runs either and
+//! counts the narrow-phase work ([`IndexStats`]). See DECISIONS.md
+//! "#135 — clearance spatial index".
+//!
 //! See DECISIONS.md "2.8 — Clearance validator public API" and
 //! `docs/decisions/2026-11-18-fix-2.8-backbox-clearance.md` for the exact
 //! rules.
@@ -606,12 +619,58 @@ pub fn validate_clearance_diameters(
     validate_clearance_for(table, scene, None, Some(diameters_m))
 }
 
+/// Which spatial index the validator uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpatialIndex {
+    /// The original uniform plan-view grid (cells of at least 50 mm); kept as the reference.
+    Legacy,
+    /// The finer index (default).
+    #[default]
+    Fine,
+}
+
+/// Work counters of one validation run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IndexStats {
+    /// Narrow-phase candidates examined: every (support, ceiling) triangle pair that the
+    /// headroom check takes past the index and examines, plus every triangle the sphere and
+    /// support checks (World::supported / World::clearance / laterally_free) take past the
+    /// index and test. Deterministic: same inputs, same count.
+    pub pairs_examined: u64,
+}
+
+/// validate_clearance_for with a chosen index; `diameters_m: None` uses the declared
+/// profiles, `Some(ds)` as validate_clearance_diameters does. `backbox` is `None`.
+///
+/// Every [`SpatialIndex`] gives the same [`ClearanceReport`] (errors and
+/// warnings, in the same order, with the same values and messages); only
+/// the work done, counted in [`IndexStats`], differs.
+#[must_use]
+pub fn validate_clearance_indexed(
+    table: &LoadedTable,
+    scene: &GltfScene,
+    diameters_m: Option<&[f32]>,
+    index: SpatialIndex,
+) -> (ClearanceReport, IndexStats) {
+    validate_clearance_indexed_for(table, scene, None, diameters_m, index)
+}
+
 fn validate_clearance_for(
     table: &LoadedTable,
     scene: &GltfScene,
     backbox: Option<&GltfScene>,
     diameters: Option<&[f32]>,
 ) -> ClearanceReport {
+    validate_clearance_indexed_for(table, scene, backbox, diameters, SpatialIndex::Fine).0
+}
+
+fn validate_clearance_indexed_for(
+    table: &LoadedTable,
+    scene: &GltfScene,
+    backbox: Option<&GltfScene>,
+    diameters: Option<&[f32]>,
+    index: SpatialIndex,
+) -> (ClearanceReport, IndexStats) {
     let mut sink = Sink::default();
     let balls = match diameters {
         None => declared_balls(table, &mut sink),
@@ -635,12 +694,13 @@ fn validate_clearance_for(
             &mut tris,
         );
     }
-    let grid = geom::TriGrid::new(&tris);
+    let index = geom::TriIndex::new(&tris, index);
     let world = checks::World {
         table,
         scene,
         tris: &tris,
-        grid: &grid,
+        index: &index,
+        pairs: core::cell::Cell::new(0),
         glb: table.manifest.meta.playfield_mesh.as_str(),
         backbox,
     };
@@ -660,10 +720,16 @@ fn validate_clearance_for(
     };
     sink.errors.sort_by_key(key);
     sink.warnings.sort_by_key(key);
-    ClearanceReport {
-        errors: sink.errors,
-        warnings: sink.warnings,
-    }
+    let stats = IndexStats {
+        pairs_examined: world.pairs.get(),
+    };
+    (
+        ClearanceReport {
+            errors: sink.errors,
+            warnings: sink.warnings,
+        },
+        stats,
+    )
 }
 
 /// Loads a bundle (`load_table`, `load_gltf` of `meta.playfield_mesh` and,
@@ -682,4 +748,219 @@ pub fn validate_bundle(vfs: &Vfs) -> Result<ClearanceReport, AssetError> {
         &scene,
         backbox.as_ref(),
     ))
+}
+
+/// #135: the fine spatial index against the legacy grid on whole tables.
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// The shipped table `name` (`tables/<name>`), generated and loaded as
+    /// its `build.sh` does, without the placeholder media kit.
+    fn shipped(name: &str) -> (LoadedTable, GltfScene) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tables")
+            .join(name);
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "pin_tablegen_index_{name}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        copy_dir(&src, &dir);
+        let layout =
+            crate::layout::parse_layout(&std::fs::read_to_string(src.join("layout.toml")).unwrap())
+                .unwrap();
+        let mut base = pin_core::schema::TableManifest::from_toml_str(
+            &std::fs::read_to_string(src.join("table.toml")).unwrap(),
+        )
+        .unwrap();
+        // Media the validator never reads: the apex fixture's backglass
+        // (with a placeholder backbox scene) and no sounds.
+        base.sounds.clear();
+        let apex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pin_assets/tests/fixtures/apex");
+        copy_dir(&apex.join("backglass"), &dir.join("backglass"));
+        std::fs::copy(apex.join("backglass.toml"), dir.join("backglass.toml")).unwrap();
+        std::fs::write(dir.join("backbox.glb"), b"placeholder").unwrap();
+        let generated = crate::generate(&layout, &base).unwrap_or_else(|e| panic!("{e}"));
+        crate::write_bundle(&generated, &dir).unwrap();
+        let vfs = Vfs::open(&dir).unwrap();
+        let table = load_table(&vfs).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let scene = load_gltf(&vfs, &table.manifest.meta.playfield_mesh).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        (table, scene)
+    }
+
+    /// A flat collider sheet of `nx × ny` quads (two triangles each) over
+    /// `x0..x0 + w`, `y0..y0 + h` at height `z`, on `layer`.
+    fn sheet(name: &str, layer: u8, [x0, y0, w, h, z]: [f32; 5], nx: u32, ny: u32) -> MeshData {
+        let mut positions = Vec::new();
+        for j in 0..=ny {
+            for i in 0..=nx {
+                let (u, v) = (i as f32 / nx as f32, j as f32 / ny as f32);
+                positions.push([x0 + u * w, y0 + v * h, z]);
+            }
+        }
+        let mut indices = Vec::new();
+        let at = |i: u32, j: u32| j * (nx + 1) + i;
+        for j in 0..ny {
+            for i in 0..nx {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        MeshData {
+            name: name.to_owned(),
+            positions,
+            indices,
+            transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            extras: pin_assets::NodeExtras {
+                collision_layer: Some(layer),
+                collider: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A dense synthetic playfield: a `4 k²`-triangle floor (layer 0,
+    /// 514 × 1070 mm) under a `k²`-triangle deck (layer 1, `deck_z` m)
+    /// over its upper-right quarter.
+    fn dense(k: u32, deck_z: f32) -> GltfScene {
+        GltfScene {
+            meshes: vec![
+                sheet("floor", 0, [0.0, 0.0, 0.514, 1.07, 0.0], k, 2 * k),
+                sheet("deck", 1, [0.26, 0.7, 0.254, 0.37, deck_z], k / 2, k),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Debug text of a report (`required_mm` / `actual_mm` may be NaN,
+    /// so `PartialEq` alone is not enough).
+    fn text(r: &ClearanceReport) -> String {
+        format!("{:?}\n{:?}", r.errors, r.warnings)
+    }
+
+    /// SPEC 2.8 (#135): on a dense scene, with a deck high enough and with
+    /// one too low for the large ball, both indexes give the same report
+    /// and the fine one examines far fewer candidates.
+    #[test]
+    fn dense_scene_gives_identical_reports_and_fewer_pairs() {
+        let (table, _) = shipped("greybox");
+        let ds = [0.027f32, 0.0794];
+        for deck in [0.2f32, 0.06] {
+            let scene = dense(41, deck);
+            let (fine, fs) =
+                validate_clearance_indexed(&table, &scene, Some(&ds), SpatialIndex::Fine);
+            let (legacy, ls) =
+                validate_clearance_indexed(&table, &scene, Some(&ds), SpatialIndex::Legacy);
+            assert_eq!(text(&fine), text(&legacy), "deck at {deck}");
+            assert_eq!(
+                text(&fine),
+                text(&validate_clearance_diameters(&table, &scene, &ds))
+            );
+            let low = fine
+                .errors
+                .iter()
+                .any(|e| e.feature == Feature::DeckHeadroom);
+            assert_eq!(low, deck < 0.1, "{fine:?}");
+            assert!(fs.pairs_examined < ls.pairs_examined, "{fs:?} {ls:?}");
+            // Deterministic counters.
+            let again = validate_clearance_indexed(&table, &scene, Some(&ds), SpatialIndex::Fine);
+            assert_eq!(again.1, fs);
+        }
+    }
+
+    /// SPEC 2.8 (#135): on a uniformly dense floor under a deck the ball
+    /// clears, nine times the triangles costs the fine index at most nine
+    /// times the candidates; the legacy grid's 50 mm cells cost more than
+    /// that (its candidates per support grow with the density).
+    #[test]
+    fn fine_pairs_grow_at_most_linearly_on_a_dense_floor() {
+        let (table, _) = shipped("greybox");
+        let run = |k: u32, index: SpatialIndex| {
+            let scene = dense(k, 0.2);
+            validate_clearance_indexed(&table, &scene, Some(&[0.027]), index)
+                .1
+                .pairs_examined
+        };
+        // 5 k² triangles: 8 405 and 75 645.
+        let (small, big) = (run(41, SpatialIndex::Fine), run(123, SpatialIndex::Fine));
+        assert!(small > 0 && big <= 9 * small, "{small} -> {big}");
+        let (small, big) = (
+            run(41, SpatialIndex::Legacy),
+            run(123, SpatialIndex::Legacy),
+        );
+        assert!(big > 9 * small, "{small} -> {big}");
+    }
+
+    #[test]
+    fn index_choice_defaults_to_the_fine_index() {
+        assert_eq!(SpatialIndex::default(), SpatialIndex::Fine);
+        assert_eq!(IndexStats::default().pairs_examined, 0);
+        // An empty scene examines nothing with either index.
+        let (table, _) = shipped("greybox");
+        let empty = GltfScene::default();
+        let (fine, fs) = validate_clearance_indexed(&table, &empty, None, SpatialIndex::Fine);
+        let (legacy, ls) = validate_clearance_indexed(&table, &empty, None, SpatialIndex::Legacy);
+        assert_eq!(text(&fine), text(&legacy));
+        assert_eq!((fs.pairs_examined, ls.pairs_examined), (0, 0));
+    }
+
+    /// SPEC 2.8, 6.0 (#135): the four shipped tables get the same report
+    /// from either index (declared profiles and a failing diameter sweep),
+    /// and the default entry points use the fine one.
+    #[test]
+    fn shipped_tables_give_identical_reports_with_either_index() {
+        for name in ["greybox", "apex_circuit", "sky_deck", "feature_lab"] {
+            let (table, scene) = shipped(name);
+            let (fine, fs) = validate_clearance_indexed(&table, &scene, None, SpatialIndex::Fine);
+            let (legacy, ls) =
+                validate_clearance_indexed(&table, &scene, None, SpatialIndex::Legacy);
+            assert_eq!(text(&fine), text(&legacy), "{name}");
+            assert_eq!(
+                text(&fine),
+                text(&validate_clearance(&table, &scene)),
+                "{name}"
+            );
+            assert!(
+                fs.pairs_examined <= ls.pairs_examined,
+                "{name}: {fs:?} {ls:?}"
+            );
+            // A diameter sweep that fails somewhere on every table.
+            let ds = [0.01588f32, 0.027, 0.0794, 0.12];
+            let (fine, _) =
+                validate_clearance_indexed(&table, &scene, Some(&ds), SpatialIndex::Fine);
+            let (legacy, _) =
+                validate_clearance_indexed(&table, &scene, Some(&ds), SpatialIndex::Legacy);
+            assert!(!fine.errors.is_empty(), "{name}");
+            assert_eq!(text(&fine), text(&legacy), "{name}");
+            assert_eq!(
+                text(&fine),
+                text(&validate_clearance_diameters(&table, &scene, &ds))
+            );
+        }
+    }
 }
