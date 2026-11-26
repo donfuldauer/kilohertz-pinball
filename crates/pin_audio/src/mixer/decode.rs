@@ -1,8 +1,14 @@
 //! Sample decoding: WAV (`hound`) and Ogg Vorbis (`lewton`) byte buffers into
 //! mono or interleaved stereo `f32` at the mixer rate.
 //!
-//! Decoding happens once, at load time, on the I/O worker; the result is a
-//! [`Sample`] the mixer plays without further conversion.
+//! A resident sound is decoded once, at load time, on the I/O worker; the
+//! result is a [`Sample`] the mixer plays without further conversion. A
+//! streamed music track ([`open_stream`](super::open_stream)) runs the same
+//! code on its loader thread, pass after pass: one decode path (header
+//! validation, the WAV and Vorbis decoders and the linear resampler) feeds
+//! either the budget-charged output buffer of [`decode_with_budget`] or
+//! the track's ring, so both produce bit-identical frames and enforce the
+//! same limits.
 //!
 //! # Conversion rules
 //! * Integer PCM of `b` bits (8, 16, 24 or 32; hound reads 8-bit WAV data,
@@ -222,6 +228,22 @@ impl DecodeBudget {
         granted
     }
 
+    /// Charges exactly `bytes`, all or nothing (a streamed track's ring,
+    /// [`super::stream`]); returns whether the charge was made. Never
+    /// exceeds the limit.
+    pub(super) fn try_charge_exact(&self, bytes: u64) -> bool {
+        self.used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|&total| total <= self.limit)
+            })
+            .is_ok()
+    }
+
+    /// Returns `bytes` charged by [`try_charge_exact`](Self::try_charge_exact).
+    pub(super) fn refund_bytes(&self, bytes: u64) {
+        self.refund_frames(bytes, 1);
+    }
+
     /// Refunds frames of `bytes_per_frame` bytes a decode charged itself
     /// (unused capacity, or all of it on failure). They are always part of
     /// `used`, so the checked subtraction cannot fail; if it ever did, `used`
@@ -417,7 +439,6 @@ impl fmt::Display for DecodeError {
 }
 
 impl std::error::Error for DecodeError {}
-
 /// Decodes a WAV or Ogg Vorbis buffer into a [`Sample`] at `mixer_rate`
 /// (mono files stay mono, stereo stays stereo; see the module docs for the
 /// exact rules). Never panics.
@@ -439,23 +460,90 @@ pub fn decode_with_budget(
     mixer_rate: u32,
     budget: &DecodeBudget,
 ) -> Result<Sample, DecodeError> {
+    run_decode(bytes, mixer_rate, |layout| {
+        Ok(VecSink::new(
+            layout.channels,
+            layout.src,
+            mixer_rate,
+            layout.expected_in,
+            budget,
+        ))
+    })
+    .map(VecSink::into_sample)
+}
+
+/// Why the shared decode path stopped early, for sinks that can stop it on
+/// their own (the streaming loader, [`super::stream`]).
+#[derive(Debug)]
+pub(super) enum Halt {
+    /// The source is invalid or over a limit (same values as
+    /// [`decode_with_budget`]).
+    Failed(DecodeError),
+    /// The sink asked to stop (track dropped or rewound, or a header probe).
+    Stopped,
+}
+
+impl From<DecodeError> for Halt {
+    fn from(e: DecodeError) -> Self {
+        Halt::Failed(e)
+    }
+}
+
+/// Where the shared decode path delivers output frames at the mixer rate.
+pub(super) trait FrameSink {
+    /// Error the sink can stop the decode with; decoder errors convert into
+    /// it.
+    type Error: From<DecodeError>;
+
+    /// Takes the next output frame. A mono sink stores only `l` (`r == l`
+    /// for mono sources).
+    fn put(&mut self, l: f32, r: f32) -> Result<(), Self::Error>;
+}
+
+/// What a header announced, validated (channels 1 or 2, source rate in
+/// range, length within the cap), handed to the sink factory of
+/// [`run_decode`] before any audio is decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Layout {
+    /// Stored channels, 1 or 2.
+    pub channels: usize,
+    /// Source (file) rate in Hz.
+    pub src: u32,
+    /// Source frames the header claims, bounded by what the bytes can hold
+    /// for WAV (sizes the first reservation only; never trusted for more).
+    pub expected_in: u64,
+    /// Upper bound of the output length at the mixer rate when the header
+    /// gives one (WAV data-chunk size, last Ogg granule position).
+    pub max_out_frames: Option<u64>,
+}
+
+/// The one decode path: validates the mixer rate and the container, parses
+/// and validates the header, asks `open` for a sink, then streams every
+/// decoded source frame through the linear [`Resampling`] into that sink.
+/// Returns the sink once the source has ended. Decoders run under
+/// `catch_unwind`; a panic becomes [`DecodeError::Malformed`].
+pub(super) fn run_decode<S: FrameSink>(
+    bytes: &[u8],
+    mixer_rate: u32,
+    open: impl FnOnce(&Layout) -> Result<S, S::Error>,
+) -> Result<S, S::Error> {
     if mixer_rate == 0 || mixer_rate > MAX_MIXER_RATE {
-        return Err(DecodeError::Unsupported);
+        return Err(DecodeError::Unsupported.into());
     }
     let is_wav = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE";
     let is_ogg = bytes.len() >= 4 && &bytes[0..4] == b"OggS";
     if is_wav {
-        guarded(|| decode_wav(bytes, mixer_rate, budget))
+        guarded(|| decode_wav(bytes, mixer_rate, open))
     } else if is_ogg {
-        guarded(|| decode_vorbis(bytes, mixer_rate, budget))
+        guarded(|| decode_vorbis(bytes, mixer_rate, open))
     } else {
-        Err(DecodeError::Unsupported)
+        Err(DecodeError::Unsupported.into())
     }
 }
 
-fn guarded(f: impl FnOnce() -> Result<Sample, DecodeError>) -> Result<Sample, DecodeError> {
+fn guarded<T, E: From<DecodeError>>(f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
     catch_unwind(AssertUnwindSafe(f))
-        .unwrap_or_else(|_| Err(DecodeError::Malformed("decoder panicked".into())))
+        .unwrap_or_else(|_| Err(DecodeError::Malformed("decoder panicked".into()).into()))
 }
 
 fn malformed(e: impl fmt::Display) -> DecodeError {
@@ -480,7 +568,7 @@ fn check_rate_and_channels(rate: u32, channels: usize) -> Result<(), DecodeError
     Ok(())
 }
 
-fn max_frames(rate: u32) -> u64 {
+pub(super) fn max_frames(rate: u32) -> u64 {
     MAX_SECONDS * u64::from(rate)
 }
 
@@ -494,14 +582,13 @@ fn check_length(n_in: u64, src: u32, dst: u32) -> Result<(), DecodeError> {
     }
 }
 
-/// Streaming linear resampler for 1 or 2 channels (module docs). Source
-/// frames are pushed one at a time (mono pushes `(v, v)`; only the left value
-/// is used and stored); output frame `j` is emitted as soon as both of
-/// its source frames are known, so only the output is buffered and the
-/// length caps are enforced while decoding. The output buffer grows on
-/// demand and every frame of its capacity is charged to the budget first;
-/// dropping the resampler without [`Resampler::finish`] refunds the charge.
-struct Resampler<'b> {
+/// Streaming linear resampler for 1 or 2 channels (module docs), shared by
+/// the full decode and the streaming loader. Source frames are pushed one
+/// at a time (mono pushes `(v, v)`; only the left value is used and
+/// stored); output frame `j` is emitted to the sink as soon as both of its
+/// source frames are known, so source frames are never buffered and the
+/// length caps are enforced while decoding.
+pub(super) struct Resampling<S> {
     /// Stored channels, 1 or 2.
     channels: usize,
     src: u64,
@@ -512,13 +599,16 @@ struct Resampler<'b> {
     j: u64,
     prev: (f32, f32),
     last: (f32, f32),
-    out: Vec<f32>,
     max_in: u64,
     max_out: u64,
-    budget: &'b DecodeBudget,
-    /// Frames charged to `budget` (= output capacity in frames).
-    charged: u64,
+    sink: S,
 }
+
+/// The full decode's resampler: output into a budget-charged [`VecSink`]
+/// (built directly by the unit tests; [`run_decode`] builds it from the
+/// header's [`Layout`]).
+#[cfg(test)]
+type Resampler<'b> = Resampling<VecSink<'b>>;
 
 /// Budget bytes of one output frame with `channels` stored channels.
 fn bytes_per_frame(channels: usize) -> u64 {
@@ -529,18 +619,11 @@ fn bytes_per_frame(channels: usize) -> u64 {
     }
 }
 
-impl<'b> Resampler<'b> {
-    /// `expected_in` (a header claim) only sizes the first reservation,
-    /// which never exceeds [`INITIAL_RESERVE_FRAMES`]. `channels` is 1 (mono
-    /// output) or anything else (stereo output).
-    fn new(
-        channels: usize,
-        src: u32,
-        dst: u32,
-        expected_in: u64,
-        budget: &'b DecodeBudget,
-    ) -> Self {
-        let mut rs = Self {
+impl<S: FrameSink> Resampling<S> {
+    /// A resampler from `src` to `dst` Hz feeding `sink`. `channels` is 1
+    /// (mono output) or anything else (stereo output).
+    fn with_sink(channels: usize, src: u32, dst: u32, sink: S) -> Self {
+        Self {
             channels: if channels == 1 { 1 } else { 2 },
             src: u64::from(src),
             dst: u64::from(dst),
@@ -548,78 +631,37 @@ impl<'b> Resampler<'b> {
             j: 0,
             prev: (0.0, 0.0),
             last: (0.0, 0.0),
-            out: Vec::new(),
             max_in: max_frames(src),
             max_out: max_frames(dst),
-            budget,
-            charged: 0,
-        };
-        let first = resampled_len(expected_in, src, dst)
-            .min(rs.max_out)
-            .min(INITIAL_RESERVE_FRAMES);
-        rs.reserve(first);
-        rs
+            sink,
+        }
     }
 
-    /// Charges up to `frames` more frames and reserves exactly what was
-    /// granted; returns the number granted.
-    fn reserve(&mut self, frames: u64) -> u64 {
-        if frames == 0 {
-            return 0;
-        }
-        let granted = self
-            .budget
-            .try_charge_frames(frames, bytes_per_frame(self.channels));
-        if granted > 0 {
-            self.charged += granted;
-            // `granted` ≤ the 10-minute cap (≤ 2^28 frames): fits in usize.
-            self.out.reserve_exact(self.channels * granted as usize);
-        }
-        granted
-    }
-
-    /// Makes room for one more output frame (called after the length caps).
-    fn room(&mut self) -> Result<(), DecodeError> {
-        if self.j < self.charged {
-            return Ok(());
-        }
-        let want = self
-            .j
-            .max(MIN_GROW_FRAMES)
-            .min(self.max_out.saturating_sub(self.j));
-        if self.reserve(want) == 0 {
-            return Err(DecodeError::BudgetExhausted);
-        }
-        Ok(())
-    }
-
-    fn emit(&mut self, a: (f32, f32), b: (f32, f32), f: f64) -> Result<(), DecodeError> {
+    fn emit(&mut self, a: (f32, f32), b: (f32, f32), f: f64) -> Result<(), S::Error> {
         if self.j >= self.max_out {
-            return Err(DecodeError::TooLong);
+            return Err(DecodeError::TooLong.into());
         }
-        self.room()?;
-        self.out.push(lerp(a.0, b.0, f));
-        if self.channels == 2 {
-            self.out.push(lerp(a.1, b.1, f));
-        }
+        let l = lerp(a.0, b.0, f);
+        let r = if self.channels == 2 {
+            lerp(a.1, b.1, f)
+        } else {
+            l
+        };
+        self.sink.put(l, r)?;
         self.j += 1;
         Ok(())
     }
 
-    fn push(&mut self, l: f32, r: f32) -> Result<(), DecodeError> {
+    fn push(&mut self, l: f32, r: f32) -> Result<(), S::Error> {
         if self.n_in >= self.max_in {
-            return Err(DecodeError::TooLong);
+            return Err(DecodeError::TooLong.into());
         }
         self.n_in += 1;
         if self.src == self.dst {
             if self.j >= self.max_out {
-                return Err(DecodeError::TooLong);
+                return Err(DecodeError::TooLong.into());
             }
-            self.room()?;
-            self.out.push(l);
-            if self.channels == 2 {
-                self.out.push(r);
-            }
+            self.sink.put(l, if self.channels == 2 { r } else { l })?;
             self.j += 1;
             return Ok(());
         }
@@ -641,7 +683,9 @@ impl<'b> Resampler<'b> {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Sample, DecodeError> {
+    /// Emits the tail (output frames past the last source frame) and returns
+    /// the sink.
+    fn flush(mut self) -> Result<S, S::Error> {
         if self.src != self.dst && self.n_in > 0 {
             // Remaining frames have i ≥ n_in − 1: both neighbours clamp to the
             // last source frame.
@@ -651,20 +695,134 @@ impl<'b> Resampler<'b> {
                 self.emit(self.last, self.last, f)?;
             }
         }
-        // Keep exactly the produced frames charged.
-        self.budget
-            .refund_frames(self.charged - self.j, bytes_per_frame(self.channels));
-        self.charged = 0;
-        let out = std::mem::take(&mut self.out);
-        Ok(if self.channels == 1 {
-            Sample::from_mono_vec(out)
-        } else {
-            Sample::from_interleaved(out)
-        })
+        Ok(self.sink)
     }
 }
 
-impl Drop for Resampler<'_> {
+#[cfg(test)]
+impl<'b> Resampler<'b> {
+    /// A full-decode resampler whose output is charged to `budget`
+    /// ([`VecSink`]). `expected_in` (a header claim) only sizes the first
+    /// reservation, which never exceeds [`INITIAL_RESERVE_FRAMES`].
+    fn new(
+        channels: usize,
+        src: u32,
+        dst: u32,
+        expected_in: u64,
+        budget: &'b DecodeBudget,
+    ) -> Self {
+        Self::with_sink(
+            channels,
+            src,
+            dst,
+            VecSink::new(channels, src, dst, expected_in, budget),
+        )
+    }
+
+    fn finish(self) -> Result<Sample, DecodeError> {
+        self.flush().map(VecSink::into_sample)
+    }
+}
+
+/// The full decode's output buffer. It grows on demand and every frame of
+/// its capacity is charged to the budget first; dropping it without
+/// [`VecSink::into_sample`] refunds the charge.
+pub(super) struct VecSink<'b> {
+    /// Stored channels, 1 or 2.
+    channels: usize,
+    out: Vec<f32>,
+    /// Frames stored.
+    frames: u64,
+    max_out: u64,
+    budget: &'b DecodeBudget,
+    /// Frames charged to `budget` (= output capacity in frames).
+    charged: u64,
+}
+
+impl<'b> VecSink<'b> {
+    fn new(
+        channels: usize,
+        src: u32,
+        dst: u32,
+        expected_in: u64,
+        budget: &'b DecodeBudget,
+    ) -> Self {
+        let mut sink = Self {
+            channels: if channels == 1 { 1 } else { 2 },
+            out: Vec::new(),
+            frames: 0,
+            max_out: max_frames(dst),
+            budget,
+            charged: 0,
+        };
+        let first = resampled_len(expected_in, src, dst)
+            .min(sink.max_out)
+            .min(INITIAL_RESERVE_FRAMES);
+        sink.reserve(first);
+        sink
+    }
+
+    /// Charges up to `frames` more frames and reserves exactly what was
+    /// granted; returns the number granted.
+    fn reserve(&mut self, frames: u64) -> u64 {
+        if frames == 0 {
+            return 0;
+        }
+        let granted = self
+            .budget
+            .try_charge_frames(frames, bytes_per_frame(self.channels));
+        if granted > 0 {
+            self.charged += granted;
+            // `granted` ≤ the 10-minute cap (≤ 2^28 frames): fits in usize.
+            self.out.reserve_exact(self.channels * granted as usize);
+        }
+        granted
+    }
+
+    /// Makes room for one more output frame (called after the length caps).
+    fn room(&mut self) -> Result<(), DecodeError> {
+        if self.frames < self.charged {
+            return Ok(());
+        }
+        let want = self
+            .frames
+            .max(MIN_GROW_FRAMES)
+            .min(self.max_out.saturating_sub(self.frames));
+        if self.reserve(want) == 0 {
+            return Err(DecodeError::BudgetExhausted);
+        }
+        Ok(())
+    }
+
+    /// The stored frames as a [`Sample`], keeping exactly them charged.
+    fn into_sample(mut self) -> Sample {
+        self.budget
+            .refund_frames(self.charged - self.frames, bytes_per_frame(self.channels));
+        self.charged = 0;
+        let out = std::mem::take(&mut self.out);
+        if self.channels == 1 {
+            Sample::from_mono_vec(out)
+        } else {
+            Sample::from_interleaved(out)
+        }
+    }
+}
+
+impl FrameSink for VecSink<'_> {
+    type Error = DecodeError;
+
+    fn put(&mut self, l: f32, r: f32) -> Result<(), DecodeError> {
+        self.room()?;
+        self.out.push(l);
+        if self.channels == 2 {
+            self.out.push(r);
+        }
+        self.frames += 1;
+        Ok(())
+    }
+}
+
+impl Drop for VecSink<'_> {
     /// An unfinished decode (error or panic) leaves nothing charged.
     fn drop(&mut self) {
         self.budget
@@ -679,20 +837,40 @@ fn map_hound(e: hound::Error) -> DecodeError {
     }
 }
 
-fn decode_wav(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, DecodeError> {
+fn decode_wav<S: FrameSink>(
+    bytes: &[u8],
+    dst: u32,
+    open: impl FnOnce(&Layout) -> Result<S, S::Error>,
+) -> Result<S, S::Error> {
     let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(map_hound)?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     check_rate_and_channels(spec.sample_rate, channels)?;
     let frames = u64::from(reader.duration());
     check_length(frames, spec.sample_rate, dst)?;
+    match spec.sample_format {
+        hound::SampleFormat::Float if spec.bits_per_sample != 32 => {
+            return Err(DecodeError::Unsupported.into());
+        }
+        hound::SampleFormat::Int if spec.bits_per_sample == 0 || spec.bits_per_sample > 32 => {
+            return Err(DecodeError::Unsupported.into());
+        }
+        _ => {}
+    }
     // Never trust the header beyond what the bytes can hold (and the
     // resampler caps the first reservation anyway).
     let bytes_per_frame = (usize::from(spec.bits_per_sample.div_ceil(8)).max(1) * channels) as u64;
     let expected = frames.min(bytes.len() as u64 / bytes_per_frame);
-    let mut rs = Resampler::new(channels, spec.sample_rate, dst, expected, budget);
+    let layout = Layout {
+        channels,
+        src: spec.sample_rate,
+        expected_in: expected,
+        max_out_frames: Some(resampled_len(expected, spec.sample_rate, dst)),
+    };
+    let sink = open(&layout)?;
+    let mut rs = Resampling::with_sink(channels, spec.sample_rate, dst, sink);
     let mut pending: Option<f32> = None;
-    let mut feed = |v: f32| -> Result<(), DecodeError> {
+    let mut feed = |v: f32| -> Result<(), S::Error> {
         if channels == 1 {
             rs.push(v, v)
         } else if let Some(l) = pending.take() {
@@ -704,17 +882,11 @@ fn decode_wav(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, D
     };
     match spec.sample_format {
         hound::SampleFormat::Float => {
-            if spec.bits_per_sample != 32 {
-                return Err(DecodeError::Unsupported);
-            }
             for s in reader.into_samples::<f32>() {
                 feed(s.map_err(map_hound)?)?;
             }
         }
         hound::SampleFormat::Int => {
-            if spec.bits_per_sample == 0 || spec.bits_per_sample > 32 {
-                return Err(DecodeError::Unsupported);
-            }
             let scale = f64::from(1u32 << (spec.bits_per_sample - 1));
             for s in reader.into_samples::<i32>() {
                 let v = s.map_err(map_hound)?;
@@ -722,7 +894,7 @@ fn decode_wav(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, D
             }
         }
     }
-    rs.finish()
+    rs.flush()
 }
 
 /// Page-level scan of an Ogg buffer: the serial of the first page, whether
@@ -773,7 +945,11 @@ fn scan_ogg_pages(b: &[u8]) -> OggScan {
     scan
 }
 
-fn decode_vorbis(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, DecodeError> {
+fn decode_vorbis<S: FrameSink>(
+    bytes: &[u8],
+    dst: u32,
+    open: impl FnOnce(&Layout) -> Result<S, S::Error>,
+) -> Result<S, S::Error> {
     use lewton::audio::{PreviousWindowRight, read_audio_packet_generic};
     use lewton::header::{read_header_ident, read_header_setup};
     use lewton::samples::InterleavedSamples;
@@ -782,7 +958,7 @@ fn decode_vorbis(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample
     if scan.other_serial {
         // Chained or multiplexed: each link restarts its granule positions,
         // so the length cannot be bounded up front.
-        return Err(DecodeError::Unsupported);
+        return Err(DecodeError::Unsupported.into());
     }
     let mut rdr = ogg::PacketReader::new(Cursor::new(bytes));
     let mut next = |what: &str| -> Result<ogg::Packet, DecodeError> {
@@ -816,12 +992,19 @@ fn decode_vorbis(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample
     // §A.2); without a granule the decoded length stands.
     let limit = scan.last_granule.unwrap_or(u64::MAX);
     // The granule position is a claim: it only sizes the first (capped)
-    // reservation.
-    let mut rs = Resampler::new(channels, src, dst, scan.last_granule.unwrap_or(0), budget);
+    // reservation and bounds the output length.
+    let layout = Layout {
+        channels,
+        src,
+        expected_in: scan.last_granule.unwrap_or(0),
+        max_out_frames: scan.last_granule.map(|g| resampled_len(g, src, dst)),
+    };
+    let sink = open(&layout)?;
+    let mut rs = Resampling::with_sink(channels, src, dst, sink);
     let mut pwr = PreviousWindowRight::new();
     'packets: while let Some(packet) = rdr.read_packet().map_err(malformed)? {
         if packet.stream_serial() != scan.serial {
-            return Err(DecodeError::Unsupported);
+            return Err(DecodeError::Unsupported.into());
         }
         let decoded: InterleavedSamples<i16> =
             read_audio_packet_generic(&ident, &setup, &packet.data, &mut pwr).map_err(malformed)?;
@@ -834,7 +1017,7 @@ fn decode_vorbis(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample
             rs.push(l, r)?;
         }
     }
-    rs.finish()
+    rs.flush()
 }
 
 /// `ceil(n_in · dst / src)`, the resampled length in frames.
