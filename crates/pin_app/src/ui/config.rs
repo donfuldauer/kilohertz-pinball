@@ -416,6 +416,58 @@ impl AudioConfig {
     }
 }
 
+/// Default telemetry destination (`TELEMETRY_PROTOCOL.md` §1: loopback,
+/// port 35120).
+pub const DEFAULT_TELEMETRY_ENDPOINT: &str = "127.0.0.1:35120";
+
+/// Longest accepted `telemetry.endpoint`, bytes.
+pub const MAX_ENDPOINT_BYTES: usize = 255;
+
+/// UDP telemetry settings (`[telemetry]` in `config.toml`, SPEC §4 3.4,
+/// KP-006).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// `telemetry.enabled`: send the cabinet state as UDP telemetry
+    /// (`docs/TELEMETRY_PROTOCOL.md`) while a table runs (default `true`).
+    /// A change applies to the next table load.
+    pub enabled: bool,
+    /// `telemetry.endpoint`: the destination `"host:port"` (IPv4,
+    /// `[IPv6]:port` or a host name; default [`DEFAULT_TELEMETRY_ENDPOINT`],
+    /// loopback only). An endpoint that does not resolve disables telemetry
+    /// for the run with one stderr line. Its port is also the port the DOF
+    /// bridge listens on. Empty or longer than [`MAX_ENDPOINT_BYTES`]: the
+    /// default, with a warning.
+    pub endpoint: String,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        TelemetryConfig {
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT.to_owned(),
+        }
+    }
+}
+
+/// DirectOutput Framework bridge settings (`[dof]` in `config.toml`, SPEC
+/// §4 3.5, KP-006).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DofConfig {
+    /// `dof.enabled`: start the DOF bridge on table load when the table has
+    /// `[dof]`, the bridge is installed next to the engine and telemetry is
+    /// enabled (Windows only; default `true`). A change applies to the next
+    /// table load.
+    pub enabled: bool,
+}
+
+impl Default for DofConfig {
+    fn default() -> Self {
+        DofConfig { enabled: true }
+    }
+}
+
 /// The application settings stored in `config.toml`.
 ///
 /// Field names are the TOML keys. Every key is optional in the file (missing
@@ -458,6 +510,10 @@ pub struct AppConfig {
     pub wireframe: bool,
     /// Audio settings (`[audio]`).
     pub audio: AudioConfig,
+    /// UDP telemetry settings (`[telemetry]`).
+    pub telemetry: TelemetryConfig,
+    /// DOF bridge settings (`[dof]`).
+    pub dof: DofConfig,
     /// Folder scanned for table bundles; `None` = `tables/` next to the
     /// executable (resolved by the app).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -520,6 +576,8 @@ impl Default for AppConfig {
             calibration: CalibrationConfig::default(),
             wireframe: false,
             audio: AudioConfig::default(),
+            telemetry: TelemetryConfig::default(),
+            dof: DofConfig::default(),
             tables_dir: None,
             last_table: None,
             extra: toml::Table::new(),
@@ -597,6 +655,8 @@ const TOP_KEYS: &[&str] = &[
     "calibration",
     "wireframe",
     "audio",
+    "telemetry",
+    "dof",
     "tables_dir",
     "last_table",
 ];
@@ -610,6 +670,8 @@ const PLUNGER_KEYS: &[&str] = &[
 ];
 const NUDGE_KEYS: &[&str] = &["high_pass_hz", "gain", "curve_exponent", "deadzone", "max"];
 const AUDIO_KEYS: &[&str] = &["decoded_budget_mib"];
+const TELEMETRY_KEYS: &[&str] = &["enabled", "endpoint"];
+const DOF_KEYS: &[&str] = &["enabled"];
 
 /// Largest monitor index the config accepts.
 pub const MAX_DISPLAY_INDEX: u32 = 15;
@@ -951,6 +1013,15 @@ impl AppConfig {
             );
             self.audio.decoded_budget_mib = d.audio.decoded_budget_mib;
         }
+        let endpoint = &self.telemetry.endpoint;
+        if endpoint.trim().is_empty() || endpoint.len() > MAX_ENDPOINT_BYTES {
+            bad(
+                w,
+                "telemetry.endpoint",
+                format!("must be \"host:port\" (1..={MAX_ENDPOINT_BYTES} bytes)"),
+            );
+            self.telemetry.endpoint = d.telemetry.endpoint.clone();
+        }
         if self.input_profile.trim().is_empty() || self.input_profile.len() > 128 {
             bad(
                 w,
@@ -1120,13 +1191,15 @@ fn monitor_msg(i: u32) -> String {
 }
 
 /// Known keys of the nested tables (dotted path, keys).
-const SECTIONS: [(&[&str], &[&str]); 6] = [
+const SECTIONS: [(&[&str], &[&str]); 8] = [
     (&["backglass_pip"], PIP_KEYS),
     (&["score_pip"], PIP_KEYS),
     (&["calibration"], CALIBRATION_KEYS),
     (&["calibration", "plunger"], PLUNGER_KEYS),
     (&["calibration", "nudge"], NUDGE_KEYS),
     (&["audio"], AUDIO_KEYS),
+    (&["telemetry"], TELEMETRY_KEYS),
+    (&["dof"], DOF_KEYS),
 ];
 
 /// Adds every key of `src` missing from `dst`, recursing into tables both
@@ -1175,5 +1248,93 @@ fn collect_unknown(raw: &toml::Table, config: &mut AppConfig, warnings: &mut Vec
             wrapped = t;
         }
         merge_missing(&mut config.extra, &wrapped);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// KP-006 (SPEC §4 3.4 / 3.5): `[telemetry]` and `[dof]` default to
+    /// enabled, loopback port 35120; missing keys take their defaults.
+    #[test]
+    fn kp006_telemetry_and_dof_defaults() {
+        let d = AppConfig::default();
+        assert!(d.telemetry.enabled && d.dof.enabled);
+        assert_eq!(d.telemetry.endpoint, "127.0.0.1:35120");
+        assert_eq!(d.telemetry.endpoint, DEFAULT_TELEMETRY_ENDPOINT);
+        let l = AppConfig::from_toml_str("[telemetry]\nenabled = false\n");
+        assert_eq!(l.warnings, []);
+        assert!(!l.config.telemetry.enabled);
+        assert_eq!(l.config.telemetry.endpoint, DEFAULT_TELEMETRY_ENDPOINT);
+        assert!(l.config.dof.enabled);
+    }
+
+    /// KP-006: the keys round-trip through `to_toml_string`, and unknown
+    /// keys inside the new sections are kept and reported.
+    #[test]
+    fn kp006_telemetry_and_dof_round_trip() {
+        let mut c = AppConfig::default();
+        c.telemetry.enabled = false;
+        c.telemetry.endpoint = "[::1]:40000".into();
+        c.dof.enabled = false;
+        let text = c.to_toml_string().unwrap();
+        assert!(
+            text.contains("[telemetry]") && text.contains("[dof]"),
+            "{text}"
+        );
+        let l = AppConfig::from_toml_str(&text);
+        assert_eq!(l.warnings, []);
+        assert_eq!(l.config, c);
+        let l = AppConfig::from_toml_str("[telemetry]\nfuture = 1\n[dof]\nfuture = 2\n");
+        assert_eq!(
+            l.warnings,
+            [
+                ConfigWarning::UnknownKey("telemetry.future".into()),
+                ConfigWarning::UnknownKey("dof.future".into()),
+            ]
+        );
+        let back = AppConfig::from_toml_str(&l.config.to_toml_string().unwrap());
+        assert_eq!(back.config, l.config);
+    }
+
+    /// KP-006: a value of the wrong type, a section that is not a table or
+    /// an empty endpoint takes its default with a warning; the rest of the
+    /// file is kept.
+    #[test]
+    fn kp006_wrong_values_fall_back_with_a_warning() {
+        let l = AppConfig::from_toml_str(
+            "wireframe = true\n[telemetry]\nenabled = \"yes\"\nendpoint = 5\n[dof]\nenabled = 1\n",
+        );
+        assert!(l.config.wireframe);
+        assert_eq!(l.config.telemetry, TelemetryConfig::default());
+        assert_eq!(l.config.dof, DofConfig::default());
+        let keys: Vec<&str> = l
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                ConfigWarning::InvalidValue { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            ["dof.enabled", "telemetry.enabled", "telemetry.endpoint"]
+        );
+        let l = AppConfig::from_toml_str("telemetry = 3\ndof = \"off\"\n");
+        assert_eq!(l.config, AppConfig::default());
+        assert_eq!(l.warnings.len(), 2, "{:?}", l.warnings);
+        for bad in ["", "   ", &"x".repeat(MAX_ENDPOINT_BYTES + 1)] {
+            let l = AppConfig::from_toml_str(&format!("[telemetry]\nendpoint = {bad:?}\n"));
+            assert_eq!(l.config.telemetry.endpoint, DEFAULT_TELEMETRY_ENDPOINT);
+            assert!(
+                l.warnings.iter().any(|w| matches!(
+                    w,
+                    ConfigWarning::InvalidValue { key, .. } if key == "telemetry.endpoint"
+                )),
+                "{:?}",
+                l.warnings
+            );
+        }
     }
 }
