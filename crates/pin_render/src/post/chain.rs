@@ -1,8 +1,8 @@
 //! GPU side of the post chain.
 
-use super::{LdrImage, PostConfig, PostFrame, ToneMap, screen_motion};
+use super::{LdrImage, PostConfig, PostFrame, ToneMap, screen_motion_between};
 use crate::gpu::{GpuContext, GpuError};
-use crate::pbr::{HDR_FORMAT, HdrImage};
+use crate::pbr::{HDR_FORMAT, HdrImage, PbrCamera};
 
 /// Most balls motion-blurred per frame (further balls are drawn sharp).
 pub const MAX_BLUR_BALLS: usize = 16;
@@ -285,6 +285,8 @@ pub struct PostChain {
     composite_hdr: wgpu::RenderPipeline,
     targets: Targets,
     stats: PostStats,
+    /// The camera of the previous presented frame (see [`PostChain::encode`]).
+    prev_camera: Option<PbrCamera>,
 }
 
 fn check_size(device: &wgpu::Device, w: u32, h: u32) -> Result<(), GpuError> {
@@ -453,6 +455,7 @@ impl PostChain {
             tex_layout,
             sampler,
             stats: PostStats::default(),
+            prev_camera: None,
         };
         // Pipelines and targets are created above, inside the scope.
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -507,7 +510,15 @@ impl PostChain {
                 self.output_format,
             );
         }
+        self.prev_camera = None;
         Ok(())
+    }
+
+    /// Forgets the previous frame's camera, so the next frame's motion blur
+    /// uses the current camera for both ends of the shutter. Call it on a
+    /// camera cut such as a preset switch, where the jump is not motion.
+    pub fn reset_camera_history(&mut self) {
+        self.prev_camera = None;
     }
 
     /// Counters.
@@ -582,6 +593,7 @@ impl PostChain {
         let cfg = &self.config;
         let (w, h) = self.size();
         let mb = &cfg.motion_blur;
+        let prev = self.prev_camera.as_ref().unwrap_or(frame.camera);
         let mut balls = [BlurBall {
             center_radius: [0.0; 4],
             disp: [0.0; 4],
@@ -595,7 +607,8 @@ impl PostChain {
                 0.0
             };
             for ball in frame.balls.iter().take(MAX_BLUR_BALLS) {
-                let Some(m) = screen_motion(frame.camera, ball, mb.shutter_s, w, h) else {
+                let Some(m) = screen_motion_between(prev, frame.camera, ball, mb.shutter_s, w, h)
+                else {
                     continue;
                 };
                 let mut d = m.displacement_px;
@@ -655,6 +668,11 @@ impl PostChain {
 
     /// Records the chain: `input` (an [`HDR_FORMAT`] view of the chain's
     /// size, linear radiance) → `output` (a view of the output format).
+    ///
+    /// This is the presented-frame path: after the frame's uniform is built
+    /// the frame's camera becomes the previous camera for the next frame's
+    /// motion blur. The readback paths ([`render_to_ldr`](Self::render_to_ldr),
+    /// [`render_to_hdr`](Self::render_to_hdr)) do not advance that history.
     pub fn encode(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -663,6 +681,7 @@ impl PostChain {
         output: &wgpu::TextureView,
     ) {
         self.encode_impl(encoder, input, frame, Some(output), false);
+        self.prev_camera = Some(*frame.camera);
     }
 
     fn encode_impl(

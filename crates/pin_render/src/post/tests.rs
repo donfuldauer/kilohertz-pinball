@@ -176,3 +176,206 @@ fn configs_and_ldr_helpers() {
     assert_eq!(img.to_rgba8(), vec![0, 10, 20, 255, 100, 110, 120, 255]);
     assert!((luminance([1.0, 1.0, 1.0]) - 1.0).abs() < 1e-6);
 }
+
+fn cam_at(eye: [f32; 3], target: [f32; 3]) -> PbrCamera {
+    PbrCamera::look_at(
+        eye,
+        target,
+        [0.0, 0.0, 1.0],
+        30f32.to_radians(),
+        1.0,
+        0.1,
+        20.0,
+    )
+}
+
+proptest! {
+    /// REQ-CAM-005 / SPEC §5.2: identical cameras give exactly `screen_motion`.
+    #[test]
+    fn req_cam_005_between_same_camera_is_screen_motion(
+        x in -2.0f32..2.0, y in -2.0f32..2.0, z in -2.0f32..2.0,
+        vx in -50.0f32..50.0, vy in -50.0f32..50.0, vz in -50.0f32..50.0,
+        r in 0.0f32..0.1, shutter in -1.0f32..1.0,
+    ) {
+        let c = cam();
+        let ball = MotionBall { position: [x, y, z], velocity: [vx, vy, vz], radius: r };
+        let a = screen_motion(&c, &ball, shutter, 96, 64);
+        let b = screen_motion_between(&c, &c, &ball, shutter, 96, 64);
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                prop_assert_eq!(a.center_px.map(f32::to_bits), b.center_px.map(f32::to_bits));
+                prop_assert_eq!(a.radius_px.to_bits(), b.radius_px.to_bits());
+                prop_assert_eq!(
+                    a.displacement_px.map(f32::to_bits),
+                    b.displacement_px.map(f32::to_bits)
+                );
+            }
+            other => prop_assert!(false, "{other:?}"),
+        }
+    }
+
+    /// REQ-CAM-005: a camera moving with the ball by velocity·shutter gives no blur.
+    #[test]
+    fn req_cam_005_following_camera_has_no_blur(
+        x in -0.5f32..0.5, z in -0.5f32..0.5,
+        vx in -10.0f32..10.0, vz in -10.0f32..10.0,
+    ) {
+        let shutter = 1.0 / 60.0;
+        let prev = cam_at([0.0, -3.0, 0.0], [0.0; 3]);
+        let (dx, dz) = (vx * shutter, vz * shutter);
+        let cur = cam_at([dx, -3.0, dz], [dx, 0.0, dz]);
+        let ball = MotionBall { position: [x, 0.0, z], velocity: [vx, 0.0, vz], radius: 0.0135 };
+        let m = screen_motion_between(&prev, &cur, &ball, shutter, 128, 128).unwrap();
+        prop_assert!(m.displacement_px[0].abs() < 1e-3 && m.displacement_px[1].abs() < 1e-3, "{m:?}");
+    }
+}
+
+/// REQ-CAM-005: still-camera blur is unchanged; a ball moving with the
+/// camera has none.
+#[test]
+fn req_cam_005_following_vs_still_camera() {
+    let shutter = 1.0 / 60.0;
+    let prev = cam();
+    let ball = MotionBall {
+        position: [0.0; 3],
+        velocity: [6.0, 0.0, 0.0],
+        radius: 0.25,
+    };
+    let moved = cam_at([0.1, -3.0, 0.0], [0.1, 0.0, 0.0]);
+    let follow = screen_motion_between(&prev, &moved, &ball, shutter, 128, 128).unwrap();
+    assert!(
+        follow.displacement_px.iter().all(|d| d.abs() < 1e-3),
+        "{follow:?}"
+    );
+    let still = screen_motion_between(&prev, &prev, &ball, shutter, 128, 128).unwrap();
+    assert_eq!(Some(still), screen_motion(&prev, &ball, shutter, 128, 128));
+    assert!(still.displacement_px[0] > 1.0);
+}
+
+/// REQ-CAM-005: a camera-only move shifts a resting ball by the difference of
+/// its two projections.
+#[test]
+fn req_cam_005_camera_only_move() {
+    let prev = cam();
+    let cur = cam_at([0.2, -3.0, 0.0], [0.2, 0.0, 0.0]);
+    let ball = MotionBall {
+        position: [0.3, 0.0, 0.1],
+        velocity: [0.0; 3],
+        radius: 0.0135,
+    };
+    let m = screen_motion_between(&prev, &cur, &ball, 1.0 / 60.0, 128, 128).unwrap();
+    let a = project_px(&prev, ball.position, 128, 128).unwrap().0;
+    let b = project_px(&cur, ball.position, 128, 128).unwrap().0;
+    assert_eq!(m.displacement_px, [b[0] - a[0], b[1] - a[1]]);
+    assert!(m.displacement_px[0] < -1.0);
+    assert_eq!(m.center_px, b);
+}
+
+/// REQ-CAM-005: `None` behind either camera's near plane or on bad input.
+#[test]
+fn req_cam_005_between_none_rules() {
+    let prev = cam();
+    let cur = cam_at([0.0, -8.0, 0.0], [0.0; 3]);
+    // y = -4 is in front of `cur` (eye y = -8) but behind `prev` (eye y = -3).
+    let ball = MotionBall {
+        position: [0.0, -4.0, 0.0],
+        velocity: [0.0; 3],
+        radius: 0.01,
+    };
+    assert!(screen_motion_between(&cur, &cur, &ball, 0.01, 64, 64).is_some());
+    assert!(screen_motion_between(&prev, &cur, &ball, 0.01, 64, 64).is_none());
+    let ok = MotionBall {
+        position: [0.0; 3],
+        velocity: [0.0; 3],
+        radius: 0.01,
+    };
+    assert!(screen_motion_between(&prev, &cur, &ok, 0.01, 64, 64).is_some());
+    let nan = MotionBall {
+        position: [f32::NAN, 0.0, 0.0],
+        ..ok
+    };
+    assert!(screen_motion_between(&prev, &cur, &nan, 0.01, 64, 64).is_none());
+    let inf = MotionBall {
+        velocity: [f32::INFINITY, 0.0, 0.0],
+        ..ok
+    };
+    assert!(screen_motion_between(&prev, &cur, &inf, 0.01, 64, 64).is_none());
+}
+
+/// REQ-CAM-005 chain level: history is used by `encode`, cleared by
+/// `reset_camera_history` and `resize`, and not advanced by readbacks.
+#[cfg(feature = "gpu-tests")]
+#[test]
+fn req_cam_005_chain_camera_history() {
+    let Some(ctx) = crate::gpu::shared_context_for_tests("req_cam_005_chain_camera_history") else {
+        return;
+    };
+    let (w, h) = (64u32, 64u32);
+    let mut chain = PostChain::new(ctx, w, h, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let input = ctx.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("test hdr"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: crate::pbr::HDR_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let in_view = input.create_view(&wgpu::TextureViewDescriptor::default());
+    let out = chain.output_view().clone();
+    let shutter = chain.config().motion_blur.shutter_s;
+    let prev = cam();
+    let (dx, ball_v) = (0.4f32, 0.4 / shutter);
+    let cur = cam_at([dx, -3.0, 0.0], [dx, 0.0, 0.0]);
+    let balls = [MotionBall {
+        position: [0.0; 3],
+        velocity: [ball_v, 0.0, 0.0],
+        radius: 0.25,
+    }];
+    let run = |chain: &mut PostChain, camera: &PbrCamera| {
+        let mut enc = ctx.device().create_command_encoder(&Default::default());
+        chain.encode(
+            &mut enc,
+            &in_view,
+            &PostFrame {
+                camera,
+                balls: &balls,
+            },
+            &out,
+        );
+        ctx.queue().submit([enc.finish()]);
+        chain.stats()
+    };
+    // First frame: current camera at both ends, so the ball blurs.
+    assert_eq!(run(&mut chain, &prev).blurred_balls, 1);
+    // Second frame follows the ball: no blur.
+    assert_eq!(run(&mut chain, &cur).blurred_balls, 0);
+    // After a reset the cut frame has no history and blurs again.
+    chain.reset_camera_history();
+    assert_eq!(run(&mut chain, &cur).blurred_balls, 1);
+    // A readback does not advance history: with none stored it stays none.
+    chain.reset_camera_history();
+    chain
+        .render_to_ldr(
+            ctx,
+            &in_view,
+            &PostFrame {
+                camera: &prev,
+                balls: &balls,
+            },
+        )
+        .unwrap();
+    assert_eq!(run(&mut chain, &cur).blurred_balls, 1);
+    // Resize clears it.
+    run(&mut chain, &prev);
+    assert_eq!(run(&mut chain, &cur).blurred_balls, 0);
+    run(&mut chain, &prev);
+    chain.resize(w, h).unwrap();
+    assert_eq!(run(&mut chain, &cur).blurred_balls, 1);
+}

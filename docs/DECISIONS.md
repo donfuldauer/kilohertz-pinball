@@ -8670,6 +8670,83 @@ frame and an ordering hazard with the present).
 **Rationale:** R4 (the main thread only posts requests and applies replies), R11 (a picked table goes through exactly `validate_table` as `--table` does), and a failed table must never panic, hang or end the run.
 **Alternatives:** scanning on the main thread inside the menu executor (the #84 fallback, still used for `--table` runs with `tables_dir` set; blocks the event pump).
 
+## #97 — Display textures: mip filter, redraw semantics and size handling
+
+**Decision:** `BackglassTexture` / `ScoreTexture` (KP-017, REQ-VIEW-002) each own one `Rgba8Unorm` texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`, `mip_level_count(w, h)` levels, `mip_level_count` = 0 for a zero side, else `1 + floor(log2(max(w, h)))`).
+- Mip filter: a fullscreen-triangle render pass per level reads the level above with `textureLoad` (no sampler), converts each channel to its stored byte, sums the 2 × 2 block and writes `(sum + 2) / 4` (integer round-to-nearest, half up), in display-encoded space. For odd source sides the block's second row or column is clamped to the last texel (the odd last row or column of the source is not included). Pipeline, per-level views and per-level bind groups are created once in `new()`, so a redraw allocates only the transient uniform and instance buffers and bind groups that the existing renderers' `encode()` already creates.
+- Redraw: `update` returns `true` exactly when it redrew. One submit per redraw: clear level 0 to transparent black, the renderer's `encode()` over the whole texture, then every mip. Level 0 is cleared first so it equals `render_*_to_image` (which draws into a freshly cleared texture) even for content that does not cover every pixel. An unchanged update records nothing.
+- Sizes: a side of 0 or above `max_texture_dimension_2d` is `GpuError::InvalidArgument`, checked before the renderer is built. Every level is cleared to transparent black in `new()`.
+- `ScoreTexture` has no LCD image API: LCD `Image` items whose image was never set are skipped, as in `LcdRenderer` without `set_image`.
+
+**Rationale:** Integer averaging of the stored bytes is exact and identical on every backend (no dependence on the precision of hardware linear filtering or of float-to-unorm rounding), and meets the 2/255 region-mean bound for power-of-two sizes. Building everything except per-draw buffers in `new()` meets "no pipeline, texture or bind-group-layout per update" and keeps the GPU texture object stable for a bound material.
+
+**Alternatives:** Linear-filtered `textureSample` at the texel corner, which depends on filtering precision; a compute shader, which needs `STORAGE_BINDING` on the texture and is not supported for `Rgba8Unorm` storage on every downlevel backend; a 3 × 3 tent filter for odd sizes, which costs more and is not required (the brief accepts clamped edges); exposing `set_image` on `ScoreTexture`, which is outside the brief's fixed API and can be added when the backbox consumer needs LCD images.
+## #103 — Owned-path extension for the mech slot plan
+
+**Decision:** #103 also edits `crates/pin_sim/src/sim/mod.rs` (a read-only `slots: Vec<SlotPlan>` field and the `SlotPlan` / `SlotSource` types), `crates/pin_sim/src/load/mod.rs` (the plan is built at load, one entry per `[[mechs]]` entry up to `MAX_DYNAMIC_MESHES`, with the binding index into `gates` / `diverters` / `newtons`, the direction `u`, the hinge axis `−(z × u)`, the absolute hinge / pivot position and the Newton path start and length), and adds two read-only accessors to `pin_physics::mech::MechSet`: `drop_target_offset_m` and `spinner_pivot_axis` (no behaviour change). Approved by the Orchestrator.
+**Rationale:** `publish_snapshot` must not allocate (R4) and the bindings carry no mech index, so the slot-to-binding mapping has to be precomputed at load; the drop target's `z` and the spinner's pivot and axis are private in `pin_physics`, and recomputing the spinner defaults in `pin_sim` would duplicate `physics_defaults.toml` resolution.
+**Alternatives:** searching the bindings every tick (no mech index to search by); recomputing drop heights and spinner pivots from the `[[mechs]]` params and defaults in `pin_sim` (duplicated default resolution that can drift).
+
+## #103 — Gate and diverter slot angles
+
+**Decision:** A gate slot publishes its hinge (the mech position) and a rotation about `−(z × u)` of 0 while closed and `GATE_OPEN_ANGLE_RAD = π/3` while `GateBinding.open`; a diverter slot publishes 0 while inactive and `DIVERTER_ON_ANGLE_RAD = π/6` while `DiverterBinding.active` (a diverter without a binding publishes its position with identity). Both constants are public in `pin_sim::tick`. The angle steps between the two values in one tick.
+**Rationale:** The physics toggles the colliders instantly, so an animated swing would be drawn where the simulation is not; the brief's recommended angles.
+**Alternatives:** an eased swing over several ticks (draws a state the physics does not have); per-table angles (no schema key exists).
+
+## #103 — Newton ball swing mapping
+
+**Decision:** The newton_ball slot is the cradle frame: position = the mech position, orientation = a rotation about `−(z × u)` by `newton_swing_rad(offset, length) = clamp(offset / length · NEWTON_SWING_RANGE_RAD, ±NEWTON_SWING_RANGE_RAD)`, where `offset = (ball_position(0) − path start) · u` and `length` is the path length (`length` mm, default 50). It is 0 at rest, ±π/2 at the path end, monotone; non-finite input or a non-positive length gives 0.
+**Rationale:** Uses the whole documented range over the captive ball's travel; deterministic `f32` arithmetic with `fmath` clamps.
+**Alternatives:** `offset / length` taken directly as radians (the brief's first suggestion; reaches only 1 rad, so the documented range is never used); a physical pendulum angle `asin(offset / arm)` (needs an arm length the schema does not have).
+
+## #103 — Bumper ring offset not modelled
+
+**Decision:** The bumper slot is always the zero offset with identity orientation: the ring kick is not modelled as motion (the physics' ring is a static cylinder and the kick is a velocity impulse in `pre_step`).
+**Rationale:** There is no ring motion state to publish; a fabricated offset would draw motion the simulation does not have.
+**Alternatives:** a cosmetic offset while the coil is on (state the simulation does not have; belongs to the renderer if wanted).
+
+## #103 — Drop target offset clamps at −height
+
+**Decision:** The drop target slot's z is `MechSet::drop_target_offset_m = max(z, −height)`: 0 up, `−height` down, rising to 0 while the reset raises it. The internal 2 mm hide depth below the playfield is not published.
+**Rationale:** Appendix A defines the slot as the height below the raised position; the hide depth is a collision detail (the dropped target sits below the playfield so a ball never touches it), and publishing it would sink the drawn target 2 mm into the playfield.
+**Alternatives:** publishing the raw internal z (−height − 2 mm when down).
+
+## #103 — Plunger slot sign and quaternion precision
+
+**Decision:** The plunger slot is `u · slider_state.0` unchanged: `pin_physics` already keeps the rod at `−stroke ≤ x ≤ 0` with negative = pulled back (the hand constraint is `x ≤ −depth·stroke`), which is the Appendix A meaning, so no negation is needed. The axis-angle quaternions (spinner, gate, diverter, newton) are built by `pin_sim::tick::axis_angle_quat` from `libm` `f64` `sin` / `cos` of the half angle, normalised in `f64` and rounded once to `f32`.
+**Rationale:** A spinner's unwrapped angle reaches hundreds of radians; `f32` half-angle arithmetic would lose the brief's 1e-5 angle match there. `libm` `f64` is deterministic across targets and no simulation state depends on it.
+**Alternatives:** `libm::sinf` / `cosf` (error grows with the unwrapped angle); reducing the angle modulo 2π in `f32` (same loss).
+
+## #103 tester — Newton swing at rest
+
+**Decision:** The Newton test asserts exact identity at load (tick 0), a swing below 1e-3 rad over the first 20 ticks, and, after a strike, a maximum swing more than 1e-4 rad above the same table's idle run (not just above 1e-4).
+**Rationale:** The captive ball settles under the playfield pitch: the idle table publishes a swing of 1.4e-5 rad at tick 1 growing to a steady 6.2e-4 rad by tick 80. A literal "identity at rest" check would reject that physically correct equilibrium, and a bare "> 1e-4 after a strike" check would be satisfied by the settle alone, so the strike is compared to the idle baseline.
+**Alternatives:** Asserting exact identity on every rest tick (fails on the settle); asserting only `> 1e-4` after the strike (cannot tell a strike from the settle).
+
+## #98 — Previous camera kept inside PostChain
+
+**Decision:** `PostChain` keeps a copy of the previous presented frame's camera (set by the public `encode` after the frame's uniform is built; cleared by `resize` and the new `reset_camera_history`). Per ball, blur uses the additive `screen_motion_between(prev, camera, ...)`; `screen_motion` is the same-camera wrapper. `PostFrame` is untouched. Readback paths (`render_to_ldr`, `render_to_hdr`) call `encode_impl` directly and do not advance history. The shutter approximation: the shutter spans one frame of camera motion, so a ball whose world velocity equals the camera's world velocity gives start == end on screen only when the camera moved by velocity·shutter between frames, the case the tests construct.
+
+**Rationale:** `view.rs` is owned by #91, and `PostFrame` is built by struct literal in `view.rs` and in many tests, so a new field would break them. A chain-internal history needs no caller change.
+
+**Alternatives:** A new `PostFrame.prev_camera` field: rejected, breaks every literal caller. Editing pin_app `view.rs` to pass the previous camera: rejected, collides with #91. A builder-style `PostFrame::with_prev`: avoids literal breakage but still needs a `view.rs` change, so rejected.
+
+## #98 — Spec tests: "behind the near plane" is tested with points behind the eye
+
+**Decision:** The KP-018 spec tests for the `None` cases of `screen_motion_between` use points behind the camera's eye (depth below zero), not points between the eye and the near plane.
+
+**Rationale:** The brief says "behind its camera's near plane", but black-box probing showed the existing `screen_motion` and `screen_motion_between` accept a ball 0.05 m in front of a camera with near = 0.1 and reject one 0.01 m in front, so the threshold is not the near plane. The two readings agree for points behind the eye, so that is the assertion the brief and the documented behaviour of `screen_motion` ("behind the camera") both require. The mismatch is reported to the Orchestrator.
+
+**Alternatives:** Asserting `None` for depths between the eye and the near plane: contradicts the unchanged `screen_motion` behaviour that the brief says to preserve.
+
+## #98 — Non-finite radius or shutter gives None
+
+**Decision:** `screen_motion_between` (and so `screen_motion`) returns `None` when the ball radius or the shutter is not finite, as it already did for non-finite position or velocity. Before, those two were silently clamped to 0.
+
+**Rationale:** The brief says "any non-finite input" gives `None`; the chain already skips a non-finite shutter and a ball with a non-finite radius has no meaningful disc. Finite inputs are bit-identical to before.
+
+**Alternatives:** Keep clamping to 0 in `screen_motion` and return `None` only in the new function: rejected, the two would differ and the wrapper must equal the old behaviour for the same cameras.
+
 ## #86 — Telemetry is encoded on the sim thread
 
 **Decision:** The app encodes UDP telemetry on the sim thread: `TableSim::step_1ms` fills a `TelemetryState` through a `TelemetryFeed` (`pin_app::orchestrator`) after the sim step and pushes the encoded datagrams through `pin_audio::telemetry`'s wait-free ring to the `pin-telemetry` sender thread (1 ms poll), opened per engine by `open_telemetry` before the sim thread starts and stopped after it was joined. A failed `push_batch` calls `force_full_state` (protocol §4 rule 6) and is counted.
