@@ -14,6 +14,7 @@
 //! Time is simulated: ticks are fed in a loop. The only waits are for the
 //! loopback listener thread to catch up (bounded, never asserted on).
 
+#[cfg(unix)]
 mod private_tmp;
 mod support;
 
