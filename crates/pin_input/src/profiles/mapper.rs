@@ -32,7 +32,10 @@ pub struct ProfileMapper {
     nudge_axes: [Option<NudgeDirection>; AXES],
 }
 
-/// Threshold at which a raw axis bound as a button counts as pressed.
+/// Threshold (0.5) at which a raw axis bound as a button counts as pressed.
+///
+/// Both [`ProfileMapper::axis`] and the app's input router use it: a
+/// normalised value `>= AXIS_BUTTON_THRESHOLD` is pressed.
 pub const AXIS_BUTTON_THRESHOLD: f32 = 0.5;
 
 impl ProfileMapper {
@@ -89,7 +92,7 @@ impl ProfileMapper {
 
     /// A gamepad axis moved (`raw` is SDL's `i16` reading). An analog binding
     /// yields an axis event; an axis bound as a button yields a button event
-    /// (pressed at a normalised value ≥ 0.5).
+    /// (pressed at a normalised value ≥ [`AXIS_BUTTON_THRESHOLD`], 0.5).
     pub fn axis(&self, ts_ns: u64, a: GamepadAxis, raw: i16) -> Option<InputEvent> {
         let v = a.normalise(raw);
         if let Some(b) = &self.axes[a as usize] {
