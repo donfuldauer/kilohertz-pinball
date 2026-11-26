@@ -6,16 +6,22 @@
 //! the two steps can never skip validation. [`TableSim`] is the [`SimStep`]
 //! the sim thread drives; it also hands the tick's haptic impulses, sound
 //! commands and display commands (scenes, score reports) to the audio and
-//! render threads through wait-free rings.
+//! render threads through wait-free rings, the impulses to the main
+//! thread's rumble driver, and each tick's cabinet state to the UDP
+//! telemetry encoder (KP-006).
 
-use super::audio::{RegisteredSound, table_samples};
+use super::audio::{RegisteredSound, TelemetryFeed, TelemetryMap, TelemetrySources, table_samples};
 use super::trace::FlipperBindings;
 use super::view::TableVisuals;
 use crate::ui::{TableEntry, scan_tables};
 use pin_assets::{GltfScene, LoadedTable, load_gltf, load_table};
-use pin_audio::mixer::{MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
+use pin_audio::mixer::{
+    DecodeBudget, MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring,
+};
+use pin_core::haptics::HapticEvent;
 use pin_core::input::HapticsTelemetryEvent;
-use pin_core::{FrameStateSnapshot, InputEvent, SceneId, SimStep};
+use pin_core::schema::table::TableManifest;
+use pin_core::{CoilId, FlipperId, FrameStateSnapshot, InputEvent, SceneId, SimStep};
 use pin_input::haptics::{
     DEFAULT_HAPTICS_RING_CAPACITY, HapticsConsumer, HapticsProducer, haptics_ring,
 };
@@ -28,7 +34,7 @@ use pin_tablegen::clearance::{
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -151,14 +157,98 @@ pub const DISPLAY_RING_CAPACITY: usize = 256;
 pub const SOUND_RING_CAPACITY: usize = 256;
 
 /// The table [`SimStep`]: steps the [`Simulation`] and pushes each tick's
-/// haptic impulses and sound triggers into the audio thread's rings and its
-/// display commands into the render thread's ring (all wait-free, no
-/// allocation; a full ring drops the newest and counts it).
+/// haptic impulses and sound triggers into the audio thread's rings, its
+/// display commands into the render thread's ring, its impulses into the
+/// rumble ring ([`set_rumble`](Self::set_rumble)) and its cabinet state
+/// into the telemetry encoder ([`set_telemetry`](Self::set_telemetry)) (all
+/// wait-free, no allocation; a full ring drops the newest and counts it).
 pub struct TableSim {
     sim: Simulation,
     haptics: Option<HapticsProducer<HapticsTelemetryEvent>>,
     sounds: Option<SoundSender>,
     displays: Option<HapticsProducer<DisplayCommand>>,
+    rumble: Option<HapticsProducer<HapticEvent>>,
+    telemetry: Option<Box<TelemetryTap>>,
+    /// `(flipper, its coil)` of every flipper, for the coil states.
+    flipper_coils: Vec<(FlipperId, CoilId)>,
+}
+
+/// Coils (by `CoilId`) the telemetry state tracks from host commands.
+const TRACKED_COILS: usize = 256;
+
+/// The telemetry feed and the coil and magnet state it is derived from
+/// (allocated once in [`TableSim::set_telemetry`]).
+struct TelemetryTap {
+    feed: TelemetryFeed,
+    sources: TelemetrySources,
+    /// Coils held on by a host command (`HostCommandQueue::coil_holds`).
+    held: [bool; TRACKED_COILS],
+    /// First tick a host-pulsed coil is off again (a pulse of `d` ms issued
+    /// at tick `t` is energised for ticks `t..t + d`).
+    pulse_until: [u64; TRACKED_COILS],
+}
+
+impl TelemetryTap {
+    /// Applies the host commands of the tick `tick` (pulses, holds, magnet
+    /// powers) to the tracked state. Never allocates.
+    fn apply_commands(&mut self, tick: u64, cmds: &pin_core::script::HostCommandQueue) {
+        for &(c, d) in &cmds.coil_pulses {
+            if let Some(p) = self.pulse_until.get_mut(usize::from(c.0)) {
+                *p = (*p).max(tick.saturating_add(u64::from(d)));
+            }
+        }
+        for &(c, on) in &cmds.coil_holds {
+            let i = usize::from(c.0);
+            if let Some(h) = self.held.get_mut(i) {
+                *h = on;
+                if !on {
+                    // Like the mechs: releasing a hold ends a running pulse.
+                    self.pulse_until[i] = 0;
+                }
+            }
+        }
+        for &(m, power) in &cmds.magnets {
+            if let Some(v) = self.sources.magnets.get_mut(usize::from(m.0)) {
+                *v = power;
+            }
+        }
+    }
+
+    /// The coil states at `tick`: host holds and pulses, flipper coils whose
+    /// flipper is energised, and every mapped coil a mech reports on.
+    fn update_coils(&mut self, tick: u64, sim: &Simulation, flipper_coils: &[(FlipperId, CoilId)]) {
+        self.host_coils(tick);
+        let flippers = sim.flipper_set();
+        for &(f, c) in flipper_coils {
+            if flippers.is_energised(f)
+                && let Some(v) = self.sources.coils.get_mut(usize::from(c.0))
+            {
+                *v = true;
+            }
+        }
+        let mechs = sim.mech_set();
+        for &(_, c) in &self.feed.map().coils {
+            if let Some(v) = self.sources.coils.get_mut(usize::from(c))
+                && !*v
+                && mechs.coil_on(CoilId(c))
+            {
+                *v = true;
+            }
+        }
+    }
+
+    /// The coil states at `tick` from the host holds and pulses alone.
+    fn host_coils(&mut self, tick: u64) {
+        for ((c, &h), &until) in self
+            .sources
+            .coils
+            .iter_mut()
+            .zip(&self.held)
+            .zip(&self.pulse_until)
+        {
+            *c = h || tick < until;
+        }
+    }
 }
 
 impl TableSim {
@@ -169,7 +259,58 @@ impl TableSim {
             haptics,
             sounds: None,
             displays: None,
+            rumble: None,
+            telemetry: None,
+            flipper_coils: Vec::new(),
         }
+    }
+
+    /// Sends every haptic impulse ([`Simulation::haptic_events`]) to the
+    /// main thread's rumble driver as well (SPEC §4 3.4).
+    pub fn set_rumble(&mut self, tx: HapticsProducer<HapticEvent>) {
+        self.rumble = Some(tx);
+    }
+
+    /// Feeds the cabinet state to `feed` every tick (SPEC §4 3.4, KP-006):
+    /// switches ([`Simulation::switch_bits`]), coils (energised flippers
+    /// from [`set_flipper_coils`](Self::set_flipper_coils), host coil holds
+    /// and pulses, mech coils), lamps and GI (the snapshot), magnets (the
+    /// latest host magnet power) and the tick's haptic impulses. Load time:
+    /// allocates the tracking state once. At tick 0 the `on_init` commands
+    /// are applied at once.
+    pub fn set_telemetry(&mut self, feed: TelemetryFeed) {
+        let mut tap = Box::new(TelemetryTap {
+            feed,
+            sources: TelemetrySources::default(),
+            held: [false; TRACKED_COILS],
+            pulse_until: [0; TRACKED_COILS],
+        });
+        tap.sources.switch_bits = self.sim.switch_bits();
+        if self.sim.tick() == 0 {
+            tap.apply_commands(0, self.sim.last_commands());
+        }
+        self.telemetry = Some(tap);
+    }
+
+    /// The coil of each flipper (`(FlipperId, CoilId)`, load time): a
+    /// flipper's coil reads energised on the telemetry while the flipper is.
+    pub fn set_flipper_coils(&mut self, pairs: &[(FlipperId, CoilId)]) {
+        self.flipper_coils = pairs.to_vec();
+    }
+
+    /// The telemetry feed, if one is attached.
+    pub fn telemetry(&self) -> Option<&TelemetryFeed> {
+        self.telemetry.as_ref().map(|t| &t.feed)
+    }
+
+    /// The telemetry sources of the last tick, if a feed is attached.
+    pub fn telemetry_sources(&self) -> Option<&TelemetrySources> {
+        self.telemetry.as_ref().map(|t| &t.sources)
+    }
+
+    /// Haptic impulses dropped because the rumble ring was full.
+    pub fn rumble_dropped(&self) -> u64 {
+        self.rumble.as_ref().map_or(0, HapticsProducer::dropped)
     }
 
     /// Sends every sound command ([`Simulation::sound_commands`]) to the
@@ -239,6 +380,17 @@ impl SimStep for TableSim {
         }
         if let Some(d) = self.displays.as_mut() {
             push_displays(&self.sim, d);
+        }
+        if let Some(r) = self.rumble.as_mut() {
+            for e in self.sim.haptic_events() {
+                r.push(HapticEvent::from(*e));
+            }
+        }
+        if let Some(t) = self.telemetry.as_deref_mut() {
+            t.apply_commands(tick, self.sim.last_commands());
+            t.sources.switch_bits = self.sim.switch_bits();
+            t.update_coils(tick, &self.sim, &self.flipper_coils);
+            t.feed.tick(tick, out, &t.sources, self.sim.haptic_events());
         }
     }
 }
@@ -443,6 +595,12 @@ pub struct LoadedApp {
     pub displays: HapticsConsumer<DisplayCommand>,
     /// The flipper coils of the latency trace (`--latency-trace`).
     pub bindings: FlipperBindings,
+    /// The table manifest (a clone made at load; `[dof]` for the DOF
+    /// bridge).
+    pub manifest: TableManifest,
+    /// The telemetry ids of the table's elements (built at load from the
+    /// manifest numbers and the interned ids).
+    pub telemetry_map: TelemetryMap,
 }
 
 /// Validates and loads the table at `path` for the app: [`validate_table`]
@@ -452,10 +610,30 @@ pub struct LoadedApp {
 /// decoded at `mixer.sample_rate`. Prints the warnings and one `pin_app:
 /// table "<name>" loaded (...)` line on stderr.
 ///
+/// Sounds are charged to the default decoded-audio budget
+/// ([`DecodeBudget::DEFAULT_BYTES`], 512 MiB); the app passes the player's
+/// setting through [`load_app_table_with_budget`].
+///
 /// # Errors
 /// The validation or load error text, or a failed thread spawn. A panic in
 /// the load is resumed on the caller.
 pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> {
+    load_app_table_with_budget(path, mixer, DecodeBudget::DEFAULT_BYTES)
+}
+
+/// [`load_app_table`] with the bundle's decoded-audio budget in bytes
+/// (`audio.decoded_budget_mib` × 1 MiB, SPEC §4 4.4; D25): the sounds are
+/// decoded by [`table_samples`] against one budget of
+/// `decoded_budget_bytes`; a sound that does not fit stays silent and its
+/// error is printed with the other sound warnings.
+///
+/// # Errors
+/// As [`load_app_table`].
+pub fn load_app_table_with_budget(
+    path: &Path,
+    mixer: MixerConfig,
+    decoded_budget_bytes: u64,
+) -> Result<LoadedApp, String> {
     let path = path.to_path_buf();
     on_sim_stack("table-load", move || -> Result<LoadedApp, String> {
         let checked = validate_table(&path)?;
@@ -466,16 +644,26 @@ pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, Stri
         let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
         let (stx, srx) = trigger_ring(SOUND_RING_CAPACITY);
         let (dtx, drx) = haptics_ring(DISPLAY_RING_CAPACITY);
-        let sim = Box::new(
+        let mut sim = Box::new(
             TableSim::new(sim, Some(htx))
                 .with_sounds(stx)
                 .with_displays(dtx),
         );
+        let flipper_coils: Vec<(FlipperId, CoilId)> = checked
+            .table
+            .flippers
+            .iter()
+            .map(|f| (f.id, f.coil))
+            .collect();
+        sim.set_flipper_coils(&flipper_coils);
+        let ids = &checked.table.ids;
+        let telemetry_map =
+            TelemetryMap::from_manifest(&checked.table.manifest, |k, n| ids.get(k, n));
         let visuals = TableVisuals::of(&checked);
         for w in &visuals.warnings {
             eprintln!("pin_app: table display warning: {w}");
         }
-        let (samples, errors) = table_samples(&checked, mixer.sample_rate);
+        let (samples, errors) = table_samples(&checked, mixer.sample_rate, decoded_budget_bytes);
         for e in &errors {
             eprintln!("pin_app: table sound warning: {e}");
         }
@@ -497,6 +685,8 @@ pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, Stri
             haptics: hrx,
             sounds: srx,
             displays: drx,
+            manifest: checked.table.manifest.clone(),
+            telemetry_map,
         })
     })?
 }
@@ -580,8 +770,9 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     format!("panicked: {text}")
 }
 
-/// Serves one request; never panics.
-fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
+/// Serves one request; never panics. A load reads the decoded-audio budget
+/// from `budget` when it starts.
+fn serve(req: IoRequest, mixer: MixerConfig, budget: &AtomicU64) -> IoReply {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     match req {
         IoRequest::Scan(root) => {
@@ -589,8 +780,11 @@ fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
             IoReply::Scanned { root, tables }
         }
         IoRequest::Load { id, path } => {
-            let result = catch_unwind(AssertUnwindSafe(|| load_app_table(&path, mixer)))
-                .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
+            let bytes = budget.load(Ordering::Acquire);
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                load_app_table_with_budget(&path, mixer, bytes)
+            }))
+            .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
             match result {
                 Ok(app) => IoReply::Loaded {
                     id,
@@ -629,6 +823,10 @@ fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
 /// [`try_request`](Self::try_request) never coalesce: one reply per
 /// request.
 ///
+/// Loads use the decoded-audio budget last set with
+/// [`set_decoded_budget_bytes`](Self::set_decoded_budget_bytes)
+/// ([`DecodeBudget::DEFAULT_BYTES`] until then), read when each load starts.
+///
 /// Dropping the worker stops it: the request in flight completes, requests
 /// still queued are skipped (never handed to the handler), and the thread is
 /// joined.
@@ -640,6 +838,7 @@ pub struct IoWorker {
     /// Replies, each with the coalesced flag of its request.
     replies: mpsc::Receiver<(IoReply, bool)>,
     stop: Arc<AtomicBool>,
+    decoded_budget: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
     /// A coalesced scan was submitted and its reply not yet received.
     scan_in_flight: Cell<bool>,
@@ -661,7 +860,7 @@ impl IoWorker {
     /// returns `None`.
     #[must_use]
     pub fn spawn(mixer: MixerConfig) -> IoWorker {
-        Self::spawn_with(move |req| serve(req, mixer))
+        Self::spawn_with_budget(move |req, budget| serve(req, mixer, budget))
     }
 
     /// [`spawn`](Self::spawn) with a check run on the worker before each
@@ -676,7 +875,7 @@ impl IoWorker {
     where
         G: Fn(&Path) -> Result<(), String> + Send + 'static,
     {
-        Self::spawn_with(move |req| {
+        Self::spawn_with_budget(move |req, budget| {
             if let IoRequest::Load { id, path } = &req {
                 use std::panic::{AssertUnwindSafe, catch_unwind};
                 let checked = catch_unwind(AssertUnwindSafe(|| guard(path)))
@@ -689,7 +888,7 @@ impl IoWorker {
                     };
                 }
             }
-            serve(req, mixer)
+            serve(req, mixer, budget)
         })
     }
 
@@ -704,6 +903,7 @@ impl IoWorker {
             requests: None,
             replies: rep_rx,
             stop: Arc::new(AtomicBool::new(false)),
+            decoded_budget: Arc::new(AtomicU64::new(DecodeBudget::DEFAULT_BYTES)),
             handle: None,
             scan_in_flight: Cell::new(false),
             scan_follow_up: Cell::new(None),
@@ -712,14 +912,27 @@ impl IoWorker {
 
     /// The worker loop around `handler` (one call per request, in order;
     /// the test seam for the shutdown and coalescing contracts).
+    #[cfg(test)]
     pub(crate) fn spawn_with<H>(mut handler: H) -> IoWorker
     where
         H: FnMut(IoRequest) -> IoReply + Send + 'static,
+    {
+        Self::spawn_with_budget(move |req, _| handler(req))
+    }
+
+    /// The worker loop around `handler` (one call per request, in order),
+    /// which also gets the worker's decoded-audio budget, read by a load
+    /// when it starts ([`set_decoded_budget_bytes`](Self::set_decoded_budget_bytes)).
+    fn spawn_with_budget<H>(mut handler: H) -> IoWorker
+    where
+        H: FnMut(IoRequest, &AtomicU64) -> IoReply + Send + 'static,
     {
         let (req_tx, req_rx) = mpsc::channel::<(IoRequest, bool)>();
         let (rep_tx, rep_rx) = mpsc::channel::<(IoReply, bool)>();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let decoded_budget = Arc::new(AtomicU64::new(DecodeBudget::DEFAULT_BYTES));
+        let budget = Arc::clone(&decoded_budget);
         let spawned = std::thread::Builder::new()
             .name("io-worker".to_owned())
             .spawn(move || {
@@ -727,7 +940,7 @@ impl IoWorker {
                     if flag.load(Ordering::Acquire) {
                         break;
                     }
-                    if rep_tx.send((handler(req), coalesced)).is_err() {
+                    if rep_tx.send((handler(req, &budget), coalesced)).is_err() {
                         break;
                     }
                 }
@@ -737,6 +950,7 @@ impl IoWorker {
                 requests: Some(req_tx),
                 replies: rep_rx,
                 stop,
+                decoded_budget,
                 handle: Some(h),
                 scan_in_flight: Cell::new(false),
                 scan_follow_up: Cell::new(None),
@@ -755,6 +969,18 @@ impl IoWorker {
             .ok_or_else(|| IO_WORKER_NOT_RUNNING.to_owned())?;
         tx.send((req, coalesced))
             .map_err(|_| IO_WORKER_STOPPED.to_owned())
+    }
+
+    /// Sets the decoded-audio budget, in bytes, of the loads that start
+    /// after this call (`audio.decoded_budget_mib` × 1 MiB; a change applies
+    /// to the next table load, never to one in flight).
+    pub fn set_decoded_budget_bytes(&self, bytes: u64) {
+        self.decoded_budget.store(bytes, Ordering::Release);
+    }
+
+    /// The decoded-audio budget, in bytes, the next load will use.
+    pub fn decoded_budget_bytes(&self) -> u64 {
+        self.decoded_budget.load(Ordering::Acquire)
     }
 
     /// Queues `req` (never blocks); one reply follows, in request order.
@@ -1189,5 +1415,57 @@ mod tests {
         assert_eq!(panic_text(p.as_ref()), "panicked: bang");
         let p: Box<dyn std::any::Any + Send> = Box::new(5u8);
         assert_eq!(panic_text(p.as_ref()), "panicked: unknown panic");
+    }
+
+    /// KP-006 (SPEC §4 3.4): a host pulse of `d` ms issued at tick `t`
+    /// reads energised for exactly ticks `t..t + d`; a hold stays on until
+    /// released (which also ends a pulse); magnet powers follow the latest
+    /// command; ids beyond the tracked range are ignored.
+    #[test]
+    fn kp006_coil_pulse_and_hold_states() {
+        use pin_core::MagnetId;
+        use pin_core::script::HostCommandQueue;
+        let (tx, _rx) = pin_audio::telemetry::telemetry_channel(8);
+        let mut tap = TelemetryTap {
+            feed: TelemetryFeed::new(tx, TelemetryMap::default()),
+            sources: TelemetrySources::default(),
+            held: [false; TRACKED_COILS],
+            pulse_until: [0; TRACKED_COILS],
+        };
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 30).unwrap();
+        q.pulse_coil(CoilId(5), 0).unwrap();
+        q.pulse_coil(CoilId(900), 30).unwrap();
+        q.hold_coil(CoilId(6), true).unwrap();
+        q.hold_coil(CoilId(700), true).unwrap();
+        q.set_magnet(MagnetId(2), 0.75).unwrap();
+        q.set_magnet(MagnetId(64), 0.75).unwrap();
+        tap.apply_commands(100, &q);
+        let mut on_ticks = 0;
+        for t in 100..200 {
+            tap.host_coils(t);
+            assert!(!tap.sources.coils[5], "a 0 ms pulse never energises");
+            assert!(tap.sources.coils[6], "held at {t}");
+            if tap.sources.coils[4] {
+                assert!((100..130).contains(&t), "tick {t}");
+                on_ticks += 1;
+            }
+        }
+        assert_eq!(on_ticks, 30);
+        assert_eq!(tap.sources.magnets[2], 0.75);
+        // A shorter pulse does not cut a longer one; a released hold ends
+        // a pulse.
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 50).unwrap();
+        q.pulse_coil(CoilId(6), 50).unwrap();
+        tap.apply_commands(200, &q);
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 5).unwrap();
+        q.hold_coil(CoilId(6), false).unwrap();
+        tap.apply_commands(210, &q);
+        tap.host_coils(240);
+        assert!(tap.sources.coils[4] && !tap.sources.coils[6]);
+        tap.host_coils(250);
+        assert!(!tap.sources.coils[4]);
     }
 }

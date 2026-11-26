@@ -7,7 +7,15 @@
 //!    [`PostConfig::exposure`]; pixels a moving ball sweeps during the
 //!    shutter ([`MotionBlurConfig`]) show the mean over the shutter of the
 //!    ball, translated along its screen velocity, over the background. A
-//!    still ball leaves the image unchanged.
+//!    still ball leaves the image unchanged. The screen velocity is a
+//!    difference of two projections ([`screen_motion_between`]): the start
+//!    of the shutter with the previous presented frame's camera, the end with
+//!    the current one, so a ball that stays put on screen because the camera
+//!    follows it is not streaked. [`PostChain`] keeps that previous camera
+//!    (first frame, resize and [`PostChain::reset_camera_history`] use the
+//!    current camera for both ends). The shutter is taken as one frame of
+//!    camera motion; a ball whose world velocity matches the camera's gives
+//!    zero blur exactly when the camera moved by `velocity · shutter`.
 //! 2. **Bloom** — energy conserving: the above-threshold part of each pixel
 //!    ([`bloom_prefilter`]: soft-knee threshold on luminance, firefly clamp)
 //!    is scattered by a mip-chain point spread function; a fraction
@@ -21,7 +29,7 @@
 //!
 //! # Parts
 //! * GPU-free: [`PostConfig`] and its parts, [`aces_film`],
-//!   [`bloom_prefilter`], [`luminance`], [`screen_motion`], [`LdrImage`].
+//!   [`bloom_prefilter`], [`luminance`], [`screen_motion`], [`screen_motion_between`], [`LdrImage`].
 //! * GPU: [`PostChain`], [`HdrInput`], [`FrameRenderer`].
 
 mod chain;
@@ -277,6 +285,9 @@ fn project_px(camera: &PbrCamera, p: [f32; 3], width: u32, height: u32) -> Optio
 /// it moves over `shutter_s` (from `position − ½·v·shutter` to
 /// `position + ½·v·shutter`). `None` when the ball centre or either end of
 /// its motion is behind the camera, or an input is not finite.
+///
+/// This is [`screen_motion_between`] with the same camera at both ends of
+/// the shutter.
 pub fn screen_motion(
     camera: &PbrCamera,
     ball: &MotionBall,
@@ -284,6 +295,32 @@ pub fn screen_motion(
     width: u32,
     height: u32,
 ) -> Option<ScreenMotion> {
+    screen_motion_between(camera, camera, ball, shutter_s, width, height)
+}
+
+/// Like [`screen_motion`] for a moving camera (REQ-CAM-005, SPEC §5.2): the
+/// start of the shutter, `position − ½·v·shutter`, is projected with
+/// `prev_camera` (the previous frame's camera) and the end,
+/// `position + ½·v·shutter`, with `camera`; the displacement is the
+/// difference of the two pixel positions. The centre and radius come from
+/// `camera`. A ball that keeps its place on screen because the camera follows
+/// it therefore has zero displacement. With `prev_camera == camera` the result
+/// equals [`screen_motion`] bit for bit.
+///
+/// `None` when the centre or the end point is behind `camera`'s near plane,
+/// the start point is behind `prev_camera`'s, or any input (position,
+/// velocity, radius, shutter) is not finite.
+pub fn screen_motion_between(
+    prev_camera: &PbrCamera,
+    camera: &PbrCamera,
+    ball: &MotionBall,
+    shutter_s: f32,
+    width: u32,
+    height: u32,
+) -> Option<ScreenMotion> {
+    if !shutter_s.is_finite() || !ball.radius.is_finite() {
+        return None;
+    }
     let shutter = finite_non_negative(shutter_s);
     let half = |s: f32| {
         core::array::from_fn::<f32, 3, _>(|k| {
@@ -291,7 +328,7 @@ pub fn screen_motion(
         })
     };
     let (center, depth) = project_px(camera, ball.position, width, height)?;
-    let (a, _) = project_px(camera, half(-1.0), width, height)?;
+    let (a, _) = project_px(prev_camera, half(-1.0), width, height)?;
     let (b, _) = project_px(camera, half(1.0), width, height)?;
     // Projected radius: r · (focal length in pixels) / depth.
     let focal_px = camera.proj[1][1] * 0.5 * height as f32;

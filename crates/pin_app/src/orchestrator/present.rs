@@ -60,6 +60,17 @@
 //! playfield slot's frame, over the table, the displays and the HUD, before
 //! the frame is submitted and presented ([`AppSurfaces::set_menu_overlay`]);
 //! while the menu is closed no pass is recorded and frames are unchanged.
+//!
+//! After a GPU device loss (#133, SPEC §4 Subphase 1.4 / 6.0) the render
+//! thread dissolves its `AppSurfaces` with [`AppSurfaces::into_sources`]:
+//! every direct (and skipped) surface comes back as a [`SurfaceSource`]
+//! with its window guard, and the display state the sim sent
+//! ([`CarriedState`]) is kept, so a new `AppSurfaces` on a new device shows
+//! the same scene and scores ([`AppSurfaces::restore_state`]). A surface
+//! owned by a presenter thread cannot be taken back from that thread (its
+//! body consumes it): the thread is stopped and joined, the surface is
+//! dropped with it and the window's guard is kept in
+//! [`SurfaceRecovery::unrecovered`].
 
 use super::gpu_timer::GpuFrameTimer;
 use super::handoff::{HANDOFF_SLOTS, Handoff, HandoffStats, PresenterThread, TakeFree};
@@ -69,11 +80,13 @@ use super::presenter::{
 use super::table::DisplayCommand;
 use super::view::{TableRenderOptions, TableRenderer, TableVisuals, routes_for_window};
 use crate::ui::{MenuOverlay, MenuState};
+use arrayvec::ArrayVec;
 use pin_core::snapshot::FrameStateSnapshot;
-use pin_render::displays::DisplayRoute;
+use pin_render::displays::{DisplayRoute, MAX_PLAYERS};
 use pin_render::gpu::{
-    GpuContext, LayerCompositor, LayerTarget, SurfaceOptions, SurfaceSource, SurfaceStatus,
-    WindowGuard, choose_present_mode, frame_latency_for, lean_quality_for, wgpu,
+    GpuContext, LayerCompositor, LayerTarget, PRESENTER_JOIN_TIMEOUT, SurfaceOptions,
+    SurfaceSource, SurfaceStatus, WindowGuard, choose_present_mode, frame_latency_for,
+    lean_quality_for, wgpu,
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::{Arc, Mutex};
@@ -348,6 +361,10 @@ struct Threaded {
     /// The presenter thread ended: stop drawing (one stderr note).
     dead: bool,
     presenter: PresenterThread<wgpu::Texture>,
+    /// A clone of the window guard the thread holds, so the window stays
+    /// guarded after the thread is stopped ([`AppSurfaces::into_sources`]).
+    /// Dropped after `presenter` (field order).
+    keep_alive: Option<WindowGuard>,
 }
 
 enum SlotKind {
@@ -391,6 +408,154 @@ pub struct AppSurfaces {
     timer: Option<GpuFrameTimer>,
     /// The in-game menu, painted over the playfield (issue #84).
     menu: Option<Box<MenuOverlay>>,
+    /// Sources [`slot_decision`] skipped (no 8-bit format): kept, never
+    /// drawn, so [`into_sources`](Self::into_sources) can hand them back.
+    parked: Vec<SurfaceSource>,
+    /// The display state the sim sent, replayed after a rebuild (boxed:
+    /// the presenter enum stays small).
+    displays: Box<DisplayMemory>,
+}
+
+/// Why one source could not get a slot, and the source when it was not
+/// consumed.
+struct SlotError {
+    message: String,
+    source: Option<SurfaceSource>,
+}
+
+/// The display state the sim's [`DisplayCommand`]s built, in the least
+/// commands that rebuild it: the last scene shown (with its start time)
+/// and every player's latest score. Replaying it into a fresh renderer
+/// reproduces the scene and score state of one that applied every command
+/// (a renderer keeps only the last scene and the latest score per player,
+/// for players below [`MAX_PLAYERS`]). Pure; carried across a device-loss
+/// rebuild (#133).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayMemory {
+    scene: Option<(DisplayCommand, u64)>,
+    scores: [Option<(i64, u64)>; MAX_PLAYERS],
+}
+
+impl DisplayMemory {
+    /// Remembers `cmd`, applied at `now_ms`.
+    pub fn record(&mut self, cmd: DisplayCommand, now_ms: u64) {
+        match cmd {
+            DisplayCommand::Scene(_) => self.scene = Some((cmd, now_ms)),
+            DisplayCommand::Score { player, score } => {
+                if let Some(slot) = self.scores.get_mut(usize::from(player)) {
+                    *slot = Some((score, now_ms));
+                }
+            }
+        }
+    }
+
+    /// `true` when nothing was recorded.
+    pub fn is_empty(&self) -> bool {
+        self.scene.is_none() && self.scores.iter().all(Option::is_none)
+    }
+
+    /// The commands that rebuild the state, in order: every recorded
+    /// player's score (player order), then the last scene.
+    pub fn replay(&self) -> impl Iterator<Item = (DisplayCommand, u64)> + '_ {
+        let scores = self.scores.iter().enumerate().filter_map(|(p, s)| {
+            s.map(|(score, t)| {
+                (
+                    DisplayCommand::Score {
+                        player: p as u8,
+                        score,
+                    },
+                    t,
+                )
+            })
+        });
+        scores.chain(self.scene)
+    }
+}
+
+/// What [`AppSurfaces`] carries across a rebuild besides its surfaces
+/// ([`AppSurfaces::restore_state`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CarriedState {
+    /// The display scenes and scores the sim sent.
+    pub displays: DisplayMemory,
+    /// Windows that were minimised or hidden.
+    pub minimized: Vec<usize>,
+}
+
+/// A window whose surface could not be handed back (it was owned by a
+/// presenter thread, which consumes it). The thread was stopped; the
+/// window's guard is kept here so the window stays guarded.
+pub struct UnrecoveredSurface {
+    /// Window index.
+    pub window: usize,
+    /// The window's primary role.
+    pub role: SurfaceRole,
+    /// The window guard (a clone of the one the thread held).
+    pub keep_alive: Option<WindowGuard>,
+}
+
+/// The surfaces of a dissolved [`AppSurfaces`]
+/// ([`AppSurfaces::into_sources`]): ready for [`AppSurfaces::new`] on a new
+/// device of the same instance.
+pub struct SurfaceRecovery {
+    /// Surfaces handed back, in slot order (then the skipped ones), with
+    /// their window guards and current pixel sizes.
+    pub sources: Vec<SurfaceSource>,
+    /// Surfaces that could not be handed back.
+    pub unrecovered: Vec<UnrecoveredSurface>,
+    /// Display and window state to restore on the new surfaces.
+    pub state: CarriedState,
+}
+
+impl SurfaceRecovery {
+    /// Keeps the recovered sources current while no `AppSurfaces` exists:
+    /// a pixel-size change updates the window's source, minimise / hide
+    /// and restore / show update [`CarriedState::minimized`].
+    pub fn handle_window_event(&mut self, ev: &WindowEvent) {
+        match ev.kind {
+            WindowEventKind::PixelSizeChanged { w, h } => {
+                if let Some(src) = self.sources.iter_mut().find(|s| s.window == ev.window) {
+                    src.pixel_size = (w, h);
+                }
+            }
+            WindowEventKind::Minimized | WindowEventKind::Hidden => {
+                if !self.state.minimized.contains(&ev.window) {
+                    self.state.minimized.push(ev.window);
+                }
+            }
+            WindowEventKind::Restored
+            | WindowEventKind::Shown
+            | WindowEventKind::Maximized
+            | WindowEventKind::Exposed => self.state.minimized.retain(|&w| w != ev.window),
+            _ => {}
+        }
+    }
+
+    /// One line naming the windows whose surfaces could not be handed
+    /// back, `None` when every surface was.
+    pub fn unrecovered_note(&self) -> Option<String> {
+        if self.unrecovered.is_empty() {
+            return None;
+        }
+        let list: Vec<String> = self
+            .unrecovered
+            .iter()
+            .map(|u| format!("window {} ({:?})", u.window, u.role))
+            .collect();
+        Some(format!(
+            "the surface of {} was owned by a presenter thread and cannot be recovered",
+            list.join(", ")
+        ))
+    }
+}
+
+/// [`AppSurfaces::try_new`] failed: the reason and every surface that
+/// could be handed back.
+pub struct AppSurfacesError {
+    /// What failed (as [`AppSurfaces::new`] reports it).
+    pub message: String,
+    /// The sources (and unrecovered windows) for another attempt.
+    pub recovery: SurfaceRecovery,
 }
 
 impl AppSurfaces {
@@ -428,16 +593,76 @@ impl AppSurfaces {
         visuals: &TableVisuals,
         render: TableRenderOptions,
     ) -> Result<AppSurfaces, String> {
+        Self::try_new(ctx, sources, opts, visuals, render).map_err(|e| e.message)
+    }
+
+    /// [`new`](Self::new) that hands the sources back on failure (for
+    /// another attempt, #133): every source not yet consumed and every slot
+    /// built so far ([`into_sources`](Self::into_sources)). A source whose
+    /// presenter thread could not be spawned is lost (its surface moved
+    /// into the thread body).
+    ///
+    /// # Errors
+    /// As [`new`](Self::new), with the recovered sources.
+    pub fn try_new(
+        ctx: &GpuContext,
+        sources: Vec<SurfaceSource>,
+        opts: SurfaceOptions,
+        visuals: &TableVisuals,
+        render: TableRenderOptions,
+    ) -> Result<AppSurfaces, Box<AppSurfacesError>> {
         // REQ-LAT-006: one warning per call; a software adapter starts lean.
         let render = render_options_for_adapter(&ctx.adapter_info(), render, &mut |m| {
             eprintln!("pin_app: warning: {m}")
         });
-        let device = ctx.device().clone();
-        let queue = ctx.queue().clone();
-        let gpu_lock = Arc::new(Mutex::new(()));
-        let mut slots = Vec::with_capacity(sources.len());
-        let mut skipped = 0;
-        for src in sources {
+        let mut out = AppSurfaces {
+            device: ctx.device().clone(),
+            queue: ctx.queue().clone(),
+            gpu_lock: Arc::new(Mutex::new(())),
+            slots: Vec::with_capacity(sources.len()),
+            frames: 0,
+            skipped: 0,
+            timer: None,
+            menu: None,
+            parked: Vec::new(),
+            displays: Box::default(),
+        };
+        let mut rest = sources.into_iter();
+        while let Some(src) = rest.next() {
+            match out.add_slot(ctx, src, opts, visuals, render) {
+                Ok(()) => {}
+                Err(e) => {
+                    let SlotError { message, source } = *e;
+                    let mut recovery = out.into_sources();
+                    recovery.sources.extend(source);
+                    recovery.sources.extend(rest);
+                    return Err(Box::new(AppSurfacesError { message, recovery }));
+                }
+            }
+        }
+        debug_assert!(
+            out.drawn_modes()
+                .all(|(r, m)| r == SurfaceRole::Playfield || !is_blocking_mode(m)),
+            "the render thread presents a backglass / score surface with a blocking mode"
+        );
+        Ok(out)
+    }
+
+    /// Configures `src` and adds its slot (or parks a skipped source).
+    /// `Err` with the reason and, when it was not consumed, the source.
+    fn add_slot(
+        &mut self,
+        ctx: &GpuContext,
+        src: SurfaceSource,
+        opts: SurfaceOptions,
+        visuals: &TableVisuals,
+        render: TableRenderOptions,
+    ) -> Result<(), Box<SlotError>> {
+        let fail = |message: String, source: Option<SurfaceSource>| {
+            Box::new(SlotError { message, source })
+        };
+        let (device, queue, gpu_lock) = (&self.device, &self.queue, &self.gpu_lock);
+        {
             let role = src.role();
             let caps = src.surface.get_capabilities(ctx.adapter());
             let plan = plan_surface(role, &caps.formats, &caps.present_modes, opts);
@@ -446,9 +671,9 @@ impl AppSurfaces {
                     SlotDecision::Draw(m, f) => (m, f, false),
                     SlotDecision::Present(m, f) => (m, f, true),
                     SlotDecision::Reject => {
-                        return Err(format!(
-                            "window {} ({role:?}): no 8-bit surface format",
-                            src.window
+                        return Err(fail(
+                            format!("window {} ({role:?}): no 8-bit surface format", src.window),
+                            Some(src),
                         ));
                     }
                     SlotDecision::Skip => {
@@ -457,8 +682,9 @@ impl AppSurfaces {
                              not drawing it",
                             src.window
                         );
-                        skipped += 1;
-                        continue;
+                        self.skipped += 1;
+                        self.parked.push(src);
+                        return Ok(());
                     }
                 };
             let path = CopyPath::for_usages(caps.usages);
@@ -482,25 +708,33 @@ impl AppSurfaces {
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto),
                 layers.view_formats(),
             );
-            if !configure_surface(&device, &src.surface, &config, &gpu_lock) {
-                return Err(format!(
-                    "window {} ({role:?}): configure failed",
-                    src.window
+            if !configure_surface(device, &src.surface, &config, gpu_lock) {
+                return Err(fail(
+                    format!("window {} ({role:?}): configure failed", src.window),
+                    Some(src),
                 ));
             }
             // Post and debug draw in the frame's format; the displays in
             // the layer format (the twin of an `*Srgb` surface).
-            let renderer = TableRenderer::with_layer_format(
+            let renderer = match TableRenderer::with_layer_format(
                 ctx,
                 draw_format,
                 layers.layer_format(),
                 (w, h),
                 visuals,
                 render,
-            )
-            .map_err(|e| format!("window {} ({role:?}): {e}", src.window))?;
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(fail(
+                        format!("window {} ({role:?}): {e}", src.window),
+                        Some(src),
+                    ));
+                }
+            };
             let planned: Vec<(SurfaceRole, Rect)> = src.viewports.iter().copied().collect();
             let routes = routes_for_window(src.window, &planned, src.logical_size, (w, h));
+            let (window, logical_size, pixel_size) = (src.window, src.logical_size, src.pixel_size);
             let kind = if threaded {
                 let handoff = Arc::new(Handoff::new(HANDOFF_SLOTS, (w, h)));
                 let target = PresenterTarget {
@@ -510,19 +744,27 @@ impl AppSurfaces {
                     config,
                     src_format: draw_format,
                     path,
-                    gpu_lock: Arc::clone(&gpu_lock),
+                    gpu_lock: Arc::clone(gpu_lock),
                 };
                 // The thread drops the surface before the guard; a thread
                 // without a guard gets a placeholder (the caller keeps the
-                // window alive, `SurfaceSource::keep_alive`).
+                // window alive, `SurfaceSource::keep_alive`). The slot keeps
+                // a clone, so the window stays guarded after the thread is
+                // stopped (#133).
+                let keep_alive = src.keep_alive.clone();
                 let guard = src.keep_alive.unwrap_or_else(|| WindowGuard::new(()));
                 let presenter = PresenterThread::spawn(
-                    &format!("presenter-{}", src.window),
+                    &format!("presenter-{window}"),
                     guard,
                     handoff,
                     move |h| run_presenter(h, target),
                 )
-                .map_err(|e| format!("window {} ({role:?}): presenter thread: {e}", src.window))?;
+                .map_err(|e| {
+                    fail(
+                        format!("window {window} ({role:?}): presenter thread: {e}"),
+                        None,
+                    )
+                })?;
                 SlotKind::Threaded(Threaded {
                     mode,
                     format,
@@ -531,6 +773,7 @@ impl AppSurfaces {
                     path,
                     dead: false,
                     presenter,
+                    keep_alive,
                 })
             } else {
                 SlotKind::Direct(Direct {
@@ -541,34 +784,118 @@ impl AppSurfaces {
                     _keep_alive: src.keep_alive,
                 })
             };
-            slots.push(Slot {
-                window: src.window,
+            self.slots.push(Slot {
+                window,
                 role,
                 planned,
-                planned_size: src.logical_size,
-                pixel_size: src.pixel_size,
+                planned_size: logical_size,
+                pixel_size,
                 minimized: false,
                 routes,
                 renderer,
                 kind,
             });
         }
-        let out = AppSurfaces {
-            device,
-            queue,
-            gpu_lock,
-            slots,
-            frames: 0,
-            skipped,
-            timer: None,
-            menu: None,
+        Ok(())
+    }
+
+    /// Dissolves the surfaces for a rebuild on a new device (#133): every
+    /// presenter hand-off is closed and each presenter thread stopped
+    /// (joined, bounded by `PRESENTER_JOIN_TIMEOUT`); every renderer, the
+    /// GPU frame timer and the menu overlay are dropped (nothing is drawn
+    /// or submitted). Returns each direct surface (slot order, then the
+    /// skipped ones) as a [`SurfaceSource`] with its window guard, its
+    /// planned viewports and its current pixel size, the windows whose
+    /// surface a presenter thread consumed (with their guards), and the
+    /// display and window state to restore
+    /// ([`restore_state`](Self::restore_state)). The surfaces stay
+    /// configured on the old device until a new `AppSurfaces` configures
+    /// them on the new one.
+    pub fn into_sources(mut self) -> SurfaceRecovery {
+        for s in &self.slots {
+            if let SlotKind::Threaded(t) = &s.kind {
+                t.presenter.handoff().close();
+            }
+        }
+        self.timer = None;
+        self.menu = None;
+        let mut out = SurfaceRecovery {
+            sources: Vec::with_capacity(self.slots.len() + self.parked.len()),
+            unrecovered: Vec::new(),
+            state: CarriedState {
+                displays: std::mem::take(&mut *self.displays),
+                minimized: Vec::new(),
+            },
         };
-        debug_assert!(
-            out.drawn_modes()
-                .all(|(r, m)| r == SurfaceRole::Playfield || !is_blocking_mode(m)),
-            "the render thread presents a backglass / score surface with a blocking mode"
-        );
-        Ok(out)
+        for slot in std::mem::take(&mut self.slots) {
+            let Slot {
+                window,
+                role,
+                planned,
+                planned_size,
+                pixel_size,
+                minimized,
+                renderer,
+                kind,
+                ..
+            } = slot;
+            drop(renderer);
+            if minimized {
+                out.state.minimized.push(window);
+            }
+            match kind {
+                SlotKind::Direct(d) => {
+                    let Direct {
+                        surface,
+                        _keep_alive: keep_alive,
+                        ..
+                    } = d;
+                    out.sources.push(SurfaceSource {
+                        window,
+                        viewports: planned.iter().copied().take(3).collect::<ArrayVec<_, 3>>(),
+                        surface,
+                        logical_size: planned_size,
+                        pixel_size,
+                        keep_alive,
+                    });
+                }
+                SlotKind::Threaded(mut t) => {
+                    // The thread owns (and on exit drops) the surface; a
+                    // thread that does not stop in time is detached and
+                    // keeps its own guard clone.
+                    let _ = t.presenter.stop(PRESENTER_JOIN_TIMEOUT);
+                    let keep_alive = t.keep_alive.take();
+                    drop(t);
+                    out.unrecovered.push(UnrecoveredSurface {
+                        window,
+                        role,
+                        keep_alive,
+                    });
+                }
+            }
+        }
+        out.sources.append(&mut self.parked);
+        out
+    }
+
+    /// Restores what [`into_sources`](Self::into_sources) carried: replays
+    /// the display commands of `state.displays` into every live renderer
+    /// (same scene, same scores) and marks `state.minimized` windows
+    /// hidden again.
+    pub fn restore_state(&mut self, state: &CarriedState) {
+        for (cmd, t) in state.displays.replay() {
+            self.apply_display_command(cmd, t);
+        }
+        for s in &mut self.slots {
+            if state.minimized.contains(&s.window) {
+                s.minimized = true;
+            }
+        }
+    }
+
+    /// The display state the sim's commands built so far.
+    pub fn display_memory(&self) -> &DisplayMemory {
+        &self.displays
     }
 
     /// `(direct, threaded, skipped)`: surfaces presented by the render
@@ -658,6 +985,7 @@ impl AppSurfaces {
     /// (direct and presenter-thread; a presenter-thread window whose thread
     /// ended is no longer drawn and ignores it).
     pub fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
+        self.displays.record(cmd, now_ms);
         for s in &mut self.slots {
             if s.live() {
                 s.renderer.apply_display_command(cmd, now_ms);
@@ -1766,5 +2094,121 @@ mod tests {
             menu_overlay_format(LayerTarget::Direct(F::Rgba8Unorm)),
             F::Rgba8Unorm
         );
+    }
+
+    // -----------------------------------------------------------------
+    // #133 (KP-052): state carried across a device-loss rebuild
+    // -----------------------------------------------------------------
+
+    use pin_core::SceneId;
+
+    /// SPEC §4 Subphase 6.0 / #133: replaying the memory reproduces the
+    /// last scene (with its start time) and each player's latest score;
+    /// players beyond `MAX_PLAYERS` are ignored, as a renderer ignores
+    /// them.
+    #[test]
+    fn display_memory_keeps_the_last_scene_and_latest_scores() {
+        let mut m = DisplayMemory::default();
+        assert!(m.is_empty());
+        assert_eq!(m.replay().count(), 0);
+        m.record(DisplayCommand::Scene(SceneId(1)), 10);
+        m.record(
+            DisplayCommand::Score {
+                player: 2,
+                score: 7,
+            },
+            11,
+        );
+        m.record(
+            DisplayCommand::Score {
+                player: 0,
+                score: 5,
+            },
+            12,
+        );
+        m.record(
+            DisplayCommand::Score {
+                player: 2,
+                score: 9,
+            },
+            13,
+        );
+        m.record(DisplayCommand::Scene(SceneId(3)), 14);
+        m.record(
+            DisplayCommand::Score {
+                player: MAX_PLAYERS as u8,
+                score: 1,
+            },
+            15,
+        );
+        assert!(!m.is_empty());
+        let got: Vec<_> = m.replay().collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    DisplayCommand::Score {
+                        player: 0,
+                        score: 5
+                    },
+                    12
+                ),
+                (
+                    DisplayCommand::Score {
+                        player: 2,
+                        score: 9
+                    },
+                    13
+                ),
+                (DisplayCommand::Scene(SceneId(3)), 14),
+            ]
+        );
+        // Replaying into a fresh memory gives the same memory.
+        let mut again = DisplayMemory::default();
+        for (c, t) in m.replay() {
+            again.record(c, t);
+        }
+        assert_eq!(again, m);
+    }
+
+    /// While no `AppSurfaces` exists, minimise / restore events update the
+    /// carried window state, and windows whose surface a presenter thread
+    /// consumed are named (with their guards kept).
+    #[test]
+    fn surface_recovery_tracks_window_state_and_names_lost_surfaces() {
+        let ev = |window, kind| WindowEvent {
+            timestamp_ns: 0,
+            window,
+            kind,
+        };
+        let guard = WindowGuard::new(());
+        let mut r = SurfaceRecovery {
+            sources: Vec::new(),
+            unrecovered: Vec::new(),
+            state: CarriedState::default(),
+        };
+        assert_eq!(r.unrecovered_note(), None);
+        r.handle_window_event(&ev(1, WindowEventKind::Minimized));
+        r.handle_window_event(&ev(1, WindowEventKind::Hidden));
+        r.handle_window_event(&ev(2, WindowEventKind::Hidden));
+        assert_eq!(r.state.minimized, [1, 2]);
+        r.handle_window_event(&ev(1, WindowEventKind::Restored));
+        r.handle_window_event(&ev(0, WindowEventKind::PixelSizeChanged { w: 8, h: 8 }));
+        assert_eq!(r.state.minimized, [2]);
+        r.unrecovered.push(UnrecoveredSurface {
+            window: 2,
+            role: SurfaceRole::Score,
+            keep_alive: Some(guard.clone()),
+        });
+        assert_eq!(guard.strong_count(), 2, "the window stays guarded");
+        assert_eq!(
+            r.unrecovered_note().as_deref(),
+            Some(
+                "the surface of window 2 (Score) was owned by a presenter thread and cannot be \
+                 recovered"
+            )
+        );
+        drop(r);
+        assert_eq!(guard.strong_count(), 1);
     }
 }

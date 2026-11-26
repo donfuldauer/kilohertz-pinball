@@ -1,7 +1,7 @@
 //! Headroom under upper decks.
 
 use super::checks::World;
-use super::geom::{CEILING_NZ, Tri, WALKABLE_NZ};
+use super::geom::{CEILING_NZ, Filter, LayerSel, Slope, Tri, WALKABLE_NZ};
 use super::{Ball, Feature, Finding, MIN_HEADROOM_GAP_MM, Sink, mm};
 use glam::{DVec2, DVec3};
 use pin_core::fmath::{max_f64, min_f64};
@@ -94,9 +94,21 @@ fn in_transition(w: &World<'_>, q: DVec2, z: f64, height: f64, a: u8, b: u8) -> 
 /// (steeper than 60°) of `layer`.
 fn laterally_free(w: &World<'_>, layer: u8, c: DVec3, r: f64, idx: &mut Vec<u32>) -> bool {
     let reach = DVec2::splat(r);
-    w.grid
-        .query(w.tris, c.truncate() - reach, c.truncate() + reach, idx);
+    let walls = Filter {
+        layer: LayerSel::Only(layer),
+        slopes: Slope::Wall.bit(),
+        z_lo: c.z - r,
+        z_hi: c.z + r,
+    };
+    w.index.query(
+        w.tris,
+        c.truncate() - reach,
+        c.truncate() + reach,
+        &walls,
+        idx,
+    );
     idx.iter().all(|&i| {
+        w.count(1);
         let t: &Tri = &w.tris[i as usize];
         t.layer != layer
             || t.nz() >= CEILING_NZ
@@ -142,12 +154,22 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             // distance the ceiling must keep from it: a ceiling wholly
             // above this cannot be too low anywhere on `s`.
             let top = s.max.z + r / s.nz() + reach;
-            w.grid.query(
+            // The ceilings the loop below does not skip at once: other
+            // layers, not steep, overlapping `s.min.z + min_gap ..= top`.
+            let ceilings = Filter {
+                layer: LayerSel::Except(s.layer),
+                slopes: Slope::CEILINGS,
+                z_lo: s.min.z + min_gap,
+                z_hi: top,
+            };
+            w.index.query(
                 w.tris,
                 s.min.truncate() - pad,
                 s.max.truncate() + pad,
+                &ceilings,
                 &mut cands,
             );
+            w.count(cands.len());
             for &ci in &cands {
                 let c = &w.tris[ci as usize];
                 if c.layer == s.layer

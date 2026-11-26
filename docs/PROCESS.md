@@ -622,10 +622,19 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    issue-investigator first; a failed reproduction in a different environment makes validity
    unclear. Where the thread type cannot be resolved (summary or outside-diff items), the reply
    alone is the disposition.
+   **Round limit.** A round is one CodeRabbit review of a new head of the review PR (the first full
+   review is round 1). Rounds 1 to 5 run as above. From round 6 on, only **blocking** findings are
+   fixed: security issues (R11), verified correctness defects, R3/R4 violations, contract
+   mismatches, and failing required checks. Every other finding, nitpicks included, is Deferred
+   without a fix attempt: one new `work-unit` issue per round collects that round's deferred
+   findings (each linked from its thread reply), and the thread is resolved. The round count is
+   recorded in the gate's `docs/RUN_LOG.md` row.
 5. **Re-review.** Batch fix commits locally and push once per round (for a missed gate: once the
    round's fix PRs merged, merge `main` into the review branch or rebuild the area PRs), then
-   post `@coderabbitai review` on the review PR. Merging `main` into the gate branch (to stay up to
-   date) brings in whatever else merged meanwhile, which CodeRabbit then reviews too. If
+   post `@coderabbitai review` on the review PR. Do not merge `main` into the gate branch while the
+   review is open unless the gate issue's PR conflicts with `main` or a required check needs a
+   change from `main`: a merge brings in whatever else merged meanwhile, which CodeRabbit then
+   reviews too, and that work belongs to the next gate's review. If
    CodeRabbit has not reviewed the head commit (paused or rate-limited), ask once more, wait as
    long as it says, and ask at most twice more; if it still has not reviewed, both PRs stay open,
    a `docs/RUN_LOG.md` row records it, and the run continues with work that does not depend on
@@ -659,6 +668,11 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    tests, the tick-time benchmark) confirms the phase; its row goes in `docs/RUN_LOG.md` with the
    next PR. A red post-merge phase gate becomes new issues (P7) and never reverts the merge by
    itself.
+
+   **Capped gate:** if after round 8 every thread is dispositioned and resolved, no blocking
+   finding is open, and CodeRabbit still withholds approval after `@coderabbitai approve`, the
+   gate is recorded as `capped` in its `docs/RUN_LOG.md` row (with the open change request and
+   the deferred issues) and merges on the other conditions.
 
    **Missed gate.** This paragraph applies only to a gate opened by the backstop ("Gate issue"
    (3)), which has no gate issue PR to merge; every gate with a gate issue PR keeps the text

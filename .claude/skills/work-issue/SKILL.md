@@ -317,6 +317,14 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
        Never resolve an unfixed security issue (R11 boundary) or a verified unfixed correctness
        defect.
      - CI failures go through the same loop (investigator if the cause is unclear).
+     - **Round limit (P6 step 4):** from round 6 on, fix only blocking findings (R11 security,
+       verified correctness, R3/R4, contract mismatches, failing required checks); defer every
+       other finding without a fix attempt into one new `work-unit` issue per round, link it from
+       each thread reply, and resolve. After round 8, a gate with every thread resolved, no
+       blocking finding open and approval still withheld after `@coderabbitai approve` is
+       recorded as `capped` in RUN_LOG and merges on the other conditions (P6 step 6).
+     - Do not merge `main` into the gate branch while the review is open unless the PR conflicts
+       with `main` or a required check needs it; later work belongs to the next gate.
      - Batch fix commits, push once per round, re-run `work-verifier`, then post
        `@coderabbitai review` on the review PR (`add_issue_comment` or `gh pr comment`); at most
        two more asks if it does not review the head, then the RUN_LOG row of P6 "Gate reviews"

@@ -8,8 +8,10 @@
 //! `pin_tablegen` binary is its command line
 //! (`pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir>`).
 //! Authoring rules: `docs/AUTHORING.md`.
+//! [`cabinet`] (KP-029) turns a resolved `cabinet.toml` geometry into `cabinet.glb`.
 
 pub mod backbox;
+pub mod cabinet;
 pub mod clearance;
 pub mod layout;
 

@@ -30,6 +30,10 @@ pub(crate) struct Bridge {
     /// from `holds` so a reload in the middle of the drain neither stops it
     /// nor hands those coils to the new script.
     releasing: [Cell<u64>; HOLD_WORDS],
+    /// Number of bits set in `releasing`, kept in step with it by every
+    /// writer so [`Self::releases_pending`] is O(1) on the per-callback path
+    /// (at most 65 536, so it never overflows).
+    pending: Cell<u32>,
     budget_hit: Cell<bool>,
     memory_hit: Cell<bool>,
     /// Instructions between two hook calls.
@@ -52,6 +56,7 @@ impl Bridge {
             overflow: Cell::new(0),
             holds: [const { Cell::new(0) }; HOLD_WORDS],
             releasing: [const { Cell::new(0) }; HOLD_WORDS],
+            pending: Cell::new(0),
             budget_hit: Cell::new(false),
             memory_hit: Cell::new(false),
             hook_interval,
@@ -118,7 +123,10 @@ impl Bridge {
         let bit = 1u64 << (i % 64);
         w.set(if on { w.get() | bit } else { w.get() & !bit });
         let r = &self.releasing[i / 64];
-        r.set(r.get() & !bit);
+        if r.get() & bit != 0 {
+            r.set(r.get() & !bit);
+            self.pending.set(self.pending.get() - 1);
+        }
     }
 
     /// True if the script currently holds `coil`.
@@ -131,10 +139,13 @@ impl Bridge {
     /// Starts the tilt release: every held coil moves to the pending-release
     /// set, then as many releases are queued as fit ([`Self::drain_releases`]).
     pub(crate) fn release_holds(&self, cmd: &mut HostCommandQueue) {
+        let mut added = 0;
         for (r, h) in self.releasing.iter().zip(self.holds.iter()) {
+            added += (h.get() & !r.get()).count_ones();
             r.set(r.get() | h.get());
             h.set(0);
         }
+        self.pending.set(self.pending.get() + added);
         self.drain_releases(cmd);
     }
 
@@ -142,6 +153,10 @@ impl Bridge {
     /// has room; coils that do not fit stay pending for the next call.
     pub(crate) fn drain_releases(&self, cmd: &mut HostCommandQueue) {
         for (wi, w) in self.releasing.iter().enumerate() {
+            // Nothing left past this word: skip the rest of the scan.
+            if self.pending.get() == 0 {
+                return;
+            }
             let mut bits = w.get();
             while bits != 0 {
                 let b = bits.trailing_zeros() as usize;
@@ -152,6 +167,7 @@ impl Bridge {
                 }
                 bits &= bits - 1;
                 w.set(bits);
+                self.pending.set(self.pending.get() - 1);
             }
         }
     }
@@ -162,9 +178,17 @@ impl Bridge {
         self.holds.iter().any(|w| w.get() != 0)
     }
 
-    /// True while tilt releases are still waiting for queue room.
+    /// True while tilt releases are still waiting for queue room. O(1): reads
+    /// the pending-release counter instead of scanning the bitset (this runs
+    /// once per callback).
     pub(crate) fn releases_pending(&self) -> bool {
-        self.releasing.iter().any(|w| w.get() != 0)
+        self.pending.get() != 0
+    }
+
+    /// Bits set in `releasing`, by a full scan (the counter's reference).
+    #[cfg(test)]
+    fn releasing_scan(&self) -> u32 {
+        self.releasing.iter().map(|w| w.get().count_ones()).sum()
     }
 
     /// Clears the abort flags before a callback (the budget itself lives in
@@ -220,6 +244,98 @@ mod tests {
         b.set_held(CoilId(7), true);
         b.set_held(CoilId(7), false);
         assert!(!b.is_held(CoilId(7)));
+    }
+
+    /// One step of the KP-047 property test.
+    #[derive(Clone, Debug)]
+    enum Op {
+        /// `set_held(coil, on)`.
+        Set(u16, bool),
+        /// `release_holds` into a queue with `room` free hold slots.
+        Release(usize),
+        /// `drain_releases` into a queue with `room` free hold slots.
+        Drain(usize),
+    }
+
+    /// Coils from a small set (so sequences revisit them) plus the word and
+    /// id-range boundaries.
+    fn coil() -> impl Strategy<Value = u16> {
+        prop_oneof![
+            0u16..8,
+            prop::sample::select(vec![0u16, 63, 64, 65, 127, 128, 65_472, 65_535]),
+        ]
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        let room = 0usize..=32;
+        prop_oneof![
+            4 => (coil(), any::<bool>()).prop_map(|(c, on)| Op::Set(c, on)),
+            1 => room.clone().prop_map(Op::Release),
+            1 => room.prop_map(Op::Drain),
+        ]
+    }
+
+    /// A hold queue with exactly `room` free `coil_holds` slots.
+    fn queue_with_room(room: usize) -> HostCommandQueue {
+        let mut q = HostCommandQueue::default();
+        while q.coil_holds.len() < q.coil_holds.capacity() - room {
+            q.hold_coil(CoilId(1), true).unwrap();
+        }
+        q
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// KP-047, SPEC 4.2 (acceptance criterion 1): after any sequence of
+        /// holds, releases and drains (queue room varying from full to
+        /// empty), the O(1) pending-release counter equals the number of
+        /// bits a full scan of the pending set finds, and
+        /// `releases_pending()` is exactly "any bit set".
+        #[test]
+        fn kp047_spec_4_2_pending_release_count_matches_bitset_scan(
+            ops in prop::collection::vec(op(), 0..200)
+        ) {
+            let b = Bridge::new(1000);
+            for op in ops {
+                match op {
+                    Op::Set(c, on) => b.set_held(CoilId(c), on),
+                    Op::Release(room) => b.release_holds(&mut queue_with_room(room)),
+                    Op::Drain(room) => b.drain_releases(&mut queue_with_room(room)),
+                }
+                let scan = b.releasing_scan();
+                prop_assert_eq!(b.pending.get(), scan);
+                prop_assert_eq!(b.releases_pending(), scan != 0);
+            }
+        }
+
+        /// KP-047, SPEC 4.2: releases still go out in ascending coil order,
+        /// resuming where a full queue stopped them, and every coil held at
+        /// the release is released exactly once.
+        #[test]
+        fn kp047_spec_4_2_releases_stay_ascending_and_complete(
+            coils in prop::collection::btree_set(coil(), 0..12),
+            room in 0usize..=32,
+        ) {
+            let b = Bridge::new(1000);
+            for &c in &coils {
+                b.set_held(CoilId(c), true);
+            }
+            let mut out = Vec::new();
+            let mut q = queue_with_room(room);
+            let base = q.coil_holds.len();
+            b.release_holds(&mut q);
+            out.extend(q.coil_holds[base..].iter().map(|&(c, on)| (c.0, on)));
+            while b.releases_pending() {
+                let mut q = queue_with_room(1);
+                let base = q.coil_holds.len();
+                b.drain_releases(&mut q);
+                out.extend(q.coil_holds[base..].iter().map(|&(c, on)| (c.0, on)));
+            }
+            let want: Vec<_> = coils.iter().map(|&c| (c, false)).collect();
+            prop_assert_eq!(out, want);
+            prop_assert_eq!(b.releasing_scan(), 0);
+        }
     }
 
     #[test]

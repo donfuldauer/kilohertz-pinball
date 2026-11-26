@@ -48,27 +48,31 @@ mod view;
 
 pub use audio::{
     AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
-    NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
+    NullSink, OfflineRecording, OfflineSink, RegisteredSound, TELEMETRY_POLL, TelemetryFeed,
+    TelemetryFeedStats, TelemetryLink, TelemetryMap, TelemetryReport, TelemetrySources,
+    open_telemetry, parse_telemetry_endpoint, ssf_playfield_mm, table_samples, telemetry_level,
 };
 pub use gpu_timer::{GPU_TIMER_RING, GpuFrameTimer, gpu_sample_ns};
 pub use handoff::{HANDOFF_SLOTS, HandoffStats};
 pub use hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
 pub use present::{
-    AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
+    AppSurfaces, AppSurfacesError, CarriedState, DisplayMemory, SlotDecision, SlotInfo, SlotPath,
+    SurfacePlan, SurfaceRecovery, UnrecoveredSurface, is_blocking_mode, plan_surface,
     slot_decision, table_set_accepted,
 };
 pub use presenter::{CopyPath, FrameCopy, offscreen_frame_texture};
 pub use table::{
     DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, IO_WORKER_NOT_RUNNING,
     IO_WORKER_STOPPED, IoReply, IoRequest, IoWorker, LoadedApp, SIM_STACK_BYTES,
-    SOUND_RING_CAPACITY, TABLE_LINE_COLOR, TableSim, ValidatedTable, load_app_table, load_checked,
-    load_validated, on_sim_stack, run_headless_table, table_lines, table_source_positions,
-    validate_snapshot, validate_table,
+    SOUND_RING_CAPACITY, TABLE_LINE_COLOR, TableSim, ValidatedTable, load_app_table,
+    load_app_table_with_budget, load_checked, load_validated, on_sim_stack, run_headless_table,
+    table_lines, table_source_positions, validate_snapshot, validate_table,
 };
 pub use threads::{
     AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, HUD_REFRESH_NS,
-    OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads,
-    ThreadsConfig, debug_view_hooks, default_ball_radius, monotonic_now_ns, spawn_threads,
+    MAX_DEVICE_REBUILD_ATTEMPTS, OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits,
+    StatsSnapshot, Threads, ThreadsConfig, debug_view_hooks, default_ball_radius, monotonic_now_ns,
+    spawn_threads,
 };
 pub use view::{
     DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,

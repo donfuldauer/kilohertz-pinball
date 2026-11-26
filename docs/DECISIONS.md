@@ -8722,6 +8722,413 @@ frame and an ordering hazard with the present).
 **Decision:** The Newton test asserts exact identity at load (tick 0), a swing below 1e-3 rad over the first 20 ticks, and, after a strike, a maximum swing more than 1e-4 rad above the same table's idle run (not just above 1e-4).
 **Rationale:** The captive ball settles under the playfield pitch: the idle table publishes a swing of 1.4e-5 rad at tick 1 growing to a steady 6.2e-4 rad by tick 80. A literal "identity at rest" check would reject that physically correct equilibrium, and a bare "> 1e-4 after a strike" check would be satisfied by the settle alone, so the strike is compared to the idle baseline.
 **Alternatives:** Asserting exact identity on every rest tick (fails on the settle); asserting only `> 1e-4` after the strike (cannot tell a strike from the settle).
+
+## #98 — Previous camera kept inside PostChain
+
+**Decision:** `PostChain` keeps a copy of the previous presented frame's camera (set by the public `encode` after the frame's uniform is built; cleared by `resize` and the new `reset_camera_history`). Per ball, blur uses the additive `screen_motion_between(prev, camera, ...)`; `screen_motion` is the same-camera wrapper. `PostFrame` is untouched. Readback paths (`render_to_ldr`, `render_to_hdr`) call `encode_impl` directly and do not advance history. The shutter approximation: the shutter spans one frame of camera motion, so a ball whose world velocity equals the camera's world velocity gives start == end on screen only when the camera moved by velocity·shutter between frames, the case the tests construct.
+
+**Rationale:** `view.rs` is owned by #91, and `PostFrame` is built by struct literal in `view.rs` and in many tests, so a new field would break them. A chain-internal history needs no caller change.
+
+**Alternatives:** A new `PostFrame.prev_camera` field: rejected, breaks every literal caller. Editing pin_app `view.rs` to pass the previous camera: rejected, collides with #91. A builder-style `PostFrame::with_prev`: avoids literal breakage but still needs a `view.rs` change, so rejected.
+
+## #98 — Spec tests: "behind the near plane" is tested with points behind the eye
+
+**Decision:** The KP-018 spec tests for the `None` cases of `screen_motion_between` use points behind the camera's eye (depth below zero), not points between the eye and the near plane.
+
+**Rationale:** The brief says "behind its camera's near plane", but black-box probing showed the existing `screen_motion` and `screen_motion_between` accept a ball 0.05 m in front of a camera with near = 0.1 and reject one 0.01 m in front, so the threshold is not the near plane. The two readings agree for points behind the eye, so that is the assertion the brief and the documented behaviour of `screen_motion` ("behind the camera") both require. The mismatch is reported to the Orchestrator.
+
+**Alternatives:** Asserting `None` for depths between the eye and the near plane: contradicts the unchanged `screen_motion` behaviour that the brief says to preserve.
+
+## #98 — Non-finite radius or shutter gives None
+
+**Decision:** `screen_motion_between` (and so `screen_motion`) returns `None` when the ball radius or the shutter is not finite, as it already did for non-finite position or velocity. Before, those two were silently clamped to 0.
+
+**Rationale:** The brief says "any non-finite input" gives `None`; the chain already skips a non-finite shutter and a ball with a non-finite radius has no meaningful disc. Finite inputs are bit-identical to before.
+
+**Alternatives:** Keep clamping to 0 in `screen_motion` and return `None` only in the new function: rejected, the two would differ and the wrapper must equal the old behaviour for the same cameras.
+
+## #86 — Telemetry is encoded on the sim thread
+
+**Decision:** The app encodes UDP telemetry on the sim thread: `TableSim::step_1ms` fills a `TelemetryState` through a `TelemetryFeed` (`pin_app::orchestrator`) after the sim step and pushes the encoded datagrams through `pin_audio::telemetry`'s wait-free ring to the `pin-telemetry` sender thread (1 ms poll), opened per engine by `open_telemetry` before the sim thread starts and stopped after it was joined. A failed `push_batch` calls `force_full_state` (protocol §4 rule 6) and is counted.
+**Rationale:** The protocol's tick is the sim tick and its state (switches, coils, lamps, magnets) lives on the sim thread; encoding there sees every tick exactly once, in order, with no extra copy or ring, and the encoder and ring are allocation-free (R4, covered by `cabinet_feedback.rs`'s allocation test). The back-pressure rule is written for the sim loop.
+**Alternatives:** encoding on the audio thread from the haptics ring (it sees impulses only, not the cabinet state, and runs at block rate, not per tick); a separate telemetry thread reading the snapshot triple buffer (skips ticks, so deltas and impulses would be lost).
+
+## #86 — GI telemetry comes from `kind = "gi"` lamps
+
+**Decision:** GI strings on the wire (kind 3, ids 0..=31) are the table's lamps with `kind = "gi"`, id = the lamp's `number`, value = that lamp's `FrameStateSnapshot::lamps` intensity; these lamps are not also sent as kind-2 lamps (as `pin_app::dof::ResolvedDofMap::resolve` already maps them). The snapshot's GI tint (`FrameStateSnapshot::gi`, `[r, g, b, intensity]`) is not sent. A GI lamp numbered above 31 is not sent at all.
+**Rationale:** The DOF map and the bridge already address GI as "lamp with kind gi, id = number", so the wire must agree; the tint is a render colour with no element id.
+**Alternatives:** sending the tint intensity as GI string 0 (conflicts with a table's own GI numbering).
+
+## #86 — Coil and magnet telemetry sources
+
+**Decision:** A coil (kind 1) reads energised when any of these holds: its flipper is energised (`FlipperSet::is_energised`, flipper → coil pairs given to `TableSim::set_flipper_coils` at load from the table's flipper configs); a host `coil_holds` on is in force (until a hold off, which also ends a pulse); a host `coil_pulses (coil, d ms)` issued at tick `t` covers ticks `t..t + d`; or a mech driven by it reports `MechSet::coil_on` (the existing public accessor; checked for mapped coils only). A magnet (kind 4) is the latest host `set_magnet` power for its `MagnetId` (0 until set). Switches are `Simulation::switch_bits`. Not observable without a new `pin_sim` accessor, so not sent beyond the above: a coil fired by the simulation itself outside the host queue and outside any mech (none exists today), the physical magnet field strength (remanence, `Simulation::magnetisation` is per ball, not per magnet), and the on_init commands of a feed attached after tick 0.
+**Rationale:** The brief forbids adding `pin_sim` accessors; these sources are the observable ones, are deterministic and read only references (no allocation).
+**Alternatives:** a new `Simulation::coil_states()` / `magnet_powers()` accessor (requested as a follow-up in the report; outside this issue's paths).
+
+## #86 — config.toml keys for telemetry and DOF
+
+**Decision:** `[telemetry] enabled = true`, `[telemetry] endpoint = "127.0.0.1:35120"` and `[dof] enabled = true` (`pin_app::ui::config::{TelemetryConfig, DofConfig}`), documented in `docs/TELEMETRY_PROTOCOL.md` §8. A wrong type drops that key to its default with a `ConfigWarning::InvalidValue` (the existing per-key fallback); an empty or over-255-byte endpoint is reset the same way; an endpoint that does not resolve disables telemetry for the run with one stderr line. The keys are read at start-up and apply to every table the run loads; they are not menu settings (`changed_settings` is unchanged). Telemetry is opened only for table engines (the idle path without a table sends nothing).
+**Rationale:** Defaults follow the protocol's loopback default (nothing leaves the machine unless configured); the names mirror the protocol's own terms; the fallback rule is the one every other `config.toml` key follows.
+**Alternatives:** a single `telemetry_endpoint` top-level key (no room for `enabled`); off by default (would make the cabinet feedback opt-in, against SPEC §4 3.4's "the app drives telemetry").
+
+## #86 — DOF requires telemetry
+
+**Decision:** The DOF bridge is started on table load only when `[dof] enabled`, the table has `[dof]`, telemetry is enabled with an endpoint that resolved, the OS is supported (`platform_supported`, Windows) and `DofLaunchConfig::for_app(<endpoint port>)` finds the installed bridge; otherwise one stderr line says why and the table runs. Errors from the start never fail the run. The main thread stops the old bridge and waits for it before a swapped-in table starts, and at exit after the engine threads were joined, on every exit path (`Cabinet::finish` runs before the stuck-presenter `process::exit`; `Drop` covers early error returns).
+**Rationale:** The bridge only reads the telemetry stream on the endpoint's port; starting it without telemetry would show a cabinet that never reacts.
+**Alternatives:** starting the bridge regardless and letting it idle (misleading; wastes a process).
+
+## #86 — The audio thread's placeholder telemetry encoder stays
+
+**Decision:** The audio thread's existing placeholder encoder in `orchestrator/threads.rs` (behind `AudioStats.telemetry_datagrams`) is left unchanged (it is outside this issue's paths and its counter is asserted by existing tests); the app's real telemetry is the sim thread's `TelemetryFeed`. A cleanup issue should remove the placeholder (or turn its counter into a reading of the sender's report).
+**Rationale:** R1 (owned paths) and no regression in the existing suites.
+**Alternatives:** removing it here (outside the owned paths).
+
+## #86 — Rumble restarts from silence on every load, swap and session
+
+**Decision:** Each table engine gets a new `RumbleDriver` on a fresh `haptics_ring::<HapticEvent>` whose producer `TableSim::set_rumble` feeds; the main loop calls `RumbleDriver::service(live.sim_ticks, &mut platform)` every iteration. `RumbleDriver::reset` (drain the ring, reset the mapper, clear the bookkeeping; returns OFF only when the motors were on) runs inside `service` when the tick goes backwards (a new session), and an unloaded table's driver is dropped with an OFF sent to the pads (at a swap, at the next loop iteration; at exit, right after the threads are joined). Impulses still queued at a backwards tick are discarded with the old session's.
+**Rationale:** `RumbleMapper` only restarts its timeline when the tick jumps back more than 1000 ticks, so a session restarted within one second replayed the old envelope (the issue's acceptance case); a reset on every boundary is simple and deterministic.
+**Alternatives:** keeping queued impulses whose tick is below the new tick (cannot tell sessions apart reliably).
+
+## #86 — Size guard: DOF delivered in the same change
+
+**Decision:** The non-test diff is about 900 added lines (roughly 40 % rustdoc and comments), slightly over the brief's "about 800" guard; the DOF part (deliverable 4) is about 80 of them (`DofBridge::start_for_table_on`, `DofLaunchConfig::for_app` and the main-thread lifecycle). It is delivered here rather than split into a follow-up issue.
+**Rationale:** The guard exists to keep the change reviewable; DOF is small, self-contained, already covered by unit and integration tests (stand-in bridge), and splitting it would leave the issue's acceptance criterion "DOF launcher with the fake bridge: started on load, stopped on exit" open for a near-empty follow-up.
+**Alternatives:** leaving DOF unimplemented with a follow-up `work-unit` issue (the guard's literal reading; rejected for the reasons above).
+
+## #110 KP-029 (tester) — Scope of the rear_left length independence check
+
+**Decision:** The test for a changed `legs.rear_left.length` asserts that the other three legs' nodes and every leg material other than `cabinet.leg.rear_left` are unchanged, and that the rear_left shaft grows by the difference. Body-fixed nodes (body, glass, buttons) are allowed to move, because the body bottom is defined from the mean effective length of the leg pair (SPEC A.4). The other attribute changes (section, finish, colour, bracket, bolt) assert that only `cabinet.leg.rear_left*` nodes and the rear_left material differ.
+**Rationale:** The brief says a length change touches only rear_left nodes, but A.4 makes the body bottom depend on the rear pair's mean length, so body-fixed parts necessarily shift.
+**Alternatives:** Requiring every non-rear_left node to be byte-identical after a length change; rejected as contradicting A.4.
+
+## #110 KP-029 — lib.rs module declaration outside owned paths
+
+**Decision:** Added exactly `pub mod cabinet;` and a one-line `//!` mention of the module to `crates/pin_tablegen/src/lib.rs`; nothing else in that file changed.
+**Rationale:** Nothing pre-stubbed the cabinet module, and the issue's owned directory `src/cabinet/` cannot compile into the crate otherwise; the classifier ruled the one line allowed.
+**Alternatives:** Including the module from tests with `#[path]` tricks (rejected: the public API would not exist for the binary or other crates).
+
+## #110 KP-029 — cabinet.glb frame, node list and material list
+
+**Decision:** `cabinet.glb` is in metres in the SPEC A.4 cabinet frame (x across, player's right positive; y from the body front face toward the rear; z up) with z the height above the floor plane (floor z = 0). A body-fixed point (y, z above the body bottom) is placed at `floor_height_mm(y, z) / 1000`. Static nodes have identity transforms. The 28 node names (`pin_tablegen::cabinet::NODE_NAMES`) and the 17 material names (`MATERIAL_NAMES`) are fixed, in the order of the brief, the same for every geometry. UVs are a per-face box projection on the node's bounding box along the face normal's dominant axis (u to the viewer's right seen from outside the face, v down the image), so every UV is in [0, 1] and a body side's outer face covers 0..1 whole (D32 art). Moving nodes (four buttons, plunger rod) carry `translation` = the control position above the floor and string extras `moving`, `travel_axis`, `travel_mm`; static nodes carry no extras. The art-surface materials (`cabinet.body`, `cabinet.side_left`, `cabinet.side_right`, `cabinet.front`) are white so an art texture shows its own colours.
+**Rationale:** The brief fixes the frame, names and order; a z-above-floor frame lets a renderer place the model without the leg arithmetic; box projection is deterministic, needs no unwrapping and meets the art-surface requirement.
+**Alternatives:** z above the body bottom (rejected: legs would need a negative z); per-face 0..1 quads (rejected: a notched side wall would split its outer face into several 0..1 patches).
+
+## #110 KP-029 — Glass plane
+
+**Decision:** The glass is a sheet parallel to the side wall tops (the body's wall-top line, linear from `front_height` to `rear_height`), its underside on the glass channel's floor. The channel is drawn as a notch `glass_channel.depth` deep into the inner face of each side wall, from two channel widths to one channel width below the wall top. The sheet runs from the front wall's inner face (y = wall_thickness) back `glass_panel.length` measured along the slope, `glass_panel.width` across and `glass_panel.thickness` thick (vertical). The lockdown bar's underside is one channel width below the front wall top, over the glass's front edge, so the glass passes under the bar at the front; its rear end rises with the wall tops above the bar top's height, as on a real cabinet.
+**Rationale:** "Seated in the glass channel" fixes the glass to the side walls, whose tops slope; the brief leaves the plane to the implementer. Reading "below the lockdown bar top" as "the whole sheet below the bar top's height" would need a level glass that leaves the channel within a few centimetres of the front.
+**Alternatives:** A level glass under the bar top (rejected: not seated in the sloping channel, not what a cabinet looks like); a glass parallel to the pitched playfield (rejected: the playfield mount is not part of this model, and the channel is in the walls).
+
+## #110 KP-029 — Leveler roll is not a body tilt
+
+**Decision:** Accept pin_core's pitch-only `floor_height_mm`: the body bottom is linear in y between the front and rear pairs' mean effective lengths, and left/right leveler differences do not tilt the body. Each leg stands on z = 0 with its own effective length, so a rolled cabinet shows the body slightly off its leg tops by the roll offset. Changing one leg's length moves every body-fixed node (through the pair mean) but no other leg's nodes or materials.
+**Rationale:** The body frame is pin_core's contract (#89); the model must agree with it within 1 mm, and the legs must touch the floor.
+**Alternatives:** Tilting the body by the roll in this generator (rejected: would disagree with `floor_height_mm` and the A.4 frame; a change belongs in pin_core through a contract change request).
+
+## #110 KP-029 — Trim metal colour
+
+**Decision:** The shared `cabinet.trim_metal` material (side rails and lockdown bar) takes its base colour from `trim.rail_colour` (sRGB to linear) and its metallic/roughness from `trim.metal_finish`.
+**Rationale:** One shared material cannot carry two colours; the rail colour is the only trim colour in the schema and the bar's finish is `metal_finish`, so both inputs are used.
+**Alternatives:** A separate bar material (rejected: the material list is fixed at 17 names).
+
+## #110 KP-029 — Tapered legs are square frusta
+
+**Decision:** `tapered` legs are square in section, from side `section.top` at the body end to side `section.bottom` at the foot; `round` legs are 16-segment prisms of diameter `top`. `ribbed` cuts lengthwise grooves (4 % of the section size deep, sloped walls) into each face (square/tapered: one groove per face; round: 32 points alternating radius), keeping the outer size.
+**Rationale:** SPEC A.4 and the pin_core schema define `tapered` as "square, tapering", `bottom` as "side at the foot"; the brief's "round and tapered are 16-segment prisms/frusta" conflicts with that, and the schema is the contract.
+**Alternatives:** A 16-segment round frustum for `tapered` (rejected: contradicts the schema's "side" semantics).
+
+## #110 KP-029 — Cabinet model design values
+
+**Decision:** Values the schema does not carry, as named constants in `src/cabinet/parts.rs`: buttons are a 40 mm x 4 mm bezel plus a 30 mm x 12 mm cap, press travel 4 mm, protruding against their travel axis (flipper buttons outward from the side walls, start and action toward the player per the brief, also for the action button whose preset position is on the lockdown bar); plunger housing 30 mm outer diameter with a 50 mm x 6 mm flange proud of the front, running 120 mm into the body; rod 9.5 mm diameter, 100 mm inside and 60 mm outside the front, knob 32 mm x 40 mm, pull travel 80 mm; coin door 4 mm proud of its centre's y; brackets 1.5 x the leg's top size high, corner plate 3 mm thick reaching 40 mm past the leg (two bolts), flush plate 4 mm thick overhanging 20 mm each side (four bolts); bolt heads hex 16 mm across x 6 mm (6 sides), carriage 20 mm domed 5.5 mm, button head 14 mm x 3.5 mm; feet flat 6 mm, domed 13 mm, swivel pad 5 mm plus a 14 mm ball joint; the thread runs from the floor to max(thread_length, extension); glass material white alpha 0.15 blended; button colours red (flippers, action) and yellow (start); coin door near-black in the trim finish; leveler and plunger bright steel/chrome. Every size and position must be finite and within ±100 m (`MAX_DIMENSION_MM`), so every derived float stays finite.
+**Rationale:** Typical cabinet hardware sizes; the colours are not in the schema (REQ-CAB-003 lists leg, rail and trim colours only), and the 100 m cap keeps the no-panic, finite-output guarantee without depending on pin_core's consistency check (which a hand-built geometry may skip).
+**Alternatives:** Adding these to `cabinet.toml` (a pin_core contract change, out of scope); calling `check_consistency` first (rejected: it also checks the backbox, mount and art, unrelated to this model, and names keys only inside a message).
+
+## #110 KP-029 — Glass assertion: passes under the bar at the front (Orchestrator ruling)
+
+**Decision:** The glass test checks that, over glass vertices whose y lies within the lockdown bar's y extent (or the glass's min-y vertices if none do), max glass z is at most the bar's max z + 1 mm, and that the glass's max z is at most the rear wall top + 1 mm. The old whole-glass "below the bar top" assertion is replaced.
+**Rationale:** The glass sits in the channel cut into the sloped side walls and rises toward the rear; only where it overlaps the bar must it pass under it.
+**Alternatives:** Keep the whole-glass bound; rejected, it contradicts the sloped seating (observed 1.053 m glass top against a 0.910 m bar).
+
+## #128 — Lua hook re-arm: direct C call on every reset
+
+**Decision:** `Vm::reset_budget` (`crates/pin_script/src/lua/sandbox.rs`) re-arms the count hook on every call with `rearm_hook`, three plain C API calls on the state's main thread (`lua_gethook`, `lua_gethookmask`, `lua_sethook(.., hook_interval)`), instead of `set_hook_count`'s mlua `exec_raw` (a protected call with stack checks and a pushed C closure). This restores an interval lowered to 1 by a budget hit and restarts the hook countdown. No "hook lowered" marker is kept. The per-callback cost that goes away is the `exec_raw` machinery; the re-arm itself is a few field writes and no allocation.
+**Rationale:** (1) `lua_sethook` is the only API that restarts the countdown (`resethookcount`). Re-arming only after a budget hit, as the brief suggested, would start each call with the countdown the previous call left; the first hook (which spends a full `hook_interval`) then fires early, and `BudgetExceeded` moves by up to `hook_interval - 1` instructions. That breaks "budget accounting unchanged bit for bit". Measured: with the re-arm made conditional on `lua_gethookcount != hook_interval`, `lua::sandbox::tests::kp047_budget_is_independent_of_the_previous_call` fails (`spin` completes 5246 iterations after `pre(1)` instead of 5247). (2) The interval is lowered in three places: the Rust hook in `Vm::build`, and inside the patched Lua `lua_khzcharge` (for example the flat C-call cost) and `luaE_khzdefer`. A per-Vm Rust marker cannot see the two C paths, and `Bridge::budget_hit` is not set on them (test `kp047_reset_budget_restores_a_lowered_hook`: a C-call abort leaves the hook count at 1 with `budget_hit == false`). An unconditional re-arm needs no marker and covers every path.
+**Alternatives:** A per-Vm `Cell<bool>` "hook lowered" marker set in the Rust hook (rejected: misses the C lowering paths and the countdown restart). Reading `budget_hit` before `reset_flags` (rejected: same, and the flag is shared across reloads). Re-arming only when `lua_gethookcount` differs (rejected: changes accounting, measured above). Patching the vendored Lua to restart the countdown in `lua_khzsetbudget` (rejected: outside the owned paths; it is also a sandbox-boundary change).
+
+## #128 — Wasm instantiation fuel: measured charges for globals and empty expression segments
+
+**Decision:** `limits::Scan` now charges 1 unit of `init_fuel` for each global whose initialiser is not a numeric constant (`ref.func`, `ref.null func`, `ref.null extern`, mutable or not; `global.get` is charged the same way). Such a global also counts as start-up work (+1 exit charge once per module). Numeric `i32/i64/f32/f64.const` initialisers cost 0 and do not start the start-up code. An `ElementItems::Expressions` segment is never precomputed, even when empty: an active one costs `1 + n + n` and ends the leading precomputed run. An empty `ElementItems::Functions` active segment inside the table stays precomputed (free).
+**Rationale:** Measured with `start_budget` (fuel left after instantiation = `fuel_per_callback` exactly when `init_fuel` is exact) on wasmtime 50.0.1, `memory_init_cow(false)`, budget 100 000. On base c03bc2b: `(global funcref (ref.func $f))` left 99 998 (2 units consumed: 1 global + 1 exit); two `ref.func` globals left 99 997; one `ref.null` global (funcref or externref, mutable or not) left 99 998 and three `ref.null extern` globals left 99 996; `(global i32 (i32.const 7))` and i64/f32/f64 constants left 100 000; `(elem (i32.const 0) funcref)` left 99 998 (1 offset + 1 exit); a precomputed function segment, an empty expression segment, then `(elem (i32.const 1) func $f)` left 99 996 (1 + 2 + 1 exit). A global does not end the precomputed element run (`(global funcref (ref.null func)) (elem (i32.const 0) func $f)` consumed 2). With the change, every case leaves exactly 100 000. `global.get` cannot be measured: it may only read an imported global, and a module importing anything other than `pinball` functions never links.
+**Alternatives:** Charging the exit unit per global (rejected: measured once per module). Leaving `global.get` uncharged (no difference, since such a module never instantiates; charging it keeps the rule "anything but a numeric constant runs start-up code").
+
+## #128 — Narrow path extension: `exact` table in `src/wasm/mod.rs`
+
+**Decision:** The only edit to `crates/pin_script/src/wasm/mod.rs` adds entries to the `exact` array of the `#[cfg(test)]` test `segment_initialisation_does_not_spend_the_start_budget`. The new entries are the empty expression-form segment (alone, between precomputed segments, twice in a row), an empty function-index control, the `ref.func` / `ref.null` global initialisers, numeric global controls and one mixed case. No other line of the file (module docs, `Live::new`, `host.rs`) changed.
+**Rationale:** The brief grants this narrow extension so that the exact-fuel test covers both under-counts. On base, each new under-count entry fails (for example `Err(BudgetExceeded)` at fuel 1). The two controls pass both before and after the change.
+**Alternatives:** A separate test in `limits.rs` (rejected: `start_budget` and `Live` live in `mod.rs`'s test module, and the brief names this table).
+
+## #128 — Spec tests: tilt-release model and re-hold assertions (A1, A2)
+
+**Decision:** The A1 reference model in `crates/pin_script/tests/callback_cost.rs` releases every coil whose last hold command before the faulting callback was "on", plus every coil the faulting callback itself touched (on or off), each exactly once, in ascending order within each drain, with every drain filling the room it has. A2 does not assert that a re-hold "cancels" a pending release in a particular way. It asserts the observable consequences: once a re-hold reaches the host, no release of that coil follows; a re-hold that fits in the queue leaves the coil held at the end of the callback; coils not re-held, and coils whose re-hold overflowed, are each released exactly once (never stranded).
+**Rationale:** Black-box probes on base c03bc2b show this behaviour. A coil touched only in the faulting callback, for example `hold_coil(7, true)` or `hold_coil(7, false)` before `error('x')`, is released once by tilt. This is the safe side of the rollback documented by `spec_faults.rs` ("release_in_the_faulting_callback_is_not_lost", "coil_held_in_the_faulting_callback_ends_up_released"). The issue requires that this behaviour stay unchanged. Pending releases drain at the start of every callback (switch edge or tick) and before the script runs, so a successful re-hold is never followed by the old release. A re-hold that overflows the queue does not cancel the pending release. The existing suites do not pin down "cancel", so A2 asserts only what is safe and observable (brief A2 fallback clause).
+**Alternatives:** A strict "held before the fault only" model (rejected: it contradicts base behaviour and the safe-side rollback tests). Asserting that drains run before the script (rejected: that is an ordering detail, not a requirement).
+
+## #128 — Spec tests: init_fuel assertions are made without a start function
+
+**Decision:** The optional `Usage::init_fuel` check in `tests/spec_kp047_wasm_fuel.rs` asserts 0 for the bare template and the precomputed-only control, and >= 1 for the cases that need start-up code, all on the module *without* `(start $s)`. With a start function, the precomputed-only control must equal the bare template.
+**Rationale:** `check_limits` reports `init_fuel == 1` for any module with a start function, even with no segments, and this is consistent with the engine: the minimum loading budget equals that of a minimal module without a table or declared segment, as the new test `kp047_spec_4_5_template_baseline_matches_a_minimal_module` checks. So "a free module has no start-up code" holds only without a start function.
+**Alternatives:** Asserting 0 with a start function (rejected: wrong for base and branch alike). Skipping the optional check (rejected: the field is public and the check fails on base for the known bugs).
+
+## #129 tester — placement of the release-order property and the mutation fuzz
+
+**Decision:** the release-order proptest (brief 2.d) and the panic-counting Ogg mutation fuzz (brief 3) live in `crates/pin_audio/tests/mixer_decode_budget_rand.rs`, not `mixer_decode_budget.rs`.
+
+**Rationale:** the brief allows either file. The rand file has no test that makes the decoder panic on purpose, so the global counting panic hook cannot be raced (a `static Mutex` guards it anyway); `mixer_decode_budget.rs` decodes truncated hostile streams whose caught panics would be counted.
+
+**Alternatives:** a separate test file (outside the owned paths); a hook guard in every test of `mixer_decode_budget.rs`.
+
+## #129 — Checked `DecodeBudget::release` returning `Result` instead of an RAII guard
+
+**Decision:** `DecodeBudget::release(&self, sample: &Sample) -> Result<(), OverRelease>`: an atomic `checked_sub` in a `fetch_update`; when the sample's bytes (`BYTES_PER_FRAME × frames()`) exceed what is charged, it returns `OverRelease { attempted_bytes, used_bytes }` and `used` is unchanged. The internal refund of a decode's own spare or failed charge also uses `checked_sub` (with a `debug_assert!`); no `saturating_sub` is left on the `used` counter (`remaining_bytes` keeps one on `limit - used`, which cannot go negative by invariant).
+
+**Rationale:** decoded samples are owned by the loader (`Arc<Sample>` in the mixer's registry), not by a guard tied to the budget, so a guard would need a lifetime or an `Arc<DecodeBudget>` in every sample. A checked release keeps the existing ownership and makes a double or foreign release visible instead of silently zeroing the accounting.
+
+**Alternatives:** an RAII reservation guard (changes `Sample` ownership across pin_audio and pin_app); keeping the saturating release (the defect the issue names).
+
+## #129 — A sound over the decoded-audio budget is silent; the table still loads
+
+**Decision:** when a sound fails with `DecodeError::BudgetExhausted`, `table_samples` reports exactly one error for it (`sound <id> (<file>): decoded-audio budget of <N> MiB exhausted; raise audio.decoded_budget_mib`, `N = bytes >> 20`), the sound stays silent and the load continues; sounds are decoded in manifest order, so earlier sounds that fit keep their charge.
+
+**Rationale:** the issue's acceptance ("loads with those sounds silent and one error each") is the newer and more precise statement; it matches how every other per-sound failure is already handled (a warning, the sound silent). The older ruling text ("the load fails") predates it; its other requirements (the message names the sound, the budget and the setting) are kept.
+
+**Alternatives:** failing the whole table on the first exhausted sound (older ruling wording; a bundle a few MiB over budget would become unplayable instead of partly silent).
+
+## #129 — Budget plumbing: `load_app_table_with_budget` and `IoWorker::set_decoded_budget_bytes`
+
+**Decision:** `table_samples` takes the budget in bytes. `table.rs` gains `load_app_table_with_budget(path, mixer, bytes)`; `load_app_table(path, mixer)` stays as a wrapper with `DecodeBudget::DEFAULT_BYTES`. `IoWorker` holds the budget in an `Arc<AtomicU64>` (initially the default), set with `set_decoded_budget_bytes` and read by `serve` at the start of each load; `IoWorker::spawn`, `IoRequest` and `IoReply` are unchanged. `main.rs` passes `menu.config().audio.decoded_budget_bytes()` to the `--table` load and to the worker after spawning it, and pushes the new value to the worker whenever the menu applies a config change, so a change applies to the next table load. `table.rs` and `orchestrator/mod.rs` were touched (outside the issue's path list) because the loader's only route to `table_samples` runs through them.
+
+**Rationale:** additive: every existing caller and test keeps compiling; an atomic avoids a new request variant or a mutex, and reading it per load gives the ruling's "applies to the next table load" exactly.
+
+**Alternatives:** a budget field in `IoRequest::Load` (changes an enum other tests construct); passing the budget to `IoWorker::spawn` (cannot follow a menu change without respawning the worker).
+
+## #129 — lewton floor 1: overflow is a decode error, valid values unchanged
+
+**Decision:** in the vendored lewton floor 1 path (`render_point`, `render_line`, `floor_one_curve_compute_amplitude`, `floor_one_curve_synthesis`, the multiplier lookup) every operation that upstream did in `u32`/`i32` is evaluated with `checked_*` in the same type, a `u32` above `i32::MAX` used as `i32` or a negative `i32` cast to `u32` is rejected, and `adx == 0`, a short Y list, a multiplier outside 1..=4 and an inverse-dB index past the table are rejected; each gives `AudioReadError::AudioBadFormat` (`DecodeError::Malformed` in pin_audio). Where upstream did not overflow, the result is the upstream value bit for bit (checked by a 4000-case sweep against a verbatim copy of the upstream functions).
+
+**Rationale:** evaluating the same expressions in the same type with overflow detection is the only choice that is provably bit-identical on valid streams and an error exactly where upstream panicked (debug) or wrapped (release); widening to `i64` and continuing would silently produce values upstream never did.
+
+**Alternatives:** relying on `overflow-checks` plus `catch_unwind` (release would still wrap); clamping intermediate values (changes decoded output of edge streams).
+
+## #227 — Mono `Sample` equality and the roll-loop table
+
+**Decision:** `Sample` keeps its derived `PartialEq`, which now compares the channel count as well as the data, so a mono sample is not equal to its duplicated stereo copy (compare `to_stereo_vec()` for the stereo view). `SsfMixer::set_roll_loop` builds its table from the stereo view of every frame, `0.5 * (l + r)` with `(l, r) = sample.frame(i)`, for mono and stereo alike, rather than copying the mono data directly.
+
+**Rationale:** equality that ignores the layout would hide a storage regression (the half-memory requirement) from every `assert_eq!` on samples; the decode-budget tests already compare a budgeted decode with an unbudgeted one, which stay the same layout. For finite values `0.5 * (v + v) == v`, but for `|v| > f32::MAX / 2` the sum overflows to infinity; evaluating the same expression keeps the roll loop bit-identical to the old duplicated-stereo behaviour for every input (deliverable 5: "behaviour unchanged") at load-time cost only.
+
+**Alternatives:** layout-blind equality (weaker tests); copying the mono data as the table (differs from the old result only for values above `f32::MAX / 2`, but differs).
+
+## #227 — Existing budget tests keep their intent at 4 bytes per mono frame
+
+**Decision:** tests whose fixtures are mono WAVs and that encoded 8 bytes per frame now use `Sample::bytes()` or `BYTES_PER_MONO_FRAME`; in `crates/pin_app/tests/audio_budget_config.rs` the two 1 MiB cases whose comments state a property of the sizes ("~3 s alone > 1 MiB", "each fits, not together") use twice the frames (288 000; 160 000 + 160 000) so the property still holds at 4 bytes per frame.
+
+**Rationale:** deliverable 7 asks for mechanical swaps that preserve each assertion's intent; with the lengths unchanged those two cases would silently turn into "everything fits" cases and stop exercising the over-budget path.
+
+**Alternatives:** halving the budget for those cases (changes the `MIB` constant the comments and the smoke test share); leaving the lengths (loses the cases' intent).
+## #111 KP-030 (tester) — Arched top on modern_standard
+
+**Decision:** The spec test for brief item (h) ("for `top_profile = Arched` on each preset: generation is Ok") lowers the translite opening's height on a preset only when contract B's crown rule would otherwise fail, so that the crown at ±opening width/2 is 2 mm above the opening's top edge. A separate test asserts that `modern_standard` with an arched top and its preset opening returns `backbox.top_profile`.
+**Rationale:** The brief contradicts itself. With modern_standard's data (W 705, H 711, opening 628 wide, bottom 235 and height 457), the crown at ±314 mm is 711 − 0.06 × 705 × (628/705)² ≈ 677.4 mm. The opening's top edge is at 692 mm, so contract B requires `backbox.top_profile`. The contract is the shared decision for every value SPEC leaves open, so its error rule wins over the general "Ok on each preset" sentence. Both classic presets satisfy the rule unchanged (crown 694.6 mm ≥ top edge 664 mm).
+**Alternatives:** Asserting Ok for the arched top on modern_standard's preset data (rejected: it contradicts contract B, and an implementation that obeys the contract would fail). Dropping modern_standard from the arched checks (rejected: weaker).
+
+## #111 KP-030 (tester) — Grille discs 2 mm proud
+
+**Decision:** Brief item (e) says "the discs stand 2 mm (±1 mm) in front of the face (flat: y = Y0 − 2 mm)". The tests read this as: the player-facing surface of each disc (its front-facing triangles) is at depth −2 mm ± 1 mm along the face normal; no grille vertex is behind the face (depth ≤ 0 + 1 mm) or more than 2 mm proud (≥ −3 mm); and the front surface's projected area per grille is between that of a 16-gon of radius d/2 and that of the full circle.
+**Rationale:** Contract C says each grille is a "round disc … standing GRILLE_PROUD = 2 mm in front of the face". A disc that is 2 mm thick and sits on the face meets that wording. Its front surface is at y = Y0 − 2 mm, which is the brief's parenthetical. Requiring every vertex at Y0 − 2 mm would only accept a zero-thickness sheet, which is not what "standing in front of" means. The front-surface and area checks keep the assertion as strict as the brief allows (position, proud distance, roundness and ≥ 16 segments).
+**Alternatives:** Every vertex at y = Y0 − 2 mm ± 1 mm (rejected: it would also reject a solid disc sitting on the face, which meets the contract). Only the frontmost depth (rejected: weaker; it would not catch a disc floating off or sinking into the face).
+
+## #111 KP-030 (tester) — Value checks for position keys
+
+**Decision:** Contract G.1 lists "finite, > 0, ≤ MAX_DIMENSION_MM" for every key, with `front_y` and `bottom_z` allowed to be 0. The spec tests apply "0 and negative must fail" only to the size keys (width, height, depth, speaker panel height, backglass sizes, opening width and height, display width and height, grille diameter). The position keys are tested as follows. `backbox.grilles[i].u` is tested with NaN, ±infinity and ±2 × MAX_DIMENSION_MM. `translite_opening.bottom`, `score_display.centre_v` and `grilles[i].v` are tested with NaN, ±infinity, −1 and 2 × MAX. `centre_v = 0` and `grilles[i].v = 0` fail through the fit rule and are asserted with the same key. `translite_opening.bottom = 0` is not asserted.
+**Rationale:** `u` is a signed coordinate: the presets put a grille at u = −262.5 mm, so "> 0" cannot apply to it. For bottom, centre_v and v, the brief's "NaN, infinity, 0 and negative for each size key" names size keys. A zero position is either a fit error with the same key (centre_v, v) or a geometry SPEC does not forbid (bottom = 0 puts the opening at the face's bottom edge, which pin_core rejects only through the speaker-panel rule).
+**Alternatives:** Asserting an error for u = 0 or u < 0 (rejected: it contradicts the presets). Asserting an error for bottom = 0 (rejected: not required by contract G's fit rules; it would pin a reading of G.1 that the contract does not state clearly).
+
+## #111 KP-030 — Backbox model: nodes, materials and design values
+
+**Decision:** `cabinet.glb` gains nine static nodes after the 28 #110 nodes, in this order: `cabinet.backbox.shell`, `.speaker_panel`, `.translite_frame`, `.translite`, `.display`, `.grilles`, `.hinge`, `cabinet.blade.left` and `cabinet.blade.right`. It gains seven materials after the 17 #110 materials: `cabinet.backbox` (white, roughness 0.5), `cabinet.backbox.speaker_panel` (near-black, roughness 0.7), `cabinet.backbox.grille` (dark metal with `trim.metal_finish`), `cabinet.backbox.translite` and `cabinet.backbox.display` (white texture slots), and `cabinet.blade_left` and `cabinet.blade_right` (white art surfaces). The translite frame and the hinge use `cabinet.trim_metal`. The design values are the brief's backbox model contract: an angled front leans back 10 degrees about its bottom edge; an angled top slopes down 10 degrees toward the rear from the front top edge; an arched top is a parabolic crown across x that sags 0.06 × width at the sides, drawn with 32 segments; plates and panels are `body.wall_thickness` thick; the display quad sits 5 mm behind the face; grille discs have 32 segments and stand 2 mm proud of the face; each hinge plate is 50 mm wide and 6 mm thick, at the backbox rear inside the narrower of the backbox and the body (less one wall thickness), and reaches 80 mm above the backbox bottom; blades are 3 mm thick. Each front plate is built from closed column pieces around its rectangular hole. Its rear edges slide along the rear plane, so the plate's bottom stays on the level backbox bottom and its top on the top surface for every profile. The translite and display quads carry explicit face-plane UVs ((0, 0) at the upper-left corner seen from the front). With no grilles, `cabinet.backbox.grilles` is written without a mesh: `pin_assets::load_gltf` loads that file and lists no mesh for the node.
+**Rationale:** The contract fixes every value SPEC §7.3 and Appendix A.4 leave open, and the brief makes the contract the decision. The #110 part of the file stays byte for byte the same: written alone, the first 28 nodes and 17 materials still give the #110 golden hashes. Keeping the hinge inside the body's width (not only the backbox's) makes it land on the rear wall it joins. Explicit UVs keep the image corners exact on an angled front, where the box projection would be off by the sheet's thickness.
+**Alternatives:** A GenError for zero grilles (rejected: the loader accepts a mesh-less node, which the contract prefers). One plate mesh with a polygonal hole, with no internal faces (rejected: column pieces handle every hole position, including a hole that reaches the plate's edge, without special cases; the internal faces are coincident and never front-facing). Box-projected UVs on the translite (rejected: not exact on an angled front).
+
+## #111 KP-030 — Backbox checks beyond the contract's list
+
+**Decision:** (1) Value checks: `backbox.grilles[i].u` is a signed position (finite, |u| ≤ MAX_DIMENSION_MM); every other G.1 key is checked as "finite, > 0, ≤ MAX" as listed, `front_y` and `bottom_z` as ≥ 0. (2) A fit check runs first: `speaker_panel_height` must be below `backbox.height`, otherwise `backbox.speaker_panel_height`. (3) If a hole leaves its plate with no area (a window exactly the panel's width and height, or an opening that fills the whole frame), the error is `backbox.score_display.width` or `backbox.translite_opening.width`, not an empty node. (4) Profiles: an arched top whose sides (H − 0.06 W) are not above the larger of `speaker_panel_height` and 2 T, and an angled top that falls to 2 T or less at the rear, are `backbox.top_profile` errors. (5) Blades: `mount.height` must also be ≤ MAX_DIMENSION_MM. (6) A translite opening that reaches below `speaker_panel_height` is clipped to the frame; it is not an error. (7) On an angled front, a hole edge closer to the face bottom than T × tan 10° is clamped on the plate's rear plane to the level bottom, so the bounds set never goes below zb (finding from the Independent Tester).
+**Rationale:** Every added error uses one of the contract's keys, and each one only rejects geometry that would otherwise be inverted (negative volume) or empty, which would give the generic `cabinet` guard error or a wrong bounds set. The presets and all three profiles on the classic presets are unaffected. A signed `u` is required because the presets place grilles at u = −262.5 mm.
+**Alternatives:** Requiring u > 0 (rejected: the presets would fail). Letting inverted plates through (rejected: wrong bounds and inside-out faces). Erroring on an opening below the speaker panel (rejected: the contract does not list it, and clipping keeps the geometry valid).
+
+## #229 KP-108 — Backbox width, height and depth must hold two wall-thickness panels
+
+**Decision:** `backbox.width`, `backbox.height` and `backbox.depth` must each be at least 2 × `body.wall_thickness` (T). A smaller value is rejected under its own key, after the value and fit checks and before the profile rules, for both front profiles (an angled front with depth < 2 T now reports `backbox.depth`). Equality is allowed. Accepted input generates the same bytes as before.
+**Rationale:** `shell()` puts the front plates in [front_y, front_y + T] and the rear panel in [front_y + depth − T, front_y + depth]. With depth < T the rear panel lies in front of the face and the bottom and side panels are inside-out; with T ≤ depth < 2 T the rear panel overlaps the front plates. Width and height have the same defect (a width of 10 mm gave x bounds of −14..14 instead of ±5; a flat top with height < 2 T gave wrong z bounds). Angled and arched tops already reject heights near 2 T. The property-test seed `cc 3a2804ed...` (depth 1e-6, which returned Ok with "front: 0.781 vs 0.8") found it.
+**Alternatives:** Clamping the panel thickness (rejected: it silently changes design values, and R11 prefers loud rejection). A new `pin_core` validation rule (rejected: it needs an R2 contract change for a generator design value).
+
+## #135 — clearance spatial index
+
+**Decision:** The clearance validator's default index (`SpatialIndex::Fine`) is a set of bounding-volume hierarchies, one per (collision layer, slope class) bucket. The slope classes are wall (`|n·z| < 0.5`), non-walkable ceiling (`0.5 ≤ |n·z| < 1/√2`) and walkable (`|n·z| ≥ 1/√2`). Each tree is built over the triangles' 3D bounding boxes by median splits along the longest axis of the centroid bounds, with at most 4 triangles per leaf. Building is O(n log n), with fewer than n nodes and depth about log2(n). The tree has no cells, so memory does not depend on extents: huge, coincident and empty scenes are handled, and the query stops at NaN boxes. A query takes the plan box plus a filter (layer: any / only / except; slope classes; an inclusive height range on the triangle's z extent). It visits only the buckets and subtrees the filter can accept. It returns the triangles whose plan bounding box overlaps the box (the legacy grid's exact test) and which pass the filter, sorted ascending with no duplicates (each triangle sits in one leaf). Each check's filter is exactly the first cheap reject its narrow phase already applies, or a superset of what that reject keeps. Headroom asks for other-layer ceilings overlapping `s.min.z + 1 mm ..= top`. `laterally_free` asks for walls of the layer within `c.z ± r`. `World::clearance` asks for the layer within `c.z ± reach`. `World::supported` asks for walkable triangles of the layer. The narrow phases are unchanged and still apply their own tests. The legacy uniform grid (cells of at least 50 mm) stays as `SpatialIndex::Legacy` and ignores filters. `validate_clearance_indexed` chooses the index; every existing entry point uses `Fine`.
+
+Verdicts are identical. The legacy query returns every plan-bbox overlap in ascending order. The fine query returns the subsequence of it that the narrow phase does not skip at once. The skipped triangles have no side effect: in headroom and `clearance` they hit `continue`, in `laterally_free` they make `all` true, and in `supported` they make `any` false. So the remaining ones are folded (`min_f64`, `worst` map, `any`/`all`) in the same order with the same values.
+
+`IndexStats::pairs_examined` counts the candidates each check takes from the index and examines. Headroom counts every (support, ceiling) pair the query returns. `World::clearance` counts every triangle returned. `laterally_free` and `World::supported` count each triangle their `all`/`any` closure tests (short-circuit included). The counting points are the same for both indexes. Legacy counts its whole plan-box set; Fine counts the filtered subset, so Fine ≤ Legacy (for `any`/`all`, the deciding triangle passes the filter, so Fine's tested prefix is a subset of Legacy's). Measured on a synthetic greybox scene (a dense floor plus a deck the 27 mm ball clears): 8,405 triangles gave Fine 20 / Legacy 510,246 pairs; 74,420 triangles gave Fine 114 / Legacy 16,383,524 (1.4 s → 45 ms). 673,445 triangles gave Fine 1,014 (0.6 s).
+
+**Rationale:** The slowdown came from the 50 mm minimum cell: each support triangle of a dense mesh pulled in every triangle of its layer and of the walls in its padded box. That made the cost quadratic in density, although nearly all of those triangles were then rejected for layer, slope or height. Bucketing by layer and slope and pruning by height in the tree removes those triangles before they are counted. A BVH needs no cell-size tuning and no cell-count cap, does not blow up on mixed triangle sizes or absurd extents (R11), and its output is a set, so the tree shape (and the deterministic `select_nth_unstable_by` with an index tie-break) cannot affect a result (R3).
+
+**Known limit:** When a ceiling of another layer really is within one ball of a dense support (a deck too low for the ball: an error case), every such (support, ceiling) pair is still examined. They grow with the product of the two densities: a 65 mm-class deck over the same floor for a 79.4 mm ball gave 211,860 pairs at 8,405 triangles and 12,006,112 at 74,420 (1.8 s). A pruning by the current worst gap per ceiling mesh cannot drop the ties of a flat deck without a floating-point margin, and with a margin it no longer provably keeps the first support that reaches the minimum (which the message names). So it was not done.
+
+**Alternatives:** An adaptive or finer uniform grid (rejected: the cell size must be capped for memory on large extents, and it would still return same-layer floor triangles unless bucketed as well). One BVH over all triangles with a per-node layer mask (rejected: more complex, and per-bucket trees already skip whole layers). Counting only pairs that pass the narrow phase's first reject for both indexes (rejected: Legacy and Fine would always count the same, so the counter would not show the index's work).
+
+## #135 tester — Shipped-table verdict check builds the clearance inputs in-process
+
+**Decision:** No built bundle of greybox, apex_circuit, sky_deck or feature_lab exists in the
+repository; each `tables/<name>/build.sh` runs `cargo run -p pin_tablegen`, `pin_assetgen` and
+`pin_tablegen validate`. `tests/clearance_index.rs` therefore builds each table's clearance inputs
+inside a plain `cargo test`: `pin_tablegen::layout::generate` on the table's `layout.toml` and
+`table.toml`, `write_bundle` into a copy of the apex fixture bundle, the table's rules, backglass,
+glass, layout and display scenes copied over it, and the `sounds` entries dropped from the written
+`table.toml` (their files come from the `pin_assetgen` placeholder kit, which pin_tablegen cannot
+depend on, and sounds take no part in the clearance checks). `Legacy`, `Fine`, the plain entry
+points and `validate_bundle` are then compared on that bundle.
+**Rationale:** The playfield mesh and merged manifest, the only inputs the validator reads, are
+exactly what `build.sh` produces; the acceptance criterion "verdicts on the four tables are
+identical" is checked in CI without a build script or a new dev-dependency.
+**Alternatives:** Skip the shipped tables and report them (leaves an acceptance criterion
+unchecked); write placeholder audio files (invents assets); add `pin_assetgen` as a dev-dependency
+(outside the owned paths).
+
+## #135 tester — Scaling scene uses ridged decks, not flat ones
+
+**Decision:** The 60k/180k/540k scaling scene and the small dense scene are two parallel decks
+whose every other vertex column is raised by 0.5 × cell (each cell slopes ±0.5 across x), with the
+upper deck 33 mm above the main deck: the 27 mm ball clears everywhere (perpendicular gap 29.5 mm,
+28 mm needed), and ceilings stay within reach of a ball on a sloped support.
+**Rationale:** With flat decks at a passing gap (30 mm) the finer index examined 0 pairs: over a
+flat support a height bound alone proves the ceiling clear, which is a correct result, so the
+brief's "positive counter, many pairs examined" could not be measured there. Sloped supports make
+any sound index examine the support/ceiling pairs within reach, so the counter measures the
+index's scaling. The density stays constant (15 mm cells, 2 triangles each) and the bound is the
+brief's (≤ 1.25 × linear), neither tightened nor loosened.
+**Alternatives:** Flat decks at a failing gap (an index may stop early after the first error, so
+the counter would not measure scaling); flat passing decks without the positivity assertion
+(vacuous).
+
+## #135 tester — The 4.3 layouts run on their own base bundle
+
+**Decision:** `spec_4_3/a3_layout.toml` and `spec_4_3/geo_layout.toml` are generated against
+`tests/fixtures/spec_4_3/base` (the apex example plus the lamps `geo_layout` names) for the
+verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the apex base.
+**Rationale:** `geo_layout` names lamps the apex base does not declare; its own base is how the
+4.3 tests generate it.
+**Alternatives:** Drop `geo_layout` (less coverage).
+## #133 KP-052-T — Device-loss spec tests: fallback path and screenshot hook
+
+**Decision:** (1) The non-traced test (brief item 1c) puts the source on the permanent fallback with `fall_back("test")`, runs one healthy probe frame (so `stats().frames == 1` proves the probes do run on a live device), then destroys the device and asserts four `prepare` calls return `GpuError::DeviceLost` with `stats().frames` still 1, plus `read_layer` returning `DeviceLost`. (2) The windowed test waits (bounded) for `device_losses >= n` and `render_frames >= F0 + 5`, also stopping early on `gpu_error` so a failed rebuild fails at once with the stats. (3) It takes an optional Xvfb root screenshot with `xwd` only when `PIN_DEVICE_LOSS_SCREENSHOT=<path>` is set; the dump is never asserted on (the counters are the evidence).
+**Rationale:** The brief allows either `Off` handled by the caller or `fall_back` for item 1c; `fall_back` exercises the source's own non-traced `prepare`, which is the path SPEC §4 Subphase 5.4 item 4 names ("automatic fallback to probes"). A healthy probe frame before the loss makes "the probes did not run after the loss" a real check, not a counter that was always 0. Stopping on `gpu_error` keeps the iteration bound meaningful without waiting out the poll limit. An env-gated screenshot gives R12 visual evidence on request without adding a file write or a tool dependency to the CI run.
+**Alternatives:** Quality `Off` with the caller skipping the source (rejected: it never calls the source, so it tests nothing of the implementation). Always taking a screenshot (rejected: `xwd` is not in the CI package list).
+
+## #133 KP-052 — device-loss rebuild
+
+**Decision:** (1) **One request path, loss state on the context.** `GpuContext::with_instance`, the new `with_instance_features` and `new_headless_with_features` all go through one private `GpuContext::build`, which asks for `device_request(adapter.features(), adapter.limits(), wanted)`: `device_features = (wanted | timestamp queries) & adapter`, downlevel limits at the adapter's resolution, acceleration-structure limits and the experimental opt-in only when ray queries are requested and offered. `build` registers the device's single device-lost callback before it returns, and the callback writes a flag shared by the context (`device_lost`, `device_lost_reason`, first reason wins). `RayQueryReflections::new` shares this flag (`Arc` clone) and no longer registers its own callback. `mark_device_lost` sets a second flag that belongs to that one source, so forwarding a loss to one source does not mark its siblings. `add_mesh`, `read_layer` and `prepare` check the loss before any other work. `GpuError::DeviceLost(reason)` carries the reason only (`"Destroyed"`, `"Unknown: <msg>"`); `fallback_reason()` still reads `"device lost: <reason>"`. `<GpuContext as RayCapability>::device_lost` returns the real flag. (2) **Timestamps on the headless-with-features path.** `new_headless_with_features` now also enables `TIMESTAMP_QUERY` / `TIMESTAMP_QUERY_INSIDE_ENCODERS` when the adapter offers them, because the request path is shared. (3) **Instance and surface reuse.** After a loss the render thread breaks the dead table presenter into its surfaces (`AppSurfaces::into_sources`: presenter threads stopped and joined, renderers, timer and menu overlay dropped, `SurfaceSource`s returned with their window guards and current pixel sizes), clones the instance from the dead context, drops the dead context (under the lifecycle lock, bounded wait), and builds a new context on the same instance with the same `GpuOptions` and `wanted` (empty in the app, D33). It then builds a new `AppSurfaces` with `try_new`, which hands the sources back if it fails. No surface is created on the render thread. (4) **Retry budget.** `RebuildPolicy` (pure) counts a loss once, allows one attempt per render-loop iteration and at most `MAX_DEVICE_REBUILD_ATTEMPTS = 3` attempts per loss, logs every attempt, and resets after a success. After the third failure it logs once, sets `gpu_error` and stops presenting. The forced-loss hook (`RenderConfig::force_device_loss`) destroys the device and then polls without blocking at most 64 times so the callback is delivered. After that, a forced loss and a real one take the same path. (5) **Debug presenter scope.** The `SurfaceSet` debug view cannot give its surfaces back (`gpu/surfaces.rs` is outside this unit). A loss there logs once, sets `gpu_error` and stops presenting. (6) **Presenter-thread surfaces.** `run_presenter` (presenter.rs, outside this unit) consumes its `PresenterTarget`, so a surface owned by a presenter thread cannot be taken back. The thread is stopped and its window guard is kept (the slot now holds a clone, `UnrecoveredSurface`). Each rebuild attempt with such a surface fails with a message naming the window, so a cabinet with a presenter-thread backglass or score window stops presenting after three attempts, as the brief requires. Surfaces skipped for lack of an 8-bit format are now kept in `AppSurfaces` (never drawn) so they can be returned as well. (7) **Display state across a rebuild.** `AppSurfaces` records the sim's `DisplayCommand`s in a `DisplayMemory`: the last scene with its start time and each player's latest score (players below `MAX_PLAYERS`). Commands that arrive while a rebuild is pending go into the same memory. Replaying it (`restore_state`) gives the new renderers the same scene state and score state, and minimised windows stay hidden. The last menu state is shown again on a rebuilt menu overlay. Things that reset: the renderers' `display_commands` counters (they count the replayed commands), `AppSurfaces::frames`, per-renderer GPU history (post chain temporal state, reflection probes rebuilt from scratch), and the HUD text until its next 250 ms refresh. GPU frame timing is not resumed: `GpuFrameTimer::new` consumes the profiler's `PresentProfiler`, and `gpu_timer.rs` provides no way to get it back. One stderr line says so.
+(8) **Re-exports.** `pin_app::orchestrator` re-exports `MAX_DEVICE_REBUILD_ATTEMPTS` and the recovery types `AppSurfacesError`, `CarriedState`, `DisplayMemory`, `SurfaceRecovery` and `UnrecoveredSurface`, so code outside the crate can name what `AppSurfaces::try_new` and `into_sources` return (the Orchestrator granted this change to `mod.rs`).
+**Rationale:** wgpu keeps one device-lost callback per device, so the loss must live where the callback is registered, on the context. A second callback registered by the source would replace the context's. A shared flag lets every object built on the context see a loss without polling. Surfaces belong to the instance and SDL windows exist only on the main thread, so reusing the instance and the surfaces is the only rebuild the render thread can do alone. A pure policy type keeps the bounded retry testable without a GPU. Recording the least set of commands that reproduces the state keeps memory constant instead of logging every command.
+**Alternatives:** Keeping a second callback in the source and forwarding (rejected: displaces the context's callback). Asking the main thread for new surfaces (rejected: needs main.rs and a new channel, out of this unit). Copying the presenter loop into present.rs so it returns its surface (rejected: two copies of the presenter loop would drift apart; requested instead as a `presenter.rs` change). Rebuilding with only the recoverable surfaces (rejected: the brief says an unrecoverable surface is a failed attempt). Replaying the full command log (rejected: grows without bound).
+
+## #239 KP-112 — forced loss waits for the queue
+**Decision:** This corrects item (4) of "#133 KP-052 — device-loss rebuild", which said the forced-loss hook (`RenderConfig::force_device_loss`) destroys the device and then polls without blocking at most 64 times so the callback is delivered. The hook (`force_device_loss` in `pin_app/src/orchestrator/threads.rs`) now destroys the device, then waits once, bounded, with `pin_render::gpu::wait_for_device(device, FORCED_LOSS_WAIT)` (`FORCED_LOSS_WAIT` = 5 s; a timeout is ignored, never a panic), and keeps the 64 non-blocking polls only as a fallback while the callback is still missing. The render loop also keeps a `forced_loss_pending` flag: while it is set and the device does not yet report the loss, it polls the device without blocking once per iteration before the detection step, and clears the flag once the loss is seen or the presenter is gone. No loss flag is ever set by hand: a forced loss and a real one still take the same path, through the wgpu device-lost callback. The wait runs on the render thread only, and only when the test hook is set; the sim thread is unchanged (R4).
+**Rationale:** In wgpu 30, `Device::destroy` only marks the device invalid, and device maintenance queues the Destroyed device-lost callback only when the device is invalid and its queue is empty, that is when the fence has passed every submission. `PollType::Poll` never waits for in-flight submissions, and after the destroy no further submit or maintenance runs on its own. On Windows WARP and macOS Metal the last frame was still in flight during the 64 polls, so the callback never fired and `device_losses` stayed 0; lavapipe usually finished in time. A bounded blocking wait drains the queue so the callback is delivered on every backend.
+**Alternatives:** Setting the lost flag by hand (rejected: forced and real losses must share the callback path). Raising the poll count (rejected: it is racy, not a wait). A test-harness change (rejected: the test is right and must not be weakened, R10).
+
+## #239 KP-112 — surfaces are recreated for a DX12 or Vulkan rebuild
+**Decision:** This amends item (3) of "#133 KP-052 — device-loss rebuild", which said no surface is created on the render thread and the rebuild reuses the main-thread surfaces. On DX12 and Vulkan the render thread now recreates each surface before the first rebuild attempt of a loss; Metal (and any other backend) keeps reusing the surfaces. How: `pin_render::gpu::create_surface` (same signature, still on the main thread) records the window's raw display and window handles (`wgpu::rwh`) in a private process-wide registry (`static Mutex<Vec<(u64, handles)>>`) keyed by a hash of the new `wgpu::Surface`'s identity (wgpu hashes a surface by its id, whose epoch is unique per created surface); the surface itself is not kept. The new `pub unsafe fn recreate_surface(instance, old) -> Result<wgpu::Surface<'static>, GpuError>` takes `old`'s record, drops `old` (wgpu's `Drop` unconfigures it and releases its swap chain), creates a surface on the same instance from the same handles (`SurfaceTargetUnsafe::RawHandle`) and records it under its own key. Missing handles or a creation error give `GpuError::Surface`. The registry is bounded at 32 records (oldest evicted), because wgpu has no drop hook to remove the record of a surface dropped in normal operation; it is locked only on the main and render threads, never on the sim thread, and only looked up by key (R3). In `pin_app`, `PendingRebuild` records the dead context's backend (read from `adapter_info()` before the context drops) in a `SurfaceRecreation` that is due once per loss: a later attempt of the same loss reuses the recreated surfaces, and a new loss recreates again. Each `SurfaceSource` keeps its other fields and its `keep_alive` guard, held across the call and paired with the new surface, so the window outlives both and the surface still drops before its guard. A source whose surface cannot be recreated (its old surface is gone) moves to `SurfaceRecovery::unrecovered` with its guard; the attempt fails with a message naming the window, and every later attempt fails on `unrecovered_note`, so the 3-attempt budget then sets `gpu_error`. One stderr line `pin_app: surface recreated for the rebuild (<backend>)` is printed per recreation. The raw handles are `Send` by an `unsafe impl`, justified by the window guard (they are used only while the guard keeps the window alive) and by DX12 and Vulkan accepting the handles on any thread.
+**Rationale:** wgpu-core's `configure_surface` never unconfigures the old hal surface. The DX12 hal reuses the existing swap chain through `ResizeBuffers`, and that swap chain is bound to the dead device's queue, so the new device is removed at the first present and wgpu-core 30.0.1 panics in `PendingWrites::activate` (seen on Windows WARP in run 45880540056). Vulkan passes the old swap chain as `oldSwapchain` across devices, which is invalid usage that lavapipe happens to tolerate. Only dropping the `wgpu::Surface` releases the swap chain; wgpu 30 has no public unconfigure. Metal's hal `configure` rebinds the layer to the new device, and a Metal surface must not be created off the main thread, so Metal keeps the old behaviour. A registry keyed by the surface's identity keeps `create_surface` and `SurfaceSource` source-compatible.
+**Alternatives:** Asking the main thread to recreate the surfaces (rejected as the heavier option: it needs a new main-thread channel and blocks the loss path on the main thread's event pump). Dropping the surfaces without recreating them (rejected: nothing to present to). Adding a handles field to `SurfaceSource` (rejected: it breaks the struct literals in the unowned test helpers). Working around the panic inside wgpu-core (rejected: a vendored dependency). The wgpu-core panic at present on a lost device is tracked separately by #242 (KP-113).
+
+## #130 (tester) — Mid-play retrigger in the 10-minute equality test
+
+**Decision:** The brief asks for "one retrigger mid-play on the resident and the streamed mixer alike" in the LONG test, and also (S7) that a trigger for a stream while its voice plays is ignored. The AC1 test sends the mid-play retrigger to the streamed mixer only; the resident reference mixer gets no trigger at that point, and the outputs must stay bit-identical (which proves the trigger was ignored). A retrigger "alike" on both mixers is done after the end of the track (rewind, compared for 8 blocks).
+**Rationale:** On a resident music sound a second trigger starts a second voice (or steals the first with one voice), so sending it to both mixers cannot give equal outputs under S7. Sending it to the stream only is the reading that keeps S3 (equality) and S7 (ignored) both true; the rewind trigger after the end covers the "both mixers alike" part.
+**Alternatives:** Sending the retrigger to both mixers (rejected: S3 and S7 contradict). Dropping the mid-play retrigger (rejected: weaker; S7 would not be exercised on the long track).
+
+## #130 (tester) — Which state assertions are deterministic
+
+**Decision:** `is_finished()` is asserted false only when the track is longer than the ring (the loader cannot reach the end of the pass before the ring drains), and true after `wait_filled()` only when the track is shorter than the ring; for a track exactly the ring length it is not asserted. `buffered_frames()` after `wait_filled()` before any trigger must equal `min(track_frames, ring_frames)`. A zero-length track must open (`Ok`), buffer 0 frames and start no voice; `ring_frames()` for it is only bounded (`<= requested`). The hostile-input loop stops at 1 000 000 renders of `min(ring_frames, 4096)` frames (at least 1).
+**Rationale:** The brief allows the ring to be clamped to the known length and leaves "end of source" detection for a track that exactly fills the ring open; asserting only the cases the semantics force keeps the tests free of thread timing (R6, R3).
+**Alternatives:** Asserting `is_finished()` for the exact-fit case (rejected: depends on whether the loader probes past the last frame, which the brief does not fix).
+
+## #130 — One voice per streamed track, ignored while it plays
+
+**Decision:** A streamed track has one ring and one read position, so it plays at most one voice. A trigger for a streamed sound whose voice is active is ignored: no new voice, no steal, nothing counted. A track whose header gives a length of 0 starts no voice, as a resident zero-length sample does.
+**Rationale:** A second voice would need a second decode and ring (twice the budget and loader work) or a shared read position (wrong output). Music retriggers while playing are rare and usually unintended, and ignoring them keeps the current track playing.
+**Alternatives:** Restarting the track on retrigger (rejected: stale frames would have to be dropped on the audio thread mid-play, and an underrun at every retrigger). Opening a second ring per voice (rejected: doubles the memory the issue wants to bound).
+
+## #130 — Rewind when a streamed voice ends or is stolen
+
+**Decision:** When a streamed voice ends (end of source, loader failure, or it is stolen), the audio thread bumps the track's pass number (an atomic epoch) and drops the buffered values. The loader sees the new epoch, restarts the decode at source frame 0 and records where the new pass starts in the ring, so values of an older pass are dropped unplayed. `is_finished()` reads false from the bump on. A retrigger before the loader has refilled underruns.
+**Rationale:** The next trigger then plays the track from the start, as a resident sample does. Only atomics and ring pops are used on the audio thread (D5); the work to drop old values is bounded by the ring capacity.
+**Alternatives:** Resuming where the stolen voice stopped (rejected: differs from resident playback). Keeping the first ring of frames resident for an instant restart (rejected: more memory per track, and more code paths; can be added later).
+
+## #130 — Underrun is silence without skipping
+
+**Decision:** Frames the ring cannot supply while the pass has not ended render as silence, count one per frame in `StreamHandle::underrun_frames` and `Mixer::stream_underruns`, and the voice resumes with the next real frame. The loader publishes a frame only once it knows another frame follows, or together with the end-of-pass flag in the same atomic store, so the frames after the last real frame are never counted as underruns.
+**Rationale:** Not skipping keeps the music intact. Publishing the last frame with the end flag means "ring empty and not ended" is always a real gap (the tester's invariant: underruns equal the silent frames inserted).
+**Alternatives:** Skipping ahead to stay in time (rejected: needs the loader to discard on demand; music would jump). Ending the voice on underrun (rejected: one slow disk read would stop the music).
+
+## #130 — Ring charged whole and clamped to the known length
+
+**Decision:** `open_stream` charges `ring_frames x 4 x channels` bytes to the bundle's `DecodeBudget` at open, all or nothing, and returns them when the track drops. The ring is the requested size clamped to at least 1 frame, at most the 10-minute cap at the mixer rate and, when the header gives it, at most the output length (WAV data-chunk size bounded by the bytes present, last Ogg granule). The decoded length is not charged.
+**Rationale:** The ring is the only decoded PCM a streamed track holds, so it is what the D25 budget must bound. Clamping to the known length means a short track never holds a ring larger than itself. Header values only shrink the allocation, never grow it.
+**Alternatives:** Charging the ring in growth steps (rejected: the ring is allocated once). Charging the decoded length (rejected: that is what streaming removes).
+
+## #130 — 10-minute cap kept for streams
+
+**Decision:** Streams keep the `MAX_SECONDS` (600 s) cap: checked at open from the header (exactly 600 s accepted) and again while decoding through the shared resampler, where a longer stream fails the pass (`failed()`), plays what was buffered, then ends.
+**Rationale:** R11: an untrusted bundle must not make the loader decode forever, for example with a missing or wrong length in the header. One rule for resident and streamed sounds.
+**Alternatives:** No cap for streams (rejected: unbounded loader work per untrusted file). A larger cap for music (rejected: not asked for; can be raised later through the constant).
+
+## #130 — Polling loader, no wakeup from the audio thread
+
+**Decision:** The loader parks with `park_timeout` (2 ms) between checks of free ring space, the epoch and the stop flag. The audio thread never signals, locks or waits on it. `StreamHandle::wait_filled` (load and test threads only) unparks the loader and waits on a condition variable that only the loader and the waiters use.
+**Rationale:** D5 forbids syscalls and locks on the audio thread; `unpark` can be a syscall. A 2 ms poll against a 1.37 s default ring leaves a wide margin.
+**Alternatives:** Unparking the loader from `render` (rejected: syscall on the audio thread). A semaphore (rejected: same problem).
+
+## #130 — Additive `table_audio` instead of changing `RegisteredSound`
+
+**Decision:** pin_app gets `TableAudio`, `table_audio` and `AudioEngine::with_streams` next to `table_samples`, `RegisteredSound` and `AudioEngine::new`, which are unchanged. Routing the loader (table.rs, threads.rs, the orchestrator mod.rs re-exports) through them is a follow-up outside this issue's owned paths.
+**Rationale:** Existing unowned tests use `table_samples` and the `RegisteredSound` tuple; an additive API keeps them passing without edits (R1, R10).
+**Alternatives:** Making `RegisteredSound` an enum of resident or streamed (rejected: breaks unowned call sites and tests).
+
+## #130 — A streamed track owns its compressed bytes in memory
+
+**Decision:** `open_stream` takes the file's compressed bytes as a `Vec<u8>` that the track owns; the loader decodes from memory and never touches the filesystem.
+**Rationale:** The bundle snapshot already hands out whole compressed files, and the I/O worker is the only thread that reads files (R4). Compressed music is about a tenth of its decoded size, and the decoded-audio budget bounds decoded PCM only, as the human ruling on the 512 MiB budget says.
+**Alternatives:** Reading the file in chunks on the loader thread (rejected: a second thread touching the filesystem, and the snapshot is an in-memory view). Charging the compressed bytes to the budget (rejected: the budget is defined as decoded audio).
+
+## Process — Gate reviews have a round limit
+
+**Decision:** At the owner's direction (2026-11-26), PROCESS.md P6 gets a round limit for gate
+reviews. Rounds 1 to 5 run as before. From round 6 on, only blocking findings are fixed (R11
+security, verified correctness defects, R3/R4 violations, contract mismatches, failing required
+checks); every other finding is deferred without a fix attempt into one new `work-unit` issue per
+round, and its thread is resolved. After round 8, a gate whose threads are all resolved, with no
+blocking finding open, merges as `capped` (recorded in `docs/RUN_LOG.md`) even if CodeRabbit still
+withholds approval. `main` is no longer merged into an open gate branch unless the gate issue's PR
+conflicts with it or a required check needs it. The limit applies to gate reviews already open
+when it merges, counting their earlier rounds.
+**Rationale:** Gate reviews run one at a time, and the 30-web-prereq review (PR #197) reached
+round 13 in about 33 hours with finding counts rising (3, 6, 7, 20), while the 11-contracts gate
+(#90, PR #214) waited behind it. Each fix and each merge of `main` added new code for CodeRabbit to
+review, so the loop did not converge. Blocking defects are still never deferred.
+**Alternatives:** No limit (rejected: one gate can stall every later gate indefinitely). Running
+gate reviews in parallel (rejected: the next gate's base is the previous gate's reviewed commit).
+A smaller limit such as 3 rounds (rejected: early rounds still find real defects worth fixing in
+place).
+
 ## #163 KP-069 — One assert script for every replay-hash leg
 
 **Decision:** The record / 10 replays / golden comparison lives in a single new file,

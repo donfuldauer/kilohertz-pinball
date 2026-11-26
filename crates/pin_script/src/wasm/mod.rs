@@ -932,6 +932,30 @@ mod tests {
             "(table $e 8 externref) (elem (i32.const 0) func $f) \
              (elem (table $e) (i32.const 0) externref (ref.null extern)) (elem (i32.const 4) func $f)"
                 .to_owned(),
+            // KP-047 (SPEC 4.5): an expression-form segment is never
+            // precomputed, even with no items: it costs its offset
+            // expression and ends the precomputed run.
+            "(elem (i32.const 0) funcref)".to_owned(),
+            "(elem (i32.const 0) func $f) (elem (i32.const 0) funcref) \
+             (elem (i32.const 1) func $f)"
+                .to_owned(),
+            "(elem (i32.const 0) funcref) (elem (i32.const 1) funcref)".to_owned(),
+            // ... while an empty function-index segment still is.
+            "(elem (i32.const 0) func) (elem (i32.const 1) func $f)".to_owned(),
+            // KP-047 (SPEC 4.5): reference-typed global initialisers are
+            // evaluated by the start-up code; numeric constants are free.
+            "(global funcref (ref.func $f))".to_owned(),
+            "(global funcref (ref.null func))".to_owned(),
+            "(global (mut funcref) (ref.null func))".to_owned(),
+            "(global externref (ref.null extern))".to_owned(),
+            "(global (mut externref) (ref.null extern)) (global funcref (ref.func $f))".to_owned(),
+            "(global i32 (i32.const 7))".to_owned(),
+            "(global (mut i64) (i64.const 7)) (global f32 (f32.const 1)) \
+             (global f64 (f64.const 1))"
+                .to_owned(),
+            "(global i32 (i32.const 7)) (global funcref (ref.null func)) \
+             (elem (i32.const 0) func $f) (data (i32.const 0) \"x\")"
+                .to_owned(),
         ];
         for segs in &exact {
             for fuel in [1, 5000, 100_000] {

@@ -9,6 +9,7 @@ use pin_core::schema::table::SoundBus;
 
 use super::decode::Sample;
 use super::ring::{SoundReceiver, SoundTrigger};
+use super::stream::StreamedTrack;
 
 /// Frames mixed per internal block (sizes the duck-curve scratch buffer).
 const BLOCK_FRAMES: usize = 256;
@@ -97,9 +98,28 @@ impl Default for MixerConfig {
     }
 }
 
+/// Where a registered sound's frames come from.
+enum Source {
+    /// Fully decoded, shared with the loader.
+    Resident(Arc<Sample>),
+    /// Streamed from its compressed bytes through a bounded ring (music
+    /// bus only; module docs, "Streaming").
+    Streamed(Box<StreamedTrack>),
+}
+
 struct Registered {
-    sample: Arc<Sample>,
+    source: Source,
     bus: Bus,
+}
+
+impl Registered {
+    /// Stored channels (1 or 2).
+    fn channels(&self) -> usize {
+        match &self.source {
+            Source::Resident(s) => s.channels(),
+            Source::Streamed(t) => t.channels(),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -126,6 +146,8 @@ pub struct Mixer {
     attack_step: f64,
     release_step: f64,
     duck_curve: Vec<f32>,
+    /// Scratch for one block of a streamed voice (`2 × BLOCK_FRAMES`).
+    stream_buf: Vec<f32>,
     clock: u64,
     /// Triggers started so far; numbers voices in arrival order.
     next_seq: u64,
@@ -161,6 +183,7 @@ impl Mixer {
             attack_step: ramp_step(span, cfg.duck_attack_ms, cfg.sample_rate),
             release_step: ramp_step(span, cfg.duck_release_ms, cfg.sample_rate),
             duck_curve: vec![1.0; BLOCK_FRAMES],
+            stream_buf: vec![0.0; 2 * BLOCK_FRAMES],
             clock: 0,
             next_seq: 0,
             stolen: 0,
@@ -177,6 +200,54 @@ impl Mixer {
     /// Registers (or replaces) sound `id` on `bus`. Load time only: may
     /// allocate. Replacing a sound stops the voices playing its old sample.
     pub fn register(&mut self, id: SoundId, sample: Arc<Sample>, bus: Bus) {
+        self.insert(
+            id,
+            Registered {
+                source: Source::Resident(sample),
+                bus,
+            },
+        );
+    }
+
+    /// Registers (or replaces) sound `id` as a streamed track (module docs,
+    /// "Streaming"). Load time only: may allocate. Only [`Bus::Music`] is
+    /// accepted; any other bus hands the track back unchanged and registers
+    /// nothing. Replacing a sound (resident or streamed) stops the voices
+    /// playing it, and a replaced streamed track is dropped (its loader
+    /// stopped and its ring returned to its budget).
+    pub fn register_stream(
+        &mut self,
+        id: SoundId,
+        track: StreamedTrack,
+        bus: Bus,
+    ) -> Result<(), StreamedTrack> {
+        if bus != Bus::Music {
+            return Err(track);
+        }
+        self.insert(
+            id,
+            Registered {
+                source: Source::Streamed(Box::new(track)),
+                bus,
+            },
+        );
+        Ok(())
+    }
+
+    /// Frames of streamed tracks the loader had not supplied in time
+    /// (rendered as silence), summed over every registered streamed track.
+    pub fn stream_underruns(&self) -> u64 {
+        self.sounds
+            .iter()
+            .flatten()
+            .map(|r| match &r.source {
+                Source::Streamed(t) => t.underruns(),
+                Source::Resident(_) => 0,
+            })
+            .sum()
+    }
+
+    fn insert(&mut self, id: SoundId, reg: Registered) {
         let i = usize::from(id.0);
         if self.sounds.len() <= i {
             self.sounds.resize_with(i + 1, || None);
@@ -187,7 +258,8 @@ impl Mixer {
                 }
             }
         }
-        self.sounds[i] = Some(Registered { sample, bus });
+        // The old registration (and a streamed track's loader) drops here.
+        self.sounds[i] = Some(reg);
     }
 
     /// Whether `id` has been registered.
@@ -253,10 +325,20 @@ impl Mixer {
             self.unknown += 1;
             return;
         };
-        if reg.sample.frames() == 0 {
-            return;
-        }
         let voices = &mut self.voices[reg.bus.index()];
+        match &reg.source {
+            Source::Resident(s) if s.frames() == 0 => return,
+            Source::Resident(_) => {}
+            Source::Streamed(track) => {
+                // One voice per streamed track: ignored while it plays.
+                if track.is_empty_source()
+                    || voices.iter().any(|v| v.active && v.sound == t.sound.0)
+                {
+                    return;
+                }
+            }
+        }
+        let mut stolen_sound = None;
         let slot = match voices.iter().position(|v| !v.active) {
             Some(free) => free,
             None => {
@@ -267,6 +349,7 @@ impl Mixer {
                     return; // max_voices == 0: the bus is muted.
                 };
                 self.stolen += 1;
+                stolen_sound = Some(voices[oldest].sound);
                 oldest
             }
         };
@@ -278,6 +361,15 @@ impl Mixer {
             seq: self.next_seq,
         };
         self.next_seq += 1;
+        // A stolen streamed voice rewinds its track for the next trigger.
+        if let Some(old) = stolen_sound
+            && let Some(Some(Registered {
+                source: Source::Streamed(track),
+                ..
+            })) = self.sounds.get_mut(usize::from(old))
+        {
+            track.rewind();
+        }
     }
 
     fn render_block(&mut self, out: &mut [f32]) {
@@ -292,7 +384,11 @@ impl Mixer {
             .filter_map(|v| {
                 self.sounds[usize::from(v.sound)]
                     .as_ref()
-                    .map(|r| r.sample.frames() - v.pos)
+                    .map(|r| match &r.source {
+                        Source::Resident(s) => s.frames() - v.pos,
+                        // Streams are music-only; never on the callout bus.
+                        Source::Streamed(_) => 0,
+                    })
             })
             .max()
             .unwrap_or(0);
@@ -316,32 +412,35 @@ impl Mixer {
         for bus in Bus::ALL {
             let ducked = bus != Bus::Callout;
             for v in self.voices[bus.index()].iter_mut().filter(|v| v.active) {
-                let Some(reg) = self.sounds[usize::from(v.sound)].as_ref() else {
+                let Some(reg) = self.sounds[usize::from(v.sound)].as_mut() else {
                     v.active = false;
                     continue;
                 };
-                let data = reg.sample.data();
-                let avail = (reg.sample.frames() - v.pos).min(n);
-                let src = &data[2 * v.pos..2 * (v.pos + avail)];
-                let g = v.gain;
-                if ducked {
-                    for ((o, s), d) in out
-                        .chunks_exact_mut(2)
-                        .zip(src.chunks_exact(2))
-                        .zip(&self.duck_curve)
-                    {
-                        o[0] += s[0] * g * d;
-                        o[1] += s[1] * g * d;
-                    }
+                let ch = reg.channels();
+                let duck = if ducked {
+                    Some(&self.duck_curve[..n])
                 } else {
-                    for (o, s) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)) {
-                        o[0] += s[0] * g;
-                        o[1] += s[1] * g;
+                    None
+                };
+                match &mut reg.source {
+                    Source::Resident(sample) => {
+                        let avail = (sample.frames() - v.pos).min(n);
+                        let src = &sample.data()[ch * v.pos..ch * (v.pos + avail)];
+                        mix_voice(out, src, ch, v.gain, duck);
+                        v.pos += avail;
+                        if v.pos >= sample.frames() {
+                            v.active = false;
+                        }
                     }
-                }
-                v.pos += avail;
-                if v.pos >= reg.sample.frames() {
-                    v.active = false;
+                    Source::Streamed(track) => {
+                        let (len, ended) = track.read(&mut self.stream_buf, n);
+                        mix_voice(out, &self.stream_buf[..ch * len], ch, v.gain, duck);
+                        v.pos += len;
+                        if ended {
+                            v.active = false;
+                            track.rewind();
+                        }
+                    }
                 }
             }
         }
@@ -352,5 +451,210 @@ impl Mixer {
             let v = *o * m;
             *o = if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
         }
+    }
+}
+
+/// Adds one voice's frames `src` (`ch` = 1 or 2 values per frame) times
+/// `g` (and the duck curve `duck` when the bus is ducked) to the
+/// interleaved stereo `out`. The layout is chosen once per voice per block.
+/// Mono is panned to both sides here: `s * g * d` evaluated once and added
+/// to each side is bit-identical to mixing a duplicated stereo copy (same
+/// operands, same left-to-right order).
+fn mix_voice(out: &mut [f32], src: &[f32], ch: usize, g: f32, duck: Option<&[f32]>) {
+    match (ch == 1, duck) {
+        (true, Some(duck)) => {
+            for ((o, &s), d) in out.chunks_exact_mut(2).zip(src).zip(duck) {
+                let v = s * g * d;
+                o[0] += v;
+                o[1] += v;
+            }
+        }
+        (true, None) => {
+            for (o, &s) in out.chunks_exact_mut(2).zip(src) {
+                let v = s * g;
+                o[0] += v;
+                o[1] += v;
+            }
+        }
+        (false, Some(duck)) => {
+            for ((o, s), d) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)).zip(duck) {
+                o[0] += s[0] * g * d;
+                o[1] += s[1] * g * d;
+            }
+        }
+        (false, None) => {
+            for (o, s) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)) {
+                o[0] += s[0] * g;
+                o[1] += s[1] * g;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ring::trigger_ring;
+    use super::*;
+
+    fn dup(x: &[f32]) -> Vec<f32> {
+        x.iter().flat_map(|&v| [v, v]).collect()
+    }
+
+    /// Deterministic pseudo-random values in roughly [-1.5, 1.5] (some above
+    /// full scale, so the clip is exercised).
+    fn signal(n: usize, seed: u32) -> Vec<f32> {
+        let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as f32 / u32::MAX as f32) * 3.0 - 1.5
+            })
+            .collect()
+    }
+
+    /// Renders `blocks` blocks of 256 frames with the given sounds and
+    /// triggers `(block, id, gain)`; `mono` chooses mono storage or the
+    /// duplicated-stereo copy of the same frames.
+    fn render(
+        cfg: MixerConfig,
+        sounds: &[(Vec<f32>, Bus)],
+        triggers: &[(usize, u16, f32)],
+        blocks: usize,
+        mono: bool,
+    ) -> Vec<u32> {
+        let (mut tx, rx) = trigger_ring(64);
+        let mut m = Mixer::new(cfg, rx);
+        for (i, (x, bus)) in sounds.iter().enumerate() {
+            let s = if mono {
+                Sample::from_mono(x)
+            } else {
+                Sample::from_interleaved(dup(x))
+            };
+            assert_eq!(s.channels(), if mono { 1 } else { 2 });
+            m.register(SoundId(i as u16), Arc::new(s), *bus);
+        }
+        let mut out = vec![0.0f32; 2 * 256];
+        let mut all = Vec::new();
+        for b in 0..blocks {
+            for &(at, id, gain) in triggers {
+                if at == b {
+                    assert!(tx.send(SoundTrigger {
+                        sound: SoundId(id),
+                        gain,
+                    }));
+                }
+            }
+            m.render(&mut out);
+            all.extend(out.iter().map(|v| v.to_bits()));
+        }
+        all
+    }
+
+    /// SPEC §4 Subphase 3.3 (#227): mono voices on every bus, with gains,
+    /// a callout duck, master gain and clipping, mix bit-identically to the
+    /// same frames stored as duplicated stereo.
+    #[test]
+    fn mono_mix_is_bit_identical() {
+        for (master, duck_gain) in [(1.0f32, 0.35f32), (0.7, 0.0), (1.9, 0.5)] {
+            let cfg = MixerConfig {
+                master_gain: master,
+                duck_gain,
+                duck_attack_ms: 2.0,
+                duck_release_ms: 3.0,
+                ..MixerConfig::default()
+            };
+            let sounds = vec![
+                (signal(1_500, 1), Bus::Music),
+                (signal(300, 2), Bus::Callout),
+                (signal(700, 3), Bus::Sfx),
+                (signal(90, 4), Bus::Sfx),
+                (signal(0, 5), Bus::Sfx),
+            ];
+            let triggers = [
+                (0usize, 0u16, 0.8f32),
+                (0, 2, 1.3),
+                (1, 1, 0.9),
+                (1, 3, 0.5),
+                (2, 3, 2.0),
+                (2, 4, 1.0),
+                (3, 1, 1.1),
+                (3, 2, f32::NAN),
+                (4, 0, 0.25),
+            ];
+            let a = render(cfg, &sounds, &triggers, 9, true);
+            let b = render(cfg, &sounds, &triggers, 9, false);
+            assert_eq!(a.len(), 9 * 512);
+            assert_eq!(a, b, "master {master}, duck {duck_gain}");
+            // Not trivially silent, and the clip was reached.
+            assert!(a.iter().any(|&v| f32::from_bits(v) != 0.0));
+            assert!(a.iter().any(|&v| f32::from_bits(v).abs() == 1.0));
+        }
+    }
+
+    /// A voice that ends mid-block and a mixer mixing mono and stereo voices
+    /// together: identical to all-stereo storage.
+    #[test]
+    fn mixed_layouts_match_stereo() {
+        let (mut tx, rx) = trigger_ring(8);
+        let (mut tx2, rx2) = trigger_ring(8);
+        let mut a = Mixer::new(MixerConfig::default(), rx);
+        let mut b = Mixer::new(MixerConfig::default(), rx2);
+        let x = signal(300, 9);
+        a.register(SoundId(0), Arc::new(Sample::from_mono(&x)), Bus::Sfx);
+        b.register(
+            SoundId(0),
+            Arc::new(Sample::from_interleaved(dup(&x))),
+            Bus::Sfx,
+        );
+        let st = Sample::from_interleaved(signal(400, 10));
+        a.register(SoundId(1), Arc::new(st.clone()), Bus::Callout);
+        b.register(SoundId(1), Arc::new(st), Bus::Callout);
+        for t in [&mut tx, &mut tx2] {
+            for id in [0u16, 1] {
+                assert!(t.send(SoundTrigger {
+                    sound: SoundId(id),
+                    gain: 0.6,
+                }));
+            }
+        }
+        let (mut oa, mut ob) = (vec![0.0f32; 1_000], vec![0.0f32; 1_000]);
+        a.render(&mut oa);
+        b.render(&mut ob);
+        assert!(oa.iter().zip(&ob).all(|(p, q)| p.to_bits() == q.to_bits()));
+        assert_eq!(a.active_voices(Bus::Sfx), 0);
+        assert_eq!(a.active_voices(Bus::Callout), 0);
+    }
+
+    /// SPEC §4 Subphase 3.3 (#227): the SSF roll loop built from a mono
+    /// sample renders bit-identically to one built from its duplicated
+    /// stereo copy.
+    #[test]
+    fn roll_loop_mono_matches_stereo() {
+        use crate::ssf::{CHANNELS, SsfConfig, SsfMixer};
+        use pin_core::haptics::{HapticEvent, HapticKind};
+        let x = signal(480, 21);
+        let run = |s: Sample| {
+            let mut m = SsfMixer::new(SsfConfig::default());
+            m.set_roll_loop(&s);
+            m.feed(HapticEvent::new(
+                0,
+                HapticKind::BallRoll {
+                    ball: 1,
+                    position_mm: [10.0, 400.0, 0.0],
+                    mass_kg: 0.0806,
+                    speed_m_s: 2.5,
+                },
+                1.0,
+            ));
+            let mut out = vec![0.0f32; CHANNELS * 2_000];
+            m.render(&mut out);
+            out.iter().map(|v| v.to_bits()).collect::<Vec<u32>>()
+        };
+        let a = run(Sample::from_mono(&x));
+        let b = run(Sample::from_interleaved(dup(&x)));
+        assert_eq!(a, b);
+        assert!(a.iter().any(|&v| f32::from_bits(v) != 0.0));
     }
 }

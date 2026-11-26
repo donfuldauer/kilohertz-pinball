@@ -76,6 +76,16 @@
 //!   trace was not published`; the run fails). While tracing, the main thread prints `pin_app: latency
 //!   trace: first frame presented` once any engine of the run presented
 //!   its first playfield frame (the windowed harness waits for it). Without the flag nothing changes.
+//! * Cabinet feedback (KP-006, SPEC §4 3.4 / 3.5): while a table runs, the
+//!   main thread drives gamepad rumble from the sim's haptic impulses (one
+//!   `RumbleDriver` per engine, reset on every table load and new session),
+//!   the sim thread sends UDP telemetry (`docs/TELEMETRY_PROTOCOL.md`) to
+//!   `config.toml`'s `[telemetry] endpoint` (default `127.0.0.1:35120`;
+//!   `enabled = false` turns it off) through a sender thread, and on
+//!   Windows the DOF bridge is started for a table with `[dof]` (`[dof]
+//!   enabled`, on the telemetry port) and stopped at unload and exit. After
+//!   the shutdown line one `pin_app: telemetry: <sent> datagrams sent to
+//!   <addr> (...)` line (or `pin_app: telemetry: disabled`) follows.
 //! * `--config <path>` (REQ-VIEW-006): the `config.toml` to load at start
 //!   and save on every menu change; default `config.toml` in SDL's per-user
 //!   data directory (`pin_app::ui::default_config_path`). `Esc` or the
@@ -94,15 +104,18 @@
 //! thread, wait (bounded) for a detached presenter to release its window,
 //! and if one never does, exit without destroying it.
 
+use pin_app::dof::{BRIDGE_EXE_NAME, DofBridge, DofLaunchConfig, platform_supported};
 use pin_app::orchestrator::trace::{
     CollectedTrace, FlipperBindings, TraceCollector, latency_trace, summary_line,
 };
 use pin_app::orchestrator::{
     AudioConfig, AudioSink, AudioStats, ClosePolicy, DeviceStream, DropMonitor, IoReply, IoRequest,
     IoWorker, LoadedApp, NullSink, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot,
-    TableRenderOptions, Threads, ThreadsConfig, load_app_table, run_headless, run_headless_table,
-    spawn_threads, ssf_playfield_mm,
+    TableRenderOptions, TelemetryFeed, TelemetryFeedStats, TelemetryLink, TelemetryReport, Threads,
+    ThreadsConfig, load_app_table_with_budget, open_telemetry, parse_telemetry_endpoint,
+    run_headless, run_headless_table, spawn_threads, ssf_playfield_mm,
 };
+use pin_app::platform::rumble::{RumbleCommand, RumbleDriver, RumbleOutput};
 use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
@@ -114,8 +127,10 @@ use pin_app::ui::{
 };
 use pin_audio::mixer::MixerConfig;
 use pin_audio::ssf::SsfConfig;
+use pin_core::haptics::HapticEvent;
 use pin_core::input::InputEvent;
 use pin_core::spsc::SpscConsumer;
+use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, RumbleSettings, haptics_ring};
 use pin_render::gpu::{
     GpuOptions, PRESENTER_JOIN_TIMEOUT, SurfaceOptions, SurfaceSource, create_instance,
     create_surface,
@@ -123,6 +138,7 @@ use pin_render::gpu::{
 use pin_render::topology::WindowEvent;
 use pin_render::topology::{DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, TopologyMode};
 use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -1094,6 +1110,168 @@ fn engine_config(
     )
 }
 
+/// The run's cabinet feedback (KP-006, SPEC §4 3.4 / 3.5): per engine, the
+/// telemetry sender thread and the sim thread's feed, the rumble driver and
+/// the DOF bridge. [`attach`](Self::attach) wires a loaded table before its
+/// engine threads start; [`detach`](Self::detach) runs after they were
+/// joined (so the last datagrams flush) and stops the bridge, waiting for
+/// it. Dropping it detaches too (an early error return).
+struct Cabinet {
+    /// The resolved telemetry destination; `None` when disabled in
+    /// `config.toml` or when the endpoint did not resolve.
+    telemetry: Option<SocketAddr>,
+    /// `[dof] enabled`.
+    dof_enabled: bool,
+    link: Option<TelemetryLink>,
+    feed: Option<TelemetryFeedStats>,
+    /// Totals over every engine of the run.
+    report: TelemetryReport,
+    forced: u64,
+    rumble: Option<RumbleDriver>,
+    /// A command for the pads at the next [`service`](Self::service) (the
+    /// "off" of an unloaded table).
+    pending: Option<RumbleCommand>,
+    dof: Option<DofBridge>,
+}
+
+impl Cabinet {
+    /// The settings of `config`: a telemetry endpoint that does not resolve
+    /// prints one line and disables telemetry (and so DOF) for the run.
+    fn new(config: &AppConfig) -> Cabinet {
+        let telemetry = if config.telemetry.enabled {
+            parse_telemetry_endpoint(&config.telemetry.endpoint)
+                .map_err(|e| eprintln!("pin_app: config: {e}; telemetry disabled"))
+                .ok()
+        } else {
+            None
+        };
+        Cabinet {
+            telemetry,
+            dof_enabled: config.dof.enabled,
+            link: None,
+            feed: None,
+            report: TelemetryReport::default(),
+            forced: 0,
+            rumble: None,
+            pending: None,
+            dof: None,
+        }
+    }
+
+    /// Wires `app` before its engine threads start: opens the telemetry
+    /// sender and gives its feed to the sim (a fresh encoder: full state on
+    /// load), gives the sim a fresh rumble ring read by a new driver, and
+    /// starts the DOF bridge when the table has `[dof]`.
+    fn attach(&mut self, app: &mut LoadedApp) {
+        if let Some(addr) = self.telemetry {
+            match open_telemetry(&addr.to_string()) {
+                Ok((tx, link)) => {
+                    let feed = TelemetryFeed::new(tx, app.telemetry_map.clone());
+                    self.feed = Some(feed.stats());
+                    app.sim.set_telemetry(feed);
+                    self.link = Some(link);
+                }
+                Err(e) => eprintln!("pin_app: {e}; this table runs without telemetry"),
+            }
+        }
+        let (tx, rx) = haptics_ring::<HapticEvent>(DEFAULT_HAPTICS_RING_CAPACITY);
+        app.sim.set_rumble(tx);
+        let mut driver = RumbleDriver::new(RumbleSettings::default(), rx);
+        if let Some(off) = driver.reset() {
+            self.pending = Some(off);
+        }
+        self.rumble = Some(driver);
+        self.start_dof(app);
+    }
+
+    /// Starts the DOF bridge for `app` when `[dof] enabled`, the table has
+    /// `[dof]`, telemetry runs, the OS is supported and the bridge is
+    /// installed; otherwise one line says why not. Errors never fail the run.
+    fn start_dof(&mut self, app: &LoadedApp) {
+        if !self.dof_enabled || app.manifest.dof.is_none() {
+            return;
+        }
+        let Some(addr) = self.telemetry else {
+            eprintln!("pin_app: dof: not started: telemetry is disabled (the bridge reads it)");
+            return;
+        };
+        if !platform_supported() {
+            eprintln!("pin_app: dof: not started: the DOF bridge runs on Windows only");
+            return;
+        }
+        let Some(cfg) = DofLaunchConfig::for_app(addr.port()) else {
+            eprintln!("pin_app: dof: not started: {BRIDGE_EXE_NAME} not found next to the engine");
+            return;
+        };
+        match DofBridge::start_for_table(&app.manifest, &cfg) {
+            Ok(Some(bridge)) => {
+                eprintln!(
+                    "pin_app: dof: bridge started (pid {}, port {})",
+                    bridge.id(),
+                    addr.port()
+                );
+                self.dof = Some(bridge);
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("pin_app: dof: not started: {e}"),
+        }
+    }
+
+    /// The table's engine threads were joined: stops the telemetry sender
+    /// (final pump) and adds its counts, queues "rumble off" and drops the
+    /// driver, and stops the DOF bridge, waiting for it.
+    fn detach(&mut self) {
+        if let Some(link) = self.link.take() {
+            self.report.add(link.stop());
+        }
+        if let Some(feed) = self.feed.take() {
+            self.forced += feed.forced_full_states();
+        }
+        if self.rumble.take().is_some() {
+            self.pending = Some(RumbleCommand::OFF);
+        }
+        if let Some(bridge) = self.dof.take() {
+            let status = bridge.stop().wait();
+            eprintln!("pin_app: dof: bridge stopped ({status:?})");
+        }
+    }
+
+    /// One main-loop step at sim tick `tick`: a pending command first, then
+    /// the driver ([`RumbleDriver::service`]: a tick going backwards resets
+    /// it).
+    fn service(&mut self, tick: u64, out: &mut impl RumbleOutput) {
+        if let Some(cmd) = self.pending.take() {
+            out.set_gamepad_rumble(cmd);
+        }
+        if let Some(d) = self.rumble.as_mut() {
+            d.service(tick, out);
+        }
+    }
+
+    /// Shutdown (every engine thread joined): [`detach`](Self::detach),
+    /// stops the pads, and returns the telemetry line.
+    fn finish(&mut self, out: &mut impl RumbleOutput) -> String {
+        self.detach();
+        if let Some(cmd) = self.pending.take() {
+            out.set_gamepad_rumble(cmd);
+        }
+        match self.telemetry {
+            None => "pin_app: telemetry: disabled".to_owned(),
+            Some(addr) => format!(
+                "pin_app: telemetry: {} datagrams sent to {addr} ({} dropped, {} send errors, {} \
+                 full states forced)",
+                self.report.sent, self.report.ring_dropped, self.report.send_errors, self.forced
+            ),
+        }
+    }
+}
+
+impl Drop for Cabinet {
+    fn drop(&mut self) {
+        self.detach();
+    }
+}
+
 /// What a table swap needs from the run (issue #85).
 struct SwapContext<'a> {
     platform: &'a Platform,
@@ -1152,17 +1330,25 @@ fn stop_for_swap(
 /// A thread join error of the old engine (the run then ends with it, as at
 /// shutdown; the old threads are gone either way), or a surface or thread
 /// spawn error for the new one.
+#[allow(clippy::too_many_arguments)]
 fn swap_table(
     old: Threads,
-    app: LoadedApp,
+    mut app: LoadedApp,
     wireframe: bool,
     forwarder: &mut EventForwarder,
     audio_device: &mut Option<DeviceStream>,
+    cabinet: &mut Cabinet,
     cx: &SwapContext<'_>,
 ) -> Result<Swap, String> {
+    // Joins the old engine and closes its audio device stream (its sink
+    // went with the audio thread).
     if let Some(report) = stop_for_swap(old, audio_device)? {
         return Ok(Swap::Closed(report));
     }
+    // The old sim thread is gone: flush its telemetry, stop its bridge
+    // (waiting for it) and its rumble, then wire the new table (KP-006).
+    cabinet.detach();
+    cabinet.attach(&mut app);
     let (input_tx, input_rx) = pin_core::spsc::channel(INPUT_RING_CAPACITY);
     let (window_tx, window_rx) = pin_core::spsc::channel(WINDOW_RING_CAPACITY);
     forwarder.replace_channels(input_tx, window_tx);
@@ -1292,9 +1478,15 @@ fn run_app(args: &[String]) -> Result<(), String> {
         tracing: trace_file.is_some(),
     };
     // Load the table before opening windows: a bad table fails fast.
-    let table = path_of(args, "--table")
+    let mut table = path_of(args, "--table")
         .transpose()?
-        .map(|p| load_app_table(&p, options.mixer))
+        .map(|p| {
+            load_app_table_with_budget(
+                &p,
+                options.mixer,
+                menu.config().audio.decoded_budget_bytes(),
+            )
+        })
         .transpose()?;
     // Without `--table`: the table browser (issue #85) scans `<exe
     // dir>/tables` (or config.toml's `tables_dir`) on the I/O worker.
@@ -1309,6 +1501,8 @@ fn run_app(args: &[String]) -> Result<(), String> {
             ),
             None => IoWorker::spawn(options.mixer),
         };
+        // The player's decoded-audio budget (SPEC §4 4.4, issue #129).
+        worker.set_decoded_budget_bytes(menu.config().audio.decoded_budget_bytes());
         submit_scan(&worker, &dir);
         (dir, worker)
     });
@@ -1360,6 +1554,12 @@ fn run_app(args: &[String]) -> Result<(), String> {
     }
     forwarder.register_windows(&ids);
 
+    // Telemetry, rumble and DOF for the first table, before its sim thread
+    // starts (KP-006).
+    let mut cabinet = Cabinet::new(&applied);
+    if let Some(t) = table.as_mut() {
+        cabinet.attach(t);
+    }
     let gpu = render_gpu(&platform, &guards, options.vrr)?;
     // Declared before `threads`: dropped after the audio thread was joined.
     let (mut audio_device, sink) = audio_output(&platform, headless, options.mixer);
@@ -1397,6 +1597,11 @@ fn run_app(args: &[String]) -> Result<(), String> {
             .menu_mut()
             .and_then(MenuController::take_config_change)
         {
+            // A changed decoded-audio budget applies to the next table load
+            // (DECISIONS "Human ruling — decoded-audio budget").
+            if let Some((_, worker)) = &browser {
+                worker.set_decoded_budget_bytes(new.audio.decoded_budget_bytes());
+            }
             apply_config_change(&platform, &mut forwarder, &mut applied, new);
         }
         if let Some(n) = input_drops.check(forwarder.stats().input_dropped) {
@@ -1457,6 +1662,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
                             wireframe,
                             &mut forwarder,
                             &mut audio_device,
+                            &mut cabinet,
                             &cx,
                         ) {
                             Ok(Swap::Started(t, e)) => {
@@ -1505,6 +1711,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
             break;
         };
         let live = running.stats();
+        cabinet.service(live.sim_ticks, &mut platform);
         // Only a playfield present (the trace's own frame count) raises it.
         if !first_frame_announced && any_frame_presented(trace.as_ref(), banked_trace.as_ref()) {
             first_frame_announced = true;
@@ -1563,6 +1770,9 @@ fn run_app(args: &[String]) -> Result<(), String> {
         .menu()
         .and_then(unanswered_selection)
         .map(Path::to_path_buf);
+    // Every engine thread is joined: flush the telemetry, stop the pads and
+    // the DOF bridge (waiting for it) on every exit path below (KP-006).
+    let telemetry_line = cabinet.finish(&mut platform);
     // Every thread is joined: drain the trace rings and write the file here,
     // on the main thread, also when the run failed (for diagnosis). The
     // file holds every engine of the run: those stopped by table swaps
@@ -1606,6 +1816,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
             }
         }
     }
+    eprintln!("{telemetry_line}");
     if let Some(line) = trace_summary {
         eprintln!("{line}");
     }

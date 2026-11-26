@@ -183,3 +183,40 @@ contract, and can change without a new `version`.
   exists only in the `#[doc(hidden)]` `telemetry_channel_unclamped`
   constructor, which the spec tests use to pin it. Production code uses
   `telemetry_channel`.
+
+## 8. Engine configuration (config.toml)
+
+This section is non-normative: it describes how the `pin_app` engine is
+configured to send telemetry (KP-006). It is not part of the wire contract.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `[telemetry] enabled` | bool | `true` | Send telemetry while a table runs. |
+| `[telemetry] endpoint` | string `"host:port"` | `"127.0.0.1:35120"` | Destination: IPv4 `a.b.c.d:port`, IPv6 `[addr]:port` or a host name. |
+| `[dof] enabled` | bool | `true` | Start the DOF bridge for a table with `[dof]` (Windows only). |
+
+- **Loopback default.** The default destination is loopback, so nothing leaves
+  the machine unless the player points `endpoint` elsewhere. An endpoint that
+  does not resolve disables telemetry for the run with one stderr line
+  (`pin_app: config: telemetry endpoint "<value>": <reason>; telemetry
+  disabled`); a value of the wrong type, an empty endpoint or one longer than
+  255 bytes takes the default with a config warning.
+- **Lifecycle.** The engine opens the datagram ring and the sender thread
+  (`pin-telemetry`, polling every 1 ms) for each table it starts, before the
+  sim thread runs (so the first tick is the full state "on table load"), and
+  stops it after the sim thread was joined, so every queued datagram is sent.
+  Picking another table in the browser repeats this, from tick 0. At exit the
+  engine prints `pin_app: telemetry: <sent> datagrams sent to <addr>
+  (<dropped> dropped, <send errors> send errors, <forced> full states
+  forced)`, or `pin_app: telemetry: disabled`.
+- **Ids.** Switch, coil and lamp ids on the wire are the elements' `number`s
+  in `table.toml` (0..=255); a lamp with `kind = "gi"` is GI string `number`
+  (0..=31) and is not also sent as a lamp; magnet ids are the magnets'
+  numbers (0..=31). Elements outside these ranges are not sent.
+- **DOF bridge port.** The DOF bridge (`tools/dof_bridge`) is started with
+  `--port <p>`, where `p` is the port of `[telemetry] endpoint`; it listens on
+  that port. DOF therefore needs telemetry: with telemetry disabled, or an
+  endpoint that does not resolve, the bridge is not started (one stderr line
+  says why). The bridge must be installed next to the engine
+  (`dof_bridge/KilohertzDofBridge.exe` or `KilohertzDofBridge.exe`); when it is
+  missing one stderr line says so and the table runs without DOF.
