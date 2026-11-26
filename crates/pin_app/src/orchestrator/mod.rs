@@ -48,7 +48,9 @@ mod view;
 
 pub use audio::{
     AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
-    NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
+    NullSink, OfflineRecording, OfflineSink, RegisteredSound, TELEMETRY_POLL, TelemetryFeed,
+    TelemetryFeedStats, TelemetryLink, TelemetryMap, TelemetryReport, TelemetrySources,
+    open_telemetry, parse_telemetry_endpoint, ssf_playfield_mm, table_samples, telemetry_level,
 };
 pub use gpu_timer::{GPU_TIMER_RING, GpuFrameTimer, gpu_sample_ns};
 pub use handoff::{HANDOFF_SLOTS, HandoffStats};

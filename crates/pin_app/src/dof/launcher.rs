@@ -64,6 +64,14 @@ impl DofLaunchConfig {
         }
     }
 
+    /// The app's launch config (KP-006): the installed bridge
+    /// ([`default_bridge_exe`](Self::default_bridge_exe)) listening on
+    /// `udp_port` (the telemetry endpoint's port), with the defaults of
+    /// [`new`](Self::new); `None` when no bridge is installed.
+    pub fn for_app(udp_port: u16) -> Option<DofLaunchConfig> {
+        Self::default_bridge_exe().map(|exe| Self::new(exe, udp_port))
+    }
+
     /// The installed bridge next to the running engine:
     /// `<exe dir>/dof_bridge/KilohertzDofBridge.exe`, then
     /// `<exe dir>/KilohertzDofBridge.exe`; `None` when neither exists.
@@ -155,7 +163,21 @@ impl DofBridge {
         table: &TableManifest,
         config: &DofLaunchConfig,
     ) -> Result<Option<Self>, DofError> {
-        if !platform_supported() {
+        Self::start_for_table_on(platform_supported(), table, config)
+    }
+
+    /// [`start_for_table`](Self::start_for_table) with the platform check
+    /// given as `supported` (KP-006: the load/unload lifecycle is testable
+    /// off Windows with a stand-in bridge). `supported = true` resolves
+    /// `[dof]`, writes the map file and spawns the bridge; `supported =
+    /// false`, or a table without `[dof]`, returns `Ok(None)` and spawns
+    /// nothing.
+    pub fn start_for_table_on(
+        supported: bool,
+        table: &TableManifest,
+        config: &DofLaunchConfig,
+    ) -> Result<Option<Self>, DofError> {
+        if !supported {
             return Ok(None);
         }
         match ResolvedDofMap::resolve(table)? {
@@ -436,5 +458,62 @@ mod tests {
         }
         assert!(!map_file.exists());
         assert!(!alive(pid));
+    }
+
+    const TABLE_TOML: &str = include_str!("../../../../tools/dof_bridge/tests/fixtures/table.toml");
+
+    /// KP-006 (SPEC §4 3.5): `start_for_table_on` spawns nothing when the
+    /// platform is not supported or the table has no `[dof]`, and starts
+    /// (then stops) the bridge when it is.
+    #[test]
+    fn kp006_start_for_table_on_follows_support_and_dof() {
+        let table = TableManifest::from_toml_str(TABLE_TOML).unwrap();
+        let mut no_dof = table.clone();
+        no_dof.dof = None;
+        let dir = std::env::temp_dir().join(format!(
+            "khz-dof-on-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let marker = dir.join("started");
+        let exe = dir.join("bridge.sh");
+        std::fs::write(
+            &exe,
+            format!("#!/bin/sh\ntouch '{}'\ncat > /dev/null\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut cfg = DofLaunchConfig::new(&exe, 35120);
+        cfg.map_dir = dir.clone();
+        assert!(
+            DofBridge::start_for_table_on(false, &table, &cfg)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            DofBridge::start_for_table_on(true, &no_dof, &cfg)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!marker.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no map file");
+        let bridge = DofBridge::start_for_table_on(true, &table, &cfg)
+            .unwrap()
+            .expect("started");
+        assert!(alive(bridge.id()));
+        let status = bridge.stop().wait().expect("exit status");
+        assert!(status.success(), "{status:?}");
+        assert!(marker.exists());
+        let missing = DofLaunchConfig::new(dir.join("missing"), 1);
+        assert!(matches!(
+            DofBridge::start_for_table_on(true, &table, &missing),
+            Err(DofError::Spawn(_))
+        ));
+        assert_eq!(DofLaunchConfig::for_app(1), None, "no bridge next to tests");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

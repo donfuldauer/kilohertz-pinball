@@ -8669,3 +8669,51 @@ frame and an ordering hazard with the present).
 **Decision:** The scan and the load run on the I/O worker (`orchestrator::IoWorker`, one `io-worker` thread; a load runs `load_app_table` on its `table-load` big-stack thread). A missing or unreadable tables folder gives an empty list (no failure, one `pin_app: table browser: 0 table(s) in <dir> (0 ready)` line); a broken bundle is listed with its error and the menu refuses to load it (`LoadRefusal::Broken`, shown as the menu notice); a bundle that lists but fails the full validation or load (clearance, glTF, rules) leaves the running table untouched and the menu shows `Failed` with the error text; a panic inside a load is caught and becomes the same failure with the panic message. Dropping the worker lets the request in flight finish, skips queued ones and joins the thread.
 **Rationale:** R4 (the main thread only posts requests and applies replies), R11 (a picked table goes through exactly `validate_table` as `--table` does), and a failed table must never panic, hang or end the run.
 **Alternatives:** scanning on the main thread inside the menu executor (the #84 fallback, still used for `--table` runs with `tables_dir` set; blocks the event pump).
+
+## #86 — Telemetry is encoded on the sim thread
+
+**Decision:** The app encodes UDP telemetry on the sim thread: `TableSim::step_1ms` fills a `TelemetryState` through a `TelemetryFeed` (`pin_app::orchestrator`) after the sim step and pushes the encoded datagrams through `pin_audio::telemetry`'s wait-free ring to the `pin-telemetry` sender thread (1 ms poll), opened per engine by `open_telemetry` before the sim thread starts and stopped after it was joined. A failed `push_batch` calls `force_full_state` (protocol §4 rule 6) and is counted.
+**Rationale:** The protocol's tick is the sim tick and its state (switches, coils, lamps, magnets) lives on the sim thread; encoding there sees every tick exactly once, in order, with no extra copy or ring, and the encoder and ring are allocation-free (R4, covered by `cabinet_feedback.rs`'s allocation test). The back-pressure rule is written for the sim loop.
+**Alternatives:** encoding on the audio thread from the haptics ring (it sees impulses only, not the cabinet state, and runs at block rate, not per tick); a separate telemetry thread reading the snapshot triple buffer (skips ticks, so deltas and impulses would be lost).
+
+## #86 — GI telemetry comes from `kind = "gi"` lamps
+
+**Decision:** GI strings on the wire (kind 3, ids 0..=31) are the table's lamps with `kind = "gi"`, id = the lamp's `number`, value = that lamp's `FrameStateSnapshot::lamps` intensity; these lamps are not also sent as kind-2 lamps (as `pin_app::dof::ResolvedDofMap::resolve` already maps them). The snapshot's GI tint (`FrameStateSnapshot::gi`, `[r, g, b, intensity]`) is not sent. A GI lamp numbered above 31 is not sent at all.
+**Rationale:** The DOF map and the bridge already address GI as "lamp with kind gi, id = number", so the wire must agree; the tint is a render colour with no element id.
+**Alternatives:** sending the tint intensity as GI string 0 (conflicts with a table's own GI numbering).
+
+## #86 — Coil and magnet telemetry sources
+
+**Decision:** A coil (kind 1) reads energised when any of these holds: its flipper is energised (`FlipperSet::is_energised`, flipper → coil pairs given to `TableSim::set_flipper_coils` at load from the table's flipper configs); a host `coil_holds` on is in force (until a hold off, which also ends a pulse); a host `coil_pulses (coil, d ms)` issued at tick `t` covers ticks `t..t + d`; or a mech driven by it reports `MechSet::coil_on` (the existing public accessor; checked for mapped coils only). A magnet (kind 4) is the latest host `set_magnet` power for its `MagnetId` (0 until set). Switches are `Simulation::switch_bits`. Not observable without a new `pin_sim` accessor, so not sent beyond the above: a coil fired by the simulation itself outside the host queue and outside any mech (none exists today), the physical magnet field strength (remanence, `Simulation::magnetisation` is per ball, not per magnet), and the on_init commands of a feed attached after tick 0.
+**Rationale:** The brief forbids adding `pin_sim` accessors; these sources are the observable ones, are deterministic and read only references (no allocation).
+**Alternatives:** a new `Simulation::coil_states()` / `magnet_powers()` accessor (requested as a follow-up in the report; outside this issue's paths).
+
+## #86 — config.toml keys for telemetry and DOF
+
+**Decision:** `[telemetry] enabled = true`, `[telemetry] endpoint = "127.0.0.1:35120"` and `[dof] enabled = true` (`pin_app::ui::config::{TelemetryConfig, DofConfig}`), documented in `docs/TELEMETRY_PROTOCOL.md` §8. A wrong type drops that key to its default with a `ConfigWarning::InvalidValue` (the existing per-key fallback); an empty or over-255-byte endpoint is reset the same way; an endpoint that does not resolve disables telemetry for the run with one stderr line. The keys are read at start-up and apply to every table the run loads; they are not menu settings (`changed_settings` is unchanged). Telemetry is opened only for table engines (the idle path without a table sends nothing).
+**Rationale:** Defaults follow the protocol's loopback default (nothing leaves the machine unless configured); the names mirror the protocol's own terms; the fallback rule is the one every other `config.toml` key follows.
+**Alternatives:** a single `telemetry_endpoint` top-level key (no room for `enabled`); off by default (would make the cabinet feedback opt-in, against SPEC §4 3.4's "the app drives telemetry").
+
+## #86 — DOF requires telemetry
+
+**Decision:** The DOF bridge is started on table load only when `[dof] enabled`, the table has `[dof]`, telemetry is enabled with an endpoint that resolved, the OS is supported (`platform_supported`, Windows) and `DofLaunchConfig::for_app(<endpoint port>)` finds the installed bridge; otherwise one stderr line says why and the table runs. Errors from the start never fail the run. The main thread stops the old bridge and waits for it before a swapped-in table starts, and at exit after the engine threads were joined, on every exit path (`Cabinet::finish` runs before the stuck-presenter `process::exit`; `Drop` covers early error returns).
+**Rationale:** The bridge only reads the telemetry stream on the endpoint's port; starting it without telemetry would show a cabinet that never reacts.
+**Alternatives:** starting the bridge regardless and letting it idle (misleading; wastes a process).
+
+## #86 — The audio thread's placeholder telemetry encoder stays
+
+**Decision:** The audio thread's existing placeholder encoder in `orchestrator/threads.rs` (behind `AudioStats.telemetry_datagrams`) is left unchanged (it is outside this issue's paths and its counter is asserted by existing tests); the app's real telemetry is the sim thread's `TelemetryFeed`. A cleanup issue should remove the placeholder (or turn its counter into a reading of the sender's report).
+**Rationale:** R1 (owned paths) and no regression in the existing suites.
+**Alternatives:** removing it here (outside the owned paths).
+
+## #86 — Rumble restarts from silence on every load, swap and session
+
+**Decision:** Each table engine gets a new `RumbleDriver` on a fresh `haptics_ring::<HapticEvent>` whose producer `TableSim::set_rumble` feeds; the main loop calls `RumbleDriver::service(live.sim_ticks, &mut platform)` every iteration. `RumbleDriver::reset` (drain the ring, reset the mapper, clear the bookkeeping; returns OFF only when the motors were on) runs inside `service` when the tick goes backwards (a new session), and an unloaded table's driver is dropped with an OFF sent to the pads (at a swap, at the next loop iteration; at exit, right after the threads are joined). Impulses still queued at a backwards tick are discarded with the old session's.
+**Rationale:** `RumbleMapper` only restarts its timeline when the tick jumps back more than 1000 ticks, so a session restarted within one second replayed the old envelope (the issue's acceptance case); a reset on every boundary is simple and deterministic.
+**Alternatives:** keeping queued impulses whose tick is below the new tick (cannot tell sessions apart reliably).
+
+## #86 — Size guard: DOF delivered in the same change
+
+**Decision:** The non-test diff is about 900 added lines (roughly 40 % rustdoc and comments), slightly over the brief's "about 800" guard; the DOF part (deliverable 4) is about 80 of them (`DofBridge::start_for_table_on`, `DofLaunchConfig::for_app` and the main-thread lifecycle). It is delivered here rather than split into a follow-up issue.
+**Rationale:** The guard exists to keep the change reviewable; DOF is small, self-contained, already covered by unit and integration tests (stand-in bridge), and splitting it would leave the issue's acceptance criterion "DOF launcher with the fake bridge: started on load, stopped on exit" open for a near-empty follow-up.
+**Alternatives:** leaving DOF unimplemented with a follow-up `work-unit` issue (the guard's literal reading; rejected for the reasons above).

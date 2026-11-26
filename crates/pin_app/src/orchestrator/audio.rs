@@ -15,6 +15,14 @@
 //!   to [`NullSink`].
 //! * [`table_samples`]: decodes the table's `[[sounds]]` from the validated
 //!   bundle snapshot for [`Mixer::register`].
+//! * UDP telemetry (SPEC §4 3.4, `docs/TELEMETRY_PROTOCOL.md`, KP-006):
+//!   [`TelemetryFeed`] runs on the sim thread inside
+//!   [`TableSim`](super::TableSim): each tick it fills a [`TelemetryState`]
+//!   from the snapshot and the sim's state ([`TelemetrySources`]) through a
+//!   [`TelemetryMap`] (table `number`s on the wire, interned ids inside),
+//!   encodes it and pushes the datagrams through the wait-free ring that
+//!   [`open_telemetry`] created; the sender thread behind the returned
+//!   [`TelemetryLink`] owns the socket.
 
 use super::table::ValidatedTable;
 use pin_assets::IdKind;
@@ -22,9 +30,18 @@ use pin_audio::mixer::{
     Bus, DecodeBudget, Mixer, MixerConfig, Sample, SoundReceiver, decode_with_budget, trigger_ring,
 };
 use pin_audio::ssf::{CHANNELS, SsfConfig, SsfMixer};
+use pin_audio::telemetry::{
+    DEFAULT_TELEMETRY_RING_CAPACITY, DatagramBatch, GI_COUNT, HapticsTelemetryEvent, MAGNET_COUNT,
+    TelemetryEncoder, TelemetrySenderHandle, TelemetryState, TelemetryTx, telemetry_channel,
+};
+use pin_core::FrameStateSnapshot;
 use pin_core::SoundId;
 use pin_core::haptics::HapticEvent;
+use pin_core::schema::table::{LampKind, TableManifest};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 /// Frames the audio thread renders per block (5.3 ms at 48 kHz).
 pub const AUDIO_BLOCK_FRAMES: usize = 256;
@@ -399,6 +416,345 @@ impl AudioSink for DeviceSink {
     }
 }
 
+/// Which telemetry element each simulation element is (SPEC §4 3.4,
+/// `docs/TELEMETRY_PROTOCOL.md` §2.3): `(telemetry id, sim id)` pairs. The
+/// telemetry id is the element's `number` in `table.toml` (what the DOF map
+/// and every listener use); the sim id indexes the per-tick sources
+/// ([`TelemetrySources`], `FrameStateSnapshot::lamps`). Elements not listed
+/// stay off (0) on the wire.
+#[derive(Clone, Debug, Default)]
+pub struct TelemetryMap {
+    /// `(switch number 0..=255, SwitchId)`.
+    pub switches: Vec<(u8, u16)>,
+    /// `(coil number 0..=255, CoilId)`.
+    pub coils: Vec<(u8, u16)>,
+    /// `(lamp number 0..=255, LampId)`: lamps whose kind is not `gi`.
+    pub lamps: Vec<(u8, u16)>,
+    /// `(GI string 0..=31, LampId)`: lamps with `kind = "gi"` (the GI id is
+    /// the lamp's number); they are not sent as lamps.
+    pub gi: Vec<(u8, u16)>,
+    /// `(magnet number 0..=31, MagnetId)`.
+    pub magnets: Vec<(u8, u16)>,
+}
+
+/// `(telemetry id, sim id)` when `number` fits `max` and the name resolves.
+fn map_entry(number: u16, max: usize, id: Option<u16>) -> Option<(u8, u16)> {
+    let n = u8::try_from(number)
+        .ok()
+        .filter(|&n| usize::from(n) <= max)?;
+    Some((n, id?))
+}
+
+/// Sorts by telemetry id and keeps the first sim id of each.
+fn sorted(mut v: Vec<(u8, u16)>) -> Vec<(u8, u16)> {
+    v.sort_by_key(|&(n, _)| n);
+    v.dedup_by_key(|&mut (n, _)| n);
+    v
+}
+
+impl TelemetryMap {
+    /// The map of `manifest` (load time; allocates): every declared switch
+    /// (and every `[cabinet_switches]` input), coil, lamp, GI lamp and
+    /// magnet whose `number` fits its telemetry range (switches, coils and
+    /// lamps 0..=255; GI strings and magnets 0..=31) and whose name
+    /// `id_of(kind, name)` resolves to its interned id. Out-of-range or
+    /// unresolved elements are left out. Entries are sorted by telemetry
+    /// id (the first element of a number wins).
+    pub fn from_manifest(
+        manifest: &TableManifest,
+        id_of: impl Fn(IdKind, &str) -> Option<u16>,
+    ) -> TelemetryMap {
+        const MAX_ID: usize = 255;
+        let mut switches: Vec<(u8, u16)> = manifest
+            .switches
+            .iter()
+            .filter_map(|s| map_entry(s.number, MAX_ID, id_of(IdKind::Switch, &s.id)))
+            .collect();
+        for input in pin_core::input::CabinetInput::ALL {
+            let n = manifest.cabinet_switches.number(input);
+            switches.extend(map_entry(n, MAX_ID, id_of(IdKind::Switch, input.name())));
+        }
+        let coils = manifest
+            .coils
+            .iter()
+            .filter_map(|c| map_entry(c.number, MAX_ID, id_of(IdKind::Coil, &c.id)))
+            .collect();
+        let lamp = |gi: bool, max: usize| {
+            manifest
+                .lamps
+                .iter()
+                .filter(|l| (l.kind == LampKind::Gi) == gi)
+                .filter_map(|l| map_entry(l.number, max, id_of(IdKind::Lamp, &l.id)))
+                .collect::<Vec<_>>()
+        };
+        let magnets = manifest
+            .magnets
+            .iter()
+            .filter_map(|m| map_entry(m.number, MAGNET_COUNT - 1, id_of(IdKind::Magnet, &m.id)))
+            .collect();
+        TelemetryMap {
+            switches: sorted(switches),
+            coils: sorted(coils),
+            lamps: sorted(lamp(false, MAX_ID)),
+            gi: sorted(lamp(true, GI_COUNT - 1)),
+            magnets: sorted(magnets),
+        }
+    }
+}
+
+/// The per-tick telemetry inputs that are not in the snapshot, indexed by
+/// sim id (the second element of each [`TelemetryMap`] pair).
+#[derive(Clone, Debug)]
+pub struct TelemetrySources {
+    /// Switch states: bit `i` (word `i / 64`, bit `i % 64`) = `SwitchId(i)`
+    /// closed.
+    pub switch_bits: [u64; 4],
+    /// Coil states, indexed by `CoilId`: `true` = energised.
+    pub coils: [bool; 256],
+    /// Magnet power `0..=1`, indexed by `MagnetId`.
+    pub magnets: [f32; 32],
+}
+
+impl Default for TelemetrySources {
+    fn default() -> Self {
+        TelemetrySources {
+            switch_bits: [0; 4],
+            coils: [false; 256],
+            magnets: [0.0; 32],
+        }
+    }
+}
+
+/// A level as the protocol sends it (`TELEMETRY_PROTOCOL.md` §2.4): clamped
+/// to `0..=1`, NaN and −0.0 as +0.0.
+pub fn telemetry_level(v: f32) -> f32 {
+    if v > 0.0 {
+        // In (0, +inf]: `min` keeps it a non-NaN value in (0, 1].
+        pin_core::fmath::min_f32(v, 1.0)
+    } else {
+        // NaN, negatives, -0.0 and +0.0.
+        0.0
+    }
+}
+
+/// Counters a [`TelemetryFeed`] shares with other threads (read them after
+/// the feed moved to the sim thread).
+#[derive(Clone, Debug, Default)]
+pub struct TelemetryFeedStats {
+    forced: Arc<AtomicU64>,
+    ticks: Arc<AtomicU64>,
+}
+
+impl TelemetryFeedStats {
+    /// Times a failed push forced a full state ([`TelemetryFeed::forced_full_states`]).
+    pub fn forced_full_states(&self) -> u64 {
+        self.forced.load(Ordering::Relaxed)
+    }
+
+    /// Ticks encoded so far.
+    pub fn ticks(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+}
+
+/// The feed's large buffers, boxed so a [`TelemetryFeed`] is small to move.
+struct FeedBuffers {
+    encoder: TelemetryEncoder,
+    batch: DatagramBatch,
+    state: TelemetryState,
+}
+
+/// The sim thread's telemetry encoder (SPEC §4 3.4, protocol §4): fills a
+/// [`TelemetryState`] each tick through its [`TelemetryMap`], encodes it
+/// (full state on the first tick, every 1000 ticks, after a tick going
+/// backwards and after back-pressure; deltas otherwise) and pushes the
+/// datagrams into the ring. Every buffer is allocated in
+/// [`new`](Self::new); [`tick`](Self::tick) never allocates, locks or does
+/// I/O (R4).
+pub struct TelemetryFeed {
+    buf: Box<FeedBuffers>,
+    tx: TelemetryTx,
+    map: TelemetryMap,
+    stats: TelemetryFeedStats,
+}
+
+impl TelemetryFeed {
+    /// A feed pushing into `tx` with `map` (load time; allocates). Its
+    /// first tick sends the full state (protocol §4 rule 4, "on table
+    /// load").
+    pub fn new(tx: TelemetryTx, map: TelemetryMap) -> TelemetryFeed {
+        TelemetryFeed {
+            buf: Box::new(FeedBuffers {
+                encoder: TelemetryEncoder::new(),
+                batch: DatagramBatch::new(),
+                state: TelemetryState::new(),
+            }),
+            tx,
+            map,
+            stats: TelemetryFeedStats::default(),
+        }
+    }
+
+    /// The map.
+    pub fn map(&self) -> &TelemetryMap {
+        &self.map
+    }
+
+    /// One tick: fills the state (lamps and GI from `snapshot.lamps`,
+    /// switches, coils and magnets from `sources`, each through the map;
+    /// levels per [`telemetry_level`]), encodes it with this tick's
+    /// `impulses` (kind 5, at most 64) and pushes the batch; a push that
+    /// does not fit forces a full state on the next tick (protocol §4 rule
+    /// 6). Never allocates, locks or does I/O.
+    pub fn tick(
+        &mut self,
+        tick: u64,
+        snapshot: &FrameStateSnapshot,
+        sources: &TelemetrySources,
+        impulses: &[HapticsTelemetryEvent],
+    ) {
+        let FeedBuffers {
+            encoder,
+            batch,
+            state,
+        } = &mut *self.buf;
+        let m = &self.map;
+        for &(n, id) in &m.switches {
+            let i = usize::from(id);
+            state.switches[usize::from(n)] = sources
+                .switch_bits
+                .get(i / 64)
+                .is_some_and(|w| (w >> (i % 64)) & 1 == 1);
+        }
+        for &(n, id) in &m.coils {
+            state.coils[usize::from(n)] = sources.coils.get(usize::from(id)) == Some(&true);
+        }
+        let level = |v: Option<&f32>| telemetry_level(v.copied().unwrap_or(0.0));
+        for &(n, id) in &m.lamps {
+            state.lamps[usize::from(n)] = level(snapshot.lamps.get(usize::from(id)));
+        }
+        for &(n, id) in &m.gi {
+            if let Some(g) = state.gi.get_mut(usize::from(n)) {
+                *g = level(snapshot.lamps.get(usize::from(id)));
+            }
+        }
+        for &(n, id) in &m.magnets {
+            if let Some(g) = state.magnets.get_mut(usize::from(n)) {
+                *g = level(sources.magnets.get(usize::from(id)));
+            }
+        }
+        encoder.encode_tick(tick, state, impulses, batch);
+        if !self.tx.push_batch(batch) {
+            encoder.force_full_state();
+            self.stats.forced.fetch_add(1, Ordering::Relaxed);
+        }
+        self.stats.ticks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Times a failed push forced a full state.
+    pub fn forced_full_states(&self) -> u64 {
+        self.stats.forced_full_states()
+    }
+
+    /// Datagrams dropped on a full ring ([`TelemetryTx::dropped`]).
+    pub fn ring_dropped(&self) -> u64 {
+        self.tx.dropped()
+    }
+
+    /// Impulses beyond 64 in one tick that were not sent.
+    pub fn dropped_impulses(&self) -> u64 {
+        self.buf.encoder.dropped_impulses()
+    }
+
+    /// A handle on the feed's counters that stays readable after the feed
+    /// moved to the sim thread.
+    pub fn stats(&self) -> TelemetryFeedStats {
+        self.stats.clone()
+    }
+}
+
+/// What a [`TelemetryLink`] did, read when it stopped.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TelemetryReport {
+    /// Datagrams sent.
+    pub sent: u64,
+    /// Sends that failed (e.g. nothing listening on loopback).
+    pub send_errors: u64,
+    /// Datagrams the sim thread dropped on a full ring.
+    pub ring_dropped: u64,
+}
+
+impl TelemetryReport {
+    /// Adds `other`'s counts to these (one report over several engines).
+    pub fn add(&mut self, other: TelemetryReport) {
+        self.sent += other.sent;
+        self.send_errors += other.send_errors;
+        self.ring_dropped += other.ring_dropped;
+    }
+}
+
+/// The running telemetry sender thread ([`open_telemetry`]).
+pub struct TelemetryLink {
+    handle: TelemetrySenderHandle,
+    dest: SocketAddr,
+}
+
+impl TelemetryLink {
+    /// Where the datagrams go.
+    pub fn destination(&self) -> SocketAddr {
+        self.dest
+    }
+
+    /// Stops the sender thread after a final pump (so stop it after the sim
+    /// thread was joined: every queued datagram is sent) and joins it.
+    pub fn stop(self) -> TelemetryReport {
+        self.handle
+            .stop()
+            .map(|s| TelemetryReport {
+                sent: s.sent(),
+                send_errors: s.send_errors(),
+                ring_dropped: s.dropped(),
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Resolves a telemetry endpoint `"host:port"` (IPv4, `[IPv6]:port` or a
+/// host name) to its first socket address.
+///
+/// # Errors
+/// A message naming the endpoint and the reason.
+pub fn parse_telemetry_endpoint(endpoint: &str) -> Result<SocketAddr, String> {
+    endpoint
+        .to_socket_addrs()
+        .map_err(|e| format!("telemetry endpoint {endpoint:?}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("telemetry endpoint {endpoint:?}: no address"))
+}
+
+/// How long the telemetry thread parks when the ring is empty: one tick, so
+/// a datagram leaves at most about 1 ms after it was encoded (protocol §4
+/// rule 7).
+pub const TELEMETRY_POLL: Duration = Duration::from_millis(1);
+
+/// Opens the telemetry path to `endpoint` (`"host:port"`): the datagram
+/// ring ([`DEFAULT_TELEMETRY_RING_CAPACITY`]) and the sender thread
+/// (`pin-telemetry`, [`TELEMETRY_POLL`]). Returns the sim thread's end of
+/// the ring (give it to a [`TelemetryFeed`]) and the link.
+///
+/// # Errors
+/// A bad endpoint, or a socket or thread that could not be created.
+pub fn open_telemetry(endpoint: &str) -> Result<(TelemetryTx, TelemetryLink), String> {
+    let dest = parse_telemetry_endpoint(endpoint)?;
+    let (tx, rx) = telemetry_channel(DEFAULT_TELEMETRY_RING_CAPACITY);
+    let sender = pin_audio::telemetry::TelemetrySender::new(rx, dest)
+        .map_err(|e| format!("telemetry endpoint {endpoint:?}: socket: {e}"))?;
+    let handle = sender
+        .spawn(TELEMETRY_POLL)
+        .map_err(|e| format!("telemetry: spawning the sender thread: {e}"))?;
+    Ok((tx, TelemetryLink { handle, dest }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +860,222 @@ mod tests {
             ssf_playfield_mm(([f32::NAN, 0.0, 0.0], [1.0, 1.0, 0.0])),
             default
         );
+    }
+
+    mod telemetry {
+        use super::super::*;
+        use pin_audio::telemetry::{TelemetryKind, decode_datagram, telemetry_channel};
+        use pin_core::schema::table::MagnetDef;
+        use proptest::prelude::*;
+
+        const TABLE_TOML: &str =
+            include_str!("../../../../tools/dof_bridge/tests/fixtures/table.toml");
+
+        /// The fixture table with a magnet and a GI lamp above 31.
+        fn manifest() -> TableManifest {
+            let mut m = TableManifest::from_toml_str(TABLE_TOML).unwrap();
+            m.magnets.push(MagnetDef {
+                id: "mag".into(),
+                number: 3,
+                position: [0.0; 3],
+                k_coil: 1.0,
+                d_min: 1.0,
+                range: 10.0,
+                tau_ms: None,
+            });
+            m.magnets.push(MagnetDef {
+                id: "mag_high".into(),
+                number: 40,
+                ..m.magnets[0].clone()
+            });
+            let mut gi = m.lamps.iter().find(|l| l.id == "gi_upper").unwrap().clone();
+            gi.id = "gi_high".into();
+            gi.number = 32;
+            m.lamps.push(gi);
+            m
+        }
+
+        /// Interned ids deliberately different from the numbers: id =
+        /// number + 100 (except unresolved names), so a mix-up shows.
+        fn shifted(m: &TableManifest) -> TelemetryMap {
+            TelemetryMap::from_manifest(m, |kind, name| {
+                let n = match kind {
+                    IdKind::Switch => m
+                        .switches
+                        .iter()
+                        .find(|s| s.id == name)
+                        .map(|s| s.number)
+                        .or_else(|| {
+                            pin_core::input::CabinetInput::ALL
+                                .into_iter()
+                                .find(|i| i.name() == name)
+                                .map(|i| m.cabinet_switches.number(i))
+                        }),
+                    IdKind::Coil => m.coils.iter().find(|c| c.id == name).map(|c| c.number),
+                    IdKind::Lamp => m.lamps.iter().find(|l| l.id == name).map(|l| l.number),
+                    IdKind::Magnet => m.magnets.iter().find(|l| l.id == name).map(|l| l.number),
+                    _ => None,
+                };
+                n.filter(|_| name != "trough_eject").map(|n| n + 100)
+            })
+        }
+
+        /// KP-006 (SPEC §4 3.4): the map pairs table numbers (telemetry ids)
+        /// with interned ids; GI lamps are GI strings, never lamps; numbers
+        /// out of a kind's range and unresolved names are left out.
+        #[test]
+        fn kp006_map_uses_numbers_on_the_wire_and_ids_inside() {
+            let map = shifted(&manifest());
+            assert_eq!(
+                map.switches,
+                [1, 2, 3, 4, 5, 6, 7, 8, 21, 30, 50].map(|n| (n, u16::from(n) + 100))
+            );
+            assert_eq!(map.coils, [1, 2, 9, 12].map(|n| (n, u16::from(n) + 100)));
+            assert_eq!(
+                map.lamps,
+                [40, 41, 60, 100].map(|n| (n, u16::from(n) + 100))
+            );
+            assert_eq!(map.gi, [(0, 100), (2, 102)], "gi_high (32) left out");
+            assert_eq!(map.magnets, [(3, 103)], "magnet 40 left out");
+        }
+
+        /// KP-006: the feed reads each element through the map; unmapped
+        /// and out-of-range sim ids stay off.
+        #[test]
+        fn kp006_feed_fills_the_state_through_the_map() {
+            let (tx, mut rx) = telemetry_channel(64);
+            let map = TelemetryMap {
+                switches: vec![(10, 3), (11, 300)],
+                coils: vec![(20, 7), (21, 999)],
+                lamps: vec![(30, 5), (31, 900)],
+                gi: vec![(1, 6), (40, 6)],
+                magnets: vec![(2, 1), (50, 1), (3, 77)],
+            };
+            let mut feed = TelemetryFeed::new(tx, map);
+            assert_eq!(feed.map().lamps.len(), 2);
+            let mut snap = FrameStateSnapshot::default();
+            snap.lamps[5] = 0.25;
+            snap.lamps[6] = 2.0;
+            let mut src = TelemetrySources::default();
+            src.switch_bits[0] = 1 << 3;
+            src.coils[7] = true;
+            src.magnets[1] = -0.0;
+            let imp = [HapticsTelemetryEvent {
+                tick: 0,
+                source: 0x1003,
+                strength: 0.5,
+            }];
+            feed.tick(0, &snap, &src, &imp);
+            let mut entries = Vec::new();
+            while let Some(d) = rx.pop() {
+                let (h, e) = decode_datagram(d.as_bytes()).unwrap();
+                assert!(h.is_full_state());
+                entries.extend(e);
+            }
+            assert_eq!(entries.len(), 832 + 1);
+            let value = |k: TelemetryKind, id: u16| {
+                entries
+                    .iter()
+                    .find(|e| e.kind == k && e.id == id)
+                    .map(|e| e.value)
+                    .unwrap()
+            };
+            assert_eq!(value(TelemetryKind::Switch, 10), 1.0);
+            assert_eq!(value(TelemetryKind::Switch, 11), 0.0);
+            assert_eq!(value(TelemetryKind::Coil, 20), 1.0);
+            assert_eq!(value(TelemetryKind::Coil, 21), 0.0);
+            assert_eq!(value(TelemetryKind::Lamp, 30), 0.25);
+            assert_eq!(value(TelemetryKind::Lamp, 31), 0.0);
+            assert_eq!(value(TelemetryKind::Gi, 1), 1.0);
+            assert_eq!(value(TelemetryKind::Magnet, 2).to_bits(), 0);
+            assert_eq!(value(TelemetryKind::Magnet, 3), 0.0);
+            assert_eq!(entries.last().unwrap().kind, TelemetryKind::HapticImpulse);
+            // Next tick, nothing changed: no datagram.
+            feed.tick(1, &snap, &src, &[]);
+            assert!(rx.pop().is_none());
+            snap.lamps[5] = 0.5;
+            feed.tick(2, &snap, &src, &[]);
+            let (h, e) = decode_datagram(rx.pop().unwrap().as_bytes()).unwrap();
+            assert!(!h.is_full_state());
+            assert_eq!((e.len(), e[0].id, e[0].value), (1, 30, 0.5));
+            assert_eq!((feed.forced_full_states(), feed.ring_dropped()), (0, 0));
+            assert_eq!(feed.dropped_impulses(), 0);
+            assert_eq!(feed.stats().ticks(), 3);
+        }
+
+        /// KP-006 (protocol §4 rule 6): a push that does not fit forces a
+        /// full state on the next tick.
+        #[test]
+        fn kp006_back_pressure_forces_a_full_state() {
+            let (tx, mut rx) = telemetry_channel(5);
+            let mut feed = TelemetryFeed::new(
+                tx,
+                TelemetryMap {
+                    lamps: vec![(0, 0)],
+                    ..TelemetryMap::default()
+                },
+            );
+            let stats = feed.stats();
+            let mut snap = FrameStateSnapshot::default();
+            let src = TelemetrySources::default();
+            feed.tick(0, &snap, &src, &[]); // full state: 5 datagrams, ring full
+            snap.lamps[0] = 1.0;
+            feed.tick(1, &snap, &src, &[]); // does not fit
+            assert_eq!((feed.forced_full_states(), feed.ring_dropped()), (1, 1));
+            assert_eq!(stats.forced_full_states(), 1);
+            while rx.pop().is_some() {}
+            feed.tick(2, &snap, &src, &[]);
+            let (h, _) = decode_datagram(rx.pop().unwrap().as_bytes()).unwrap();
+            assert!(h.is_full_state() && h.tick == 2);
+        }
+
+        /// KP-006: a bad endpoint is an error naming it; a good one opens
+        /// the sender thread, which stops cleanly.
+        #[test]
+        fn kp006_open_telemetry_endpoints() {
+            for bad in ["", "no-port", "127.0.0.1", "127.0.0.1:notaport", "[::1"] {
+                let e = open_telemetry(bad).err().expect(bad);
+                assert!(e.starts_with("telemetry endpoint "), "{e}");
+                assert!(parse_telemetry_endpoint(bad).is_err());
+            }
+            assert_eq!(
+                parse_telemetry_endpoint("[::1]:9").unwrap(),
+                "[::1]:9".parse::<SocketAddr>().unwrap()
+            );
+            let (_tx, link) = open_telemetry("127.0.0.1:9").unwrap();
+            assert_eq!(link.destination(), "127.0.0.1:9".parse().unwrap());
+            assert_eq!(link.stop(), TelemetryReport::default());
+            let mut r = TelemetryReport {
+                sent: 1,
+                send_errors: 2,
+                ring_dropped: 3,
+            };
+            r.add(r);
+            assert_eq!((r.sent, r.send_errors, r.ring_dropped), (2, 4, 6));
+        }
+
+        #[test]
+        fn kp006_level_edge_cases() {
+            assert_eq!(telemetry_level(f32::NAN).to_bits(), 0);
+            assert_eq!(telemetry_level(-0.0).to_bits(), 0);
+            assert_eq!(telemetry_level(f32::INFINITY), 1.0);
+            assert_eq!(telemetry_level(f32::NEG_INFINITY), 0.0);
+            assert_eq!(telemetry_level(0.5), 0.5);
+        }
+
+        proptest! {
+            /// KP-006 (protocol §2.4): every level is in [0, 1], never NaN
+            /// or -0.0, and values inside [0, 1] pass unchanged.
+            #[test]
+            fn kp006_level_is_clamped_and_canonical(bits in any::<u32>()) {
+                let v = f32::from_bits(bits);
+                let l = telemetry_level(v);
+                prop_assert!((0.0..=1.0).contains(&l));
+                prop_assert!(l.to_bits() != (-0.0f32).to_bits());
+                if v > 0.0 && v <= 1.0 {
+                    prop_assert_eq!(l.to_bits(), v.to_bits());
+                }
+            }
+        }
     }
 }
