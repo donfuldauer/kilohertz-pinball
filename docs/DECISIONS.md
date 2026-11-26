@@ -8746,3 +8746,57 @@ frame and an ordering hazard with the present).
 **Rationale:** The brief says "any non-finite input" gives `None`; the chain already skips a non-finite shutter and a ball with a non-finite radius has no meaningful disc. Finite inputs are bit-identical to before.
 
 **Alternatives:** Keep clamping to 0 in `screen_motion` and return `None` only in the new function: rejected, the two would differ and the wrapper must equal the old behaviour for the same cameras.
+
+## #110 KP-029 (tester) — Scope of the rear_left length independence check
+
+**Decision:** The test for a changed `legs.rear_left.length` asserts that the other three legs' nodes and every leg material other than `cabinet.leg.rear_left` are unchanged, and that the rear_left shaft grows by the difference. Body-fixed nodes (body, glass, buttons) are allowed to move, because the body bottom is defined from the mean effective length of the leg pair (SPEC A.4). The other attribute changes (section, finish, colour, bracket, bolt) assert that only `cabinet.leg.rear_left*` nodes and the rear_left material differ.
+**Rationale:** The brief says a length change touches only rear_left nodes, but A.4 makes the body bottom depend on the rear pair's mean length, so body-fixed parts necessarily shift.
+**Alternatives:** Requiring every non-rear_left node to be byte-identical after a length change; rejected as contradicting A.4.
+
+## #110 KP-029 — lib.rs module declaration outside owned paths
+
+**Decision:** Added exactly `pub mod cabinet;` and a one-line `//!` mention of the module to `crates/pin_tablegen/src/lib.rs`; nothing else in that file changed.
+**Rationale:** Nothing pre-stubbed the cabinet module, and the issue's owned directory `src/cabinet/` cannot compile into the crate otherwise; the classifier ruled the one line allowed.
+**Alternatives:** Including the module from tests with `#[path]` tricks (rejected: the public API would not exist for the binary or other crates).
+
+## #110 KP-029 — cabinet.glb frame, node list and material list
+
+**Decision:** `cabinet.glb` is in metres in the SPEC A.4 cabinet frame (x across, player's right positive; y from the body front face toward the rear; z up) with z the height above the floor plane (floor z = 0). A body-fixed point (y, z above the body bottom) is placed at `floor_height_mm(y, z) / 1000`. Static nodes have identity transforms. The 28 node names (`pin_tablegen::cabinet::NODE_NAMES`) and the 17 material names (`MATERIAL_NAMES`) are fixed, in the order of the brief, the same for every geometry. UVs are a per-face box projection on the node's bounding box along the face normal's dominant axis (u to the viewer's right seen from outside the face, v down the image), so every UV is in [0, 1] and a body side's outer face covers 0..1 whole (D32 art). Moving nodes (four buttons, plunger rod) carry `translation` = the control position above the floor and string extras `moving`, `travel_axis`, `travel_mm`; static nodes carry no extras. The art-surface materials (`cabinet.body`, `cabinet.side_left`, `cabinet.side_right`, `cabinet.front`) are white so an art texture shows its own colours.
+**Rationale:** The brief fixes the frame, names and order; a z-above-floor frame lets a renderer place the model without the leg arithmetic; box projection is deterministic, needs no unwrapping and meets the art-surface requirement.
+**Alternatives:** z above the body bottom (rejected: legs would need a negative z); per-face 0..1 quads (rejected: a notched side wall would split its outer face into several 0..1 patches).
+
+## #110 KP-029 — Glass plane
+
+**Decision:** The glass is a sheet parallel to the side wall tops (the body's wall-top line, linear from `front_height` to `rear_height`), its underside on the glass channel's floor. The channel is drawn as a notch `glass_channel.depth` deep into the inner face of each side wall, from two channel widths to one channel width below the wall top. The sheet runs from the front wall's inner face (y = wall_thickness) back `glass_panel.length` measured along the slope, `glass_panel.width` across and `glass_panel.thickness` thick (vertical). The lockdown bar's underside is one channel width below the front wall top, over the glass's front edge, so the glass passes under the bar at the front; its rear end rises with the wall tops above the bar top's height, as on a real cabinet.
+**Rationale:** "Seated in the glass channel" fixes the glass to the side walls, whose tops slope; the brief leaves the plane to the implementer. Reading "below the lockdown bar top" as "the whole sheet below the bar top's height" would need a level glass that leaves the channel within a few centimetres of the front.
+**Alternatives:** A level glass under the bar top (rejected: not seated in the sloping channel, not what a cabinet looks like); a glass parallel to the pitched playfield (rejected: the playfield mount is not part of this model, and the channel is in the walls).
+
+## #110 KP-029 — Leveler roll is not a body tilt
+
+**Decision:** Accept pin_core's pitch-only `floor_height_mm`: the body bottom is linear in y between the front and rear pairs' mean effective lengths, and left/right leveler differences do not tilt the body. Each leg stands on z = 0 with its own effective length, so a rolled cabinet shows the body slightly off its leg tops by the roll offset. Changing one leg's length moves every body-fixed node (through the pair mean) but no other leg's nodes or materials.
+**Rationale:** The body frame is pin_core's contract (#89); the model must agree with it within 1 mm, and the legs must touch the floor.
+**Alternatives:** Tilting the body by the roll in this generator (rejected: would disagree with `floor_height_mm` and the A.4 frame; a change belongs in pin_core through a contract change request).
+
+## #110 KP-029 — Trim metal colour
+
+**Decision:** The shared `cabinet.trim_metal` material (side rails and lockdown bar) takes its base colour from `trim.rail_colour` (sRGB to linear) and its metallic/roughness from `trim.metal_finish`.
+**Rationale:** One shared material cannot carry two colours; the rail colour is the only trim colour in the schema and the bar's finish is `metal_finish`, so both inputs are used.
+**Alternatives:** A separate bar material (rejected: the material list is fixed at 17 names).
+
+## #110 KP-029 — Tapered legs are square frusta
+
+**Decision:** `tapered` legs are square in section, from side `section.top` at the body end to side `section.bottom` at the foot; `round` legs are 16-segment prisms of diameter `top`. `ribbed` cuts lengthwise grooves (4 % of the section size deep, sloped walls) into each face (square/tapered: one groove per face; round: 32 points alternating radius), keeping the outer size.
+**Rationale:** SPEC A.4 and the pin_core schema define `tapered` as "square, tapering", `bottom` as "side at the foot"; the brief's "round and tapered are 16-segment prisms/frusta" conflicts with that, and the schema is the contract.
+**Alternatives:** A 16-segment round frustum for `tapered` (rejected: contradicts the schema's "side" semantics).
+
+## #110 KP-029 — Cabinet model design values
+
+**Decision:** Values the schema does not carry, as named constants in `src/cabinet/parts.rs`: buttons are a 40 mm x 4 mm bezel plus a 30 mm x 12 mm cap, press travel 4 mm, protruding against their travel axis (flipper buttons outward from the side walls, start and action toward the player per the brief, also for the action button whose preset position is on the lockdown bar); plunger housing 30 mm outer diameter with a 50 mm x 6 mm flange proud of the front, running 120 mm into the body; rod 9.5 mm diameter, 100 mm inside and 60 mm outside the front, knob 32 mm x 40 mm, pull travel 80 mm; coin door 4 mm proud of its centre's y; brackets 1.5 x the leg's top size high, corner plate 3 mm thick reaching 40 mm past the leg (two bolts), flush plate 4 mm thick overhanging 20 mm each side (four bolts); bolt heads hex 16 mm across x 6 mm (6 sides), carriage 20 mm domed 5.5 mm, button head 14 mm x 3.5 mm; feet flat 6 mm, domed 13 mm, swivel pad 5 mm plus a 14 mm ball joint; the thread runs from the floor to max(thread_length, extension); glass material white alpha 0.15 blended; button colours red (flippers, action) and yellow (start); coin door near-black in the trim finish; leveler and plunger bright steel/chrome. Every size and position must be finite and within ±100 m (`MAX_DIMENSION_MM`), so every derived float stays finite.
+**Rationale:** Typical cabinet hardware sizes; the colours are not in the schema (REQ-CAB-003 lists leg, rail and trim colours only), and the 100 m cap keeps the no-panic, finite-output guarantee without depending on pin_core's consistency check (which a hand-built geometry may skip).
+**Alternatives:** Adding these to `cabinet.toml` (a pin_core contract change, out of scope); calling `check_consistency` first (rejected: it also checks the backbox, mount and art, unrelated to this model, and names keys only inside a message).
+
+## #110 KP-029 — Glass assertion: passes under the bar at the front (Orchestrator ruling)
+
+**Decision:** The glass test checks that, over glass vertices whose y lies within the lockdown bar's y extent (or the glass's min-y vertices if none do), max glass z is at most the bar's max z + 1 mm, and that the glass's max z is at most the rear wall top + 1 mm. The old whole-glass "below the bar top" assertion is replaced.
+**Rationale:** The glass sits in the channel cut into the sloped side walls and rises toward the rear; only where it overlaps the bar must it pass under it.
+**Alternatives:** Keep the whole-glass bound; rejected, it contradicts the sloped seating (observed 1.053 m glass top against a 0.910 m bar).
