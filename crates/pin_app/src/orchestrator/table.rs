@@ -15,7 +15,9 @@ use super::trace::FlipperBindings;
 use super::view::TableVisuals;
 use crate::ui::{TableEntry, scan_tables};
 use pin_assets::{GltfScene, LoadedTable, load_gltf, load_table};
-use pin_audio::mixer::{MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
+use pin_audio::mixer::{
+    DecodeBudget, MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring,
+};
 use pin_core::haptics::HapticEvent;
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::schema::table::TableManifest;
@@ -31,7 +33,7 @@ use pin_tablegen::clearance::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -607,10 +609,30 @@ pub struct LoadedApp {
 /// decoded at `mixer.sample_rate`. Prints the warnings and one `pin_app:
 /// table "<name>" loaded (...)` line on stderr.
 ///
+/// Sounds are charged to the default decoded-audio budget
+/// ([`DecodeBudget::DEFAULT_BYTES`], 512 MiB); the app passes the player's
+/// setting through [`load_app_table_with_budget`].
+///
 /// # Errors
 /// The validation or load error text, or a failed thread spawn. A panic in
 /// the load is resumed on the caller.
 pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> {
+    load_app_table_with_budget(path, mixer, DecodeBudget::DEFAULT_BYTES)
+}
+
+/// [`load_app_table`] with the bundle's decoded-audio budget in bytes
+/// (`audio.decoded_budget_mib` × 1 MiB, SPEC §4 4.4; D25): the sounds are
+/// decoded by [`table_samples`] against one budget of
+/// `decoded_budget_bytes`; a sound that does not fit stays silent and its
+/// error is printed with the other sound warnings.
+///
+/// # Errors
+/// As [`load_app_table`].
+pub fn load_app_table_with_budget(
+    path: &Path,
+    mixer: MixerConfig,
+    decoded_budget_bytes: u64,
+) -> Result<LoadedApp, String> {
     let path = path.to_path_buf();
     on_sim_stack("table-load", move || -> Result<LoadedApp, String> {
         let checked = validate_table(&path)?;
@@ -640,7 +662,7 @@ pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, Stri
         for w in &visuals.warnings {
             eprintln!("pin_app: table display warning: {w}");
         }
-        let (samples, errors) = table_samples(&checked, mixer.sample_rate);
+        let (samples, errors) = table_samples(&checked, mixer.sample_rate, decoded_budget_bytes);
         for e in &errors {
             eprintln!("pin_app: table sound warning: {e}");
         }
@@ -747,8 +769,9 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     format!("panicked: {text}")
 }
 
-/// Serves one request; never panics.
-fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
+/// Serves one request; never panics. A load reads the decoded-audio budget
+/// from `budget` when it starts.
+fn serve(req: IoRequest, mixer: MixerConfig, budget: &AtomicU64) -> IoReply {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     match req {
         IoRequest::Scan(root) => {
@@ -756,8 +779,11 @@ fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
             IoReply::Scanned { root, tables }
         }
         IoRequest::Load { id, path } => {
-            let result = catch_unwind(AssertUnwindSafe(|| load_app_table(&path, mixer)))
-                .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
+            let bytes = budget.load(Ordering::Acquire);
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                load_app_table_with_budget(&path, mixer, bytes)
+            }))
+            .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
             match result {
                 Ok(app) => IoReply::Loaded {
                     id,
@@ -786,12 +812,17 @@ fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
 /// [`IoReply::LoadFailed`] with the panic message). The main thread only
 /// posts requests and applies replies.
 ///
+/// Loads use the decoded-audio budget last set with
+/// [`set_decoded_budget_bytes`](Self::set_decoded_budget_bytes)
+/// ([`DecodeBudget::DEFAULT_BYTES`] until then), read when each load starts.
+///
 /// Dropping the worker stops it: the request in flight completes, requests
 /// still queued are skipped, and the thread is joined.
 pub struct IoWorker {
     requests: Option<mpsc::Sender<IoRequest>>,
     replies: mpsc::Receiver<IoReply>,
     stop: Arc<AtomicBool>,
+    decoded_budget: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -805,6 +836,8 @@ impl IoWorker {
         let (rep_tx, rep_rx) = mpsc::channel::<IoReply>();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let decoded_budget = Arc::new(AtomicU64::new(DecodeBudget::DEFAULT_BYTES));
+        let budget = Arc::clone(&decoded_budget);
         let spawned = std::thread::Builder::new()
             .name("io-worker".to_owned())
             .spawn(move || {
@@ -812,7 +845,7 @@ impl IoWorker {
                     if flag.load(Ordering::Acquire) {
                         break;
                     }
-                    if rep_tx.send(serve(req, mixer)).is_err() {
+                    if rep_tx.send(serve(req, mixer, &budget)).is_err() {
                         break;
                     }
                 }
@@ -828,8 +861,21 @@ impl IoWorker {
             requests: handle.as_ref().map(|_| req_tx),
             replies: rep_rx,
             stop,
+            decoded_budget,
             handle,
         }
+    }
+
+    /// Sets the decoded-audio budget, in bytes, of the loads that start
+    /// after this call (`audio.decoded_budget_mib` × 1 MiB; a change applies
+    /// to the next table load, never to one in flight).
+    pub fn set_decoded_budget_bytes(&self, bytes: u64) {
+        self.decoded_budget.store(bytes, Ordering::Release);
+    }
+
+    /// The decoded-audio budget, in bytes, the next load will use.
+    pub fn decoded_budget_bytes(&self) -> u64 {
+        self.decoded_budget.load(Ordering::Acquire)
     }
 
     /// Queues `req` (never blocks).
