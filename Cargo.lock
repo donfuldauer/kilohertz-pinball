@@ -1997,6 +1997,7 @@ name = "pin_core"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "libm",
  "proptest",
  "rand_core",
  "rand_pcg",

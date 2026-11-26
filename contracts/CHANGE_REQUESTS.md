@@ -197,3 +197,13 @@ unchanged):
 - **Why:** the 3D scene needs to bind snapshot slots to mechs and to place GI bulbs, inserts and flashers (REQ-VIS-002, REQ-VIS-004) without a breaking snapshot change.
 - **Affected crates:** none (additive). `grep -rn "LampDef {" crates tests` finds only the definition in pin_core (no struct literal elsewhere).
 - **Workaround meanwhile:** none
+
+### CR-012: cabinet.toml schema, presets and playfield attitude
+- **Requested by:** work item #89 / KP-009 (task executor)
+- **Status:** pending (merges with the PR for #89)
+- **Kind:** additive
+- **Items:** new module `crates/pin_core/src/schema/cabinet.rs` (`CabinetManifest`, the `*Override` partial types, `CabinetGeometry` and its section types, `Legs`, enums, `Grille`, `Attitude`, `TableEnvelope`, `playfield_attitude`, `preset_ids`, `rad_to_deg`, `deg_to_rad`, constants `CABINET_FILE`, `CABINET_PRESETS_TOML`, `DEFAULT_PRESET`, `MAX_GRILLES`, `MAX_ART_ENTRIES`, `MOUNT_ANGLE_LIMIT_DEG`, `PITCH_AGREEMENT_DEG`, `PITCH_ROUNDING_SLACK_DEG`); new data file `crates/pin_core/data/cabinet_presets.toml`; `crates/pin_core/src/schema/mod.rs` gains `pub mod cabinet;` and `pub use cabinet::{Attitude, CABINET_FILE, CabinetGeometry, CabinetManifest, TableEnvelope, playfield_attitude};`; SPEC Appendix A.4; `libm.workspace = true` in `crates/pin_core/Cargo.toml` (workspace pin `=0.2.16`, Cargo.lock updated); tests `crates/pin_core/tests/kp009_cabinet.rs`, `kp009_attitude_alloc.rs`, fixture `crates/pin_core/tests/fixtures/cabinet.toml`.
+- **Change:** a new optional bundle file `cabinet.toml` (`schema_version = 1`, `preset = "<id>"`, per-field overrides in mm and degrees, unknown keys rejected; SPEC A.4) with three presets (Appendix E). `CabinetManifest::resolve() -> Result<CabinetGeometry, SchemaError>`; `CabinetGeometry::{preset, default_preset, check_consistency, validate(&TableEnvelope), body_bottom_height_mm, floor_height_mm, lockdown_bar_top_height_mm, backbox_top_height_mm}`; `pub fn playfield_attitude(&CabinetGeometry) -> Attitude { pitch_rad: f64, roll_rad: f64 }` (pure, libm, no allocation). No existing type, field, file or behaviour changes; `table.toml` `meta.pitch_deg` stays required; the simulation does not read the attitude.
+- **Why:** REQ-BUILD-002/005, REQ-CAB-003/004/005/007/008: the cabinet and the playfield's tilt come from data.
+- **Affected crates:** none (new code only; KP-010, KP-032 and the generator use it later).
+- **Workaround meanwhile:** none
