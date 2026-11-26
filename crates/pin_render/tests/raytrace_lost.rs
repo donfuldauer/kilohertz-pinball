@@ -129,8 +129,8 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     assert!(forwarded.device_lost());
     for i in 0..2 {
         match forwarded.prepare(&ctx, &mut pbr, &frame, &balls) {
-            Err(GpuError::RequestDevice(m)) => {
-                assert_eq!(m, "device lost: forwarded by the test", "frame {i}");
+            Err(GpuError::DeviceLost(m)) => {
+                assert_eq!(m, "forwarded by the test", "frame {i}");
             }
             other => panic!("forwarded frame {i}: expected the device-lost error, got {other:?}"),
         }
@@ -175,8 +175,12 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     // panics, and the source reports the probes.
     for i in 0..4 {
         match src.prepare(&ctx, &mut pbr, &frame, &balls) {
-            Err(GpuError::RequestDevice(m)) => {
-                assert!(m.starts_with("device lost"), "frame {i}: {m}");
+            Err(GpuError::DeviceLost(m)) => {
+                assert_eq!(
+                    Some(&m),
+                    ctx.device_lost_reason().as_ref(),
+                    "frame {i}: {m}"
+                );
                 if i == 0 {
                     println!("[raytrace_lost] prepare after the loss: {m}");
                 }
