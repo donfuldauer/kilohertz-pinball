@@ -653,6 +653,35 @@ impl MechSet {
         }
     }
 
+    /// Height (m, `≤ 0`) of drop target `index` relative to its raised
+    /// position: `0` when up, `−height` when down (`height` = the target's
+    /// `height` parameter), and in between while it rises. The extra hide
+    /// depth below the playfield (2 mm) is clamped away:
+    /// `max(z, −height)`. `None` for other kinds or a bad index. Read-only
+    /// and allocation-free (the frame snapshot's dynamic mesh slot, SPEC
+    /// Appendix A).
+    #[must_use]
+    pub fn drop_target_offset_m(&self, index: usize) -> Option<f32> {
+        match self.mechs.get(index).map(|m| &m.part) {
+            Some(Part::Drop(d)) => Some(max_f32(d.z, -2.0 * d.up.half.z)),
+            _ => None,
+        }
+    }
+
+    /// Pivot (m, solver frame: the mech position lifted by `pivot_height`)
+    /// and unit rotation axis (`−(z × u)`, `u` from `angle_deg`) of spinner
+    /// `index`. A positive [`spinner_state`](Self::spinner_state) angle is
+    /// a right-handed rotation of the flap about this axis (the free edge
+    /// swings toward `u`). `None` for other kinds or a bad index. Read-only
+    /// and allocation-free.
+    #[must_use]
+    pub fn spinner_pivot_axis(&self, index: usize) -> Option<(Vec3, Vec3)> {
+        match self.mechs.get(index).map(|m| &m.part) {
+            Some(Part::Spinner(s)) => Some((s.pivot, s.axis)),
+            _ => None,
+        }
+    }
+
     /// The ball VUK `index` holds.
     #[must_use]
     pub fn vuk_ball(&self, index: usize) -> Option<BallHandle> {
