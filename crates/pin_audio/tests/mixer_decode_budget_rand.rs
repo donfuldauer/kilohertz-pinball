@@ -2,8 +2,8 @@
 //!
 //! A random sequence of decodes (random WAV lengths, file rates and mixer
 //! rate) and releases runs against one budget and a model: after every step
-//! `used_bytes` is exactly the sum of `8 × frames()` of the samples still
-//! held, a decode succeeds if and only if its output fits into what is left
+//! `used_bytes` is exactly the sum of `Sample::bytes()` (4 bytes per mono
+//! frame, 8 per stereo frame, #227) of the samples still held, a decode succeeds if and only if its output fits into what is left
 //! (decodes are sequential), a successful decode is bit-identical to the
 //! unbudgeted `decode`, and a failed one leaves nothing charged.
 
@@ -59,7 +59,7 @@ fn op() -> impl Strategy<Value = Op> {
 }
 
 fn bytes_of(s: &Sample) -> u64 {
-    s.frames() as u64 * BYTES_PER_FRAME
+    s.bytes()
 }
 
 proptest! {
@@ -117,7 +117,8 @@ proptest! {
     /// D25, DECISIONS "Human ruling - decoded-audio budget": for a random
     /// sequence of decodes against a limit of 0..=4 MiB, releasing every
     /// returned sample exactly once in a random order brings `used_bytes`
-    /// back to 0, and after every step it equals 8 x the frames still held.
+    /// back to 0, and after every step it equals the bytes still held
+    /// (`Sample::bytes`: 4 per mono frame, 8 per stereo frame, #227).
     #[test]
     fn used_bytes_return_to_zero_after_random_order_release(
         limit in 0u64..=(4 << 20),

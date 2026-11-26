@@ -132,7 +132,8 @@ pub fn wav_info(bytes: &[u8]) -> (u16, u16, u32, u16) {
 pub fn decode48(bytes: &[u8]) -> (Vec<f32>, Vec<f32>) {
     let s = pin_audio::mixer::decode(bytes, 48_000)
         .unwrap_or_else(|e| panic!("pin_audio decode failed: {e:?}"));
-    let d = s.data();
+    // The stereo view (mono is stored once, #227).
+    let d = s.to_stereo_vec();
     assert_eq!(d.len(), 2 * s.frames());
     (
         d.iter().step_by(2).copied().collect(),

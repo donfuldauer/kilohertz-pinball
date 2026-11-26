@@ -305,10 +305,13 @@ impl SsfMixer {
             self.base_inc = f64::from(non_neg(self.cfg.roll_base_hz, 0.0)) * TABLE_LEN as f64
                 / f64::from(self.cfg.sample_rate.max(1));
         } else {
-            let mut t: Vec<f32> = sample
-                .data()
-                .chunks_exact(2)
-                .map(|lr| 0.5 * (lr[0] + lr[1]))
+            // Mono storage is mixed exactly like its duplicated stereo
+            // view, `0.5 * (v + v)`.
+            let mut t: Vec<f32> = (0..sample.frames())
+                .map(|i| {
+                    let (l, r) = sample.frame(i);
+                    0.5 * (l + r)
+                })
                 .collect();
             t.push(t[0]);
             self.table = t;

@@ -321,22 +321,44 @@ impl Mixer {
                     continue;
                 };
                 let data = reg.sample.data();
+                let ch = reg.sample.channels();
                 let avail = (reg.sample.frames() - v.pos).min(n);
-                let src = &data[2 * v.pos..2 * (v.pos + avail)];
+                let src = &data[ch * v.pos..ch * (v.pos + avail)];
                 let g = v.gain;
-                if ducked {
-                    for ((o, s), d) in out
-                        .chunks_exact_mut(2)
-                        .zip(src.chunks_exact(2))
-                        .zip(&self.duck_curve)
-                    {
-                        o[0] += s[0] * g * d;
-                        o[1] += s[1] * g * d;
+                // The layout is chosen once per voice per block. Mono is
+                // panned to both sides here: `s * g * d` evaluated once and
+                // added to each side is bit-identical to mixing a duplicated
+                // stereo copy (same operands, same left-to-right order).
+                match (ch == 1, ducked) {
+                    (true, true) => {
+                        for ((o, &s), d) in out.chunks_exact_mut(2).zip(src).zip(&self.duck_curve) {
+                            let v = s * g * d;
+                            o[0] += v;
+                            o[1] += v;
+                        }
                     }
-                } else {
-                    for (o, s) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)) {
-                        o[0] += s[0] * g;
-                        o[1] += s[1] * g;
+                    (true, false) => {
+                        for (o, &s) in out.chunks_exact_mut(2).zip(src) {
+                            let v = s * g;
+                            o[0] += v;
+                            o[1] += v;
+                        }
+                    }
+                    (false, true) => {
+                        for ((o, s), d) in out
+                            .chunks_exact_mut(2)
+                            .zip(src.chunks_exact(2))
+                            .zip(&self.duck_curve)
+                        {
+                            o[0] += s[0] * g * d;
+                            o[1] += s[1] * g * d;
+                        }
+                    }
+                    (false, false) => {
+                        for (o, s) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)) {
+                            o[0] += s[0] * g;
+                            o[1] += s[1] * g;
+                        }
                     }
                 }
                 v.pos += avail;
@@ -352,5 +374,173 @@ impl Mixer {
             let v = *o * m;
             *o = if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ring::trigger_ring;
+    use super::*;
+
+    fn dup(x: &[f32]) -> Vec<f32> {
+        x.iter().flat_map(|&v| [v, v]).collect()
+    }
+
+    /// Deterministic pseudo-random values in roughly [-1.5, 1.5] (some above
+    /// full scale, so the clip is exercised).
+    fn signal(n: usize, seed: u32) -> Vec<f32> {
+        let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as f32 / u32::MAX as f32) * 3.0 - 1.5
+            })
+            .collect()
+    }
+
+    /// Renders `blocks` blocks of 256 frames with the given sounds and
+    /// triggers `(block, id, gain)`; `mono` chooses mono storage or the
+    /// duplicated-stereo copy of the same frames.
+    fn render(
+        cfg: MixerConfig,
+        sounds: &[(Vec<f32>, Bus)],
+        triggers: &[(usize, u16, f32)],
+        blocks: usize,
+        mono: bool,
+    ) -> Vec<u32> {
+        let (mut tx, rx) = trigger_ring(64);
+        let mut m = Mixer::new(cfg, rx);
+        for (i, (x, bus)) in sounds.iter().enumerate() {
+            let s = if mono {
+                Sample::from_mono(x)
+            } else {
+                Sample::from_interleaved(dup(x))
+            };
+            assert_eq!(s.channels(), if mono { 1 } else { 2 });
+            m.register(SoundId(i as u16), Arc::new(s), *bus);
+        }
+        let mut out = vec![0.0f32; 2 * 256];
+        let mut all = Vec::new();
+        for b in 0..blocks {
+            for &(at, id, gain) in triggers {
+                if at == b {
+                    assert!(tx.send(SoundTrigger {
+                        sound: SoundId(id),
+                        gain,
+                    }));
+                }
+            }
+            m.render(&mut out);
+            all.extend(out.iter().map(|v| v.to_bits()));
+        }
+        all
+    }
+
+    /// SPEC §4 Subphase 3.3 (#227): mono voices on every bus, with gains,
+    /// a callout duck, master gain and clipping, mix bit-identically to the
+    /// same frames stored as duplicated stereo.
+    #[test]
+    fn mono_mix_is_bit_identical() {
+        for (master, duck_gain) in [(1.0f32, 0.35f32), (0.7, 0.0), (1.9, 0.5)] {
+            let cfg = MixerConfig {
+                master_gain: master,
+                duck_gain,
+                duck_attack_ms: 2.0,
+                duck_release_ms: 3.0,
+                ..MixerConfig::default()
+            };
+            let sounds = vec![
+                (signal(1_500, 1), Bus::Music),
+                (signal(300, 2), Bus::Callout),
+                (signal(700, 3), Bus::Sfx),
+                (signal(90, 4), Bus::Sfx),
+                (signal(0, 5), Bus::Sfx),
+            ];
+            let triggers = [
+                (0usize, 0u16, 0.8f32),
+                (0, 2, 1.3),
+                (1, 1, 0.9),
+                (1, 3, 0.5),
+                (2, 3, 2.0),
+                (2, 4, 1.0),
+                (3, 1, 1.1),
+                (3, 2, f32::NAN),
+                (4, 0, 0.25),
+            ];
+            let a = render(cfg, &sounds, &triggers, 9, true);
+            let b = render(cfg, &sounds, &triggers, 9, false);
+            assert_eq!(a.len(), 9 * 512);
+            assert_eq!(a, b, "master {master}, duck {duck_gain}");
+            // Not trivially silent, and the clip was reached.
+            assert!(a.iter().any(|&v| f32::from_bits(v) != 0.0));
+            assert!(a.iter().any(|&v| f32::from_bits(v).abs() == 1.0));
+        }
+    }
+
+    /// A voice that ends mid-block and a mixer mixing mono and stereo voices
+    /// together: identical to all-stereo storage.
+    #[test]
+    fn mixed_layouts_match_stereo() {
+        let (mut tx, rx) = trigger_ring(8);
+        let (mut tx2, rx2) = trigger_ring(8);
+        let mut a = Mixer::new(MixerConfig::default(), rx);
+        let mut b = Mixer::new(MixerConfig::default(), rx2);
+        let x = signal(300, 9);
+        a.register(SoundId(0), Arc::new(Sample::from_mono(&x)), Bus::Sfx);
+        b.register(
+            SoundId(0),
+            Arc::new(Sample::from_interleaved(dup(&x))),
+            Bus::Sfx,
+        );
+        let st = Sample::from_interleaved(signal(400, 10));
+        a.register(SoundId(1), Arc::new(st.clone()), Bus::Callout);
+        b.register(SoundId(1), Arc::new(st), Bus::Callout);
+        for t in [&mut tx, &mut tx2] {
+            for id in [0u16, 1] {
+                assert!(t.send(SoundTrigger {
+                    sound: SoundId(id),
+                    gain: 0.6,
+                }));
+            }
+        }
+        let (mut oa, mut ob) = (vec![0.0f32; 1_000], vec![0.0f32; 1_000]);
+        a.render(&mut oa);
+        b.render(&mut ob);
+        assert!(oa.iter().zip(&ob).all(|(p, q)| p.to_bits() == q.to_bits()));
+        assert_eq!(a.active_voices(Bus::Sfx), 0);
+        assert_eq!(a.active_voices(Bus::Callout), 0);
+    }
+
+    /// SPEC §4 Subphase 3.3 (#227): the SSF roll loop built from a mono
+    /// sample renders bit-identically to one built from its duplicated
+    /// stereo copy.
+    #[test]
+    fn roll_loop_mono_matches_stereo() {
+        use crate::ssf::{CHANNELS, SsfConfig, SsfMixer};
+        use pin_core::haptics::{HapticEvent, HapticKind};
+        let x = signal(480, 21);
+        let run = |s: Sample| {
+            let mut m = SsfMixer::new(SsfConfig::default());
+            m.set_roll_loop(&s);
+            m.feed(HapticEvent::new(
+                0,
+                HapticKind::BallRoll {
+                    ball: 1,
+                    position_mm: [10.0, 400.0, 0.0],
+                    mass_kg: 0.0806,
+                    speed_m_s: 2.5,
+                },
+                1.0,
+            ));
+            let mut out = vec![0.0f32; CHANNELS * 2_000];
+            m.render(&mut out);
+            out.iter().map(|v| v.to_bits()).collect::<Vec<u32>>()
+        };
+        let a = run(Sample::from_mono(&x));
+        let b = run(Sample::from_interleaved(dup(&x)));
+        assert_eq!(a, b);
+        assert!(a.iter().any(|&v| f32::from_bits(v) != 0.0));
     }
 }
