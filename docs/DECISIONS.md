@@ -9048,3 +9048,63 @@ verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the ap
 **Decision:** This amends item (3) of "#133 KP-052 — device-loss rebuild", which said no surface is created on the render thread and the rebuild reuses the main-thread surfaces. On DX12 and Vulkan the render thread now recreates each surface before the first rebuild attempt of a loss; Metal (and any other backend) keeps reusing the surfaces. How: `pin_render::gpu::create_surface` (same signature, still on the main thread) records the window's raw display and window handles (`wgpu::rwh`) in a private process-wide registry (`static Mutex<Vec<(u64, handles)>>`) keyed by a hash of the new `wgpu::Surface`'s identity (wgpu hashes a surface by its id, whose epoch is unique per created surface); the surface itself is not kept. The new `pub unsafe fn recreate_surface(instance, old) -> Result<wgpu::Surface<'static>, GpuError>` takes `old`'s record, drops `old` (wgpu's `Drop` unconfigures it and releases its swap chain), creates a surface on the same instance from the same handles (`SurfaceTargetUnsafe::RawHandle`) and records it under its own key. Missing handles or a creation error give `GpuError::Surface`. The registry is bounded at 32 records (oldest evicted), because wgpu has no drop hook to remove the record of a surface dropped in normal operation; it is locked only on the main and render threads, never on the sim thread, and only looked up by key (R3). In `pin_app`, `PendingRebuild` records the dead context's backend (read from `adapter_info()` before the context drops) in a `SurfaceRecreation` that is due once per loss: a later attempt of the same loss reuses the recreated surfaces, and a new loss recreates again. Each `SurfaceSource` keeps its other fields and its `keep_alive` guard, held across the call and paired with the new surface, so the window outlives both and the surface still drops before its guard. A source whose surface cannot be recreated (its old surface is gone) moves to `SurfaceRecovery::unrecovered` with its guard; the attempt fails with a message naming the window, and every later attempt fails on `unrecovered_note`, so the 3-attempt budget then sets `gpu_error`. One stderr line `pin_app: surface recreated for the rebuild (<backend>)` is printed per recreation. The raw handles are `Send` by an `unsafe impl`, justified by the window guard (they are used only while the guard keeps the window alive) and by DX12 and Vulkan accepting the handles on any thread.
 **Rationale:** wgpu-core's `configure_surface` never unconfigures the old hal surface. The DX12 hal reuses the existing swap chain through `ResizeBuffers`, and that swap chain is bound to the dead device's queue, so the new device is removed at the first present and wgpu-core 30.0.1 panics in `PendingWrites::activate` (seen on Windows WARP in run 45880540056). Vulkan passes the old swap chain as `oldSwapchain` across devices, which is invalid usage that lavapipe happens to tolerate. Only dropping the `wgpu::Surface` releases the swap chain; wgpu 30 has no public unconfigure. Metal's hal `configure` rebinds the layer to the new device, and a Metal surface must not be created off the main thread, so Metal keeps the old behaviour. A registry keyed by the surface's identity keeps `create_surface` and `SurfaceSource` source-compatible.
 **Alternatives:** Asking the main thread to recreate the surfaces (rejected as the heavier option: it needs a new main-thread channel and blocks the loss path on the main thread's event pump). Dropping the surfaces without recreating them (rejected: nothing to present to). Adding a handles field to `SurfaceSource` (rejected: it breaks the struct literals in the unowned test helpers). Working around the panic inside wgpu-core (rejected: a vendored dependency). The wgpu-core panic at present on a lost device is tracked separately by #242 (KP-113).
+
+## #130 (tester) — Mid-play retrigger in the 10-minute equality test
+
+**Decision:** The brief asks for "one retrigger mid-play on the resident and the streamed mixer alike" in the LONG test, and also (S7) that a trigger for a stream while its voice plays is ignored. The AC1 test sends the mid-play retrigger to the streamed mixer only; the resident reference mixer gets no trigger at that point, and the outputs must stay bit-identical (which proves the trigger was ignored). A retrigger "alike" on both mixers is done after the end of the track (rewind, compared for 8 blocks).
+**Rationale:** On a resident music sound a second trigger starts a second voice (or steals the first with one voice), so sending it to both mixers cannot give equal outputs under S7. Sending it to the stream only is the reading that keeps S3 (equality) and S7 (ignored) both true; the rewind trigger after the end covers the "both mixers alike" part.
+**Alternatives:** Sending the retrigger to both mixers (rejected: S3 and S7 contradict). Dropping the mid-play retrigger (rejected: weaker; S7 would not be exercised on the long track).
+
+## #130 (tester) — Which state assertions are deterministic
+
+**Decision:** `is_finished()` is asserted false only when the track is longer than the ring (the loader cannot reach the end of the pass before the ring drains), and true after `wait_filled()` only when the track is shorter than the ring; for a track exactly the ring length it is not asserted. `buffered_frames()` after `wait_filled()` before any trigger must equal `min(track_frames, ring_frames)`. A zero-length track must open (`Ok`), buffer 0 frames and start no voice; `ring_frames()` for it is only bounded (`<= requested`). The hostile-input loop stops at 1 000 000 renders of `min(ring_frames, 4096)` frames (at least 1).
+**Rationale:** The brief allows the ring to be clamped to the known length and leaves "end of source" detection for a track that exactly fills the ring open; asserting only the cases the semantics force keeps the tests free of thread timing (R6, R3).
+**Alternatives:** Asserting `is_finished()` for the exact-fit case (rejected: depends on whether the loader probes past the last frame, which the brief does not fix).
+
+## #130 — One voice per streamed track, ignored while it plays
+
+**Decision:** A streamed track has one ring and one read position, so it plays at most one voice. A trigger for a streamed sound whose voice is active is ignored: no new voice, no steal, nothing counted. A track whose header gives a length of 0 starts no voice, as a resident zero-length sample does.
+**Rationale:** A second voice would need a second decode and ring (twice the budget and loader work) or a shared read position (wrong output). Music retriggers while playing are rare and usually unintended, and ignoring them keeps the current track playing.
+**Alternatives:** Restarting the track on retrigger (rejected: stale frames would have to be dropped on the audio thread mid-play, and an underrun at every retrigger). Opening a second ring per voice (rejected: doubles the memory the issue wants to bound).
+
+## #130 — Rewind when a streamed voice ends or is stolen
+
+**Decision:** When a streamed voice ends (end of source, loader failure, or it is stolen), the audio thread bumps the track's pass number (an atomic epoch) and drops the buffered values. The loader sees the new epoch, restarts the decode at source frame 0 and records where the new pass starts in the ring, so values of an older pass are dropped unplayed. `is_finished()` reads false from the bump on. A retrigger before the loader has refilled underruns.
+**Rationale:** The next trigger then plays the track from the start, as a resident sample does. Only atomics and ring pops are used on the audio thread (D5); the work to drop old values is bounded by the ring capacity.
+**Alternatives:** Resuming where the stolen voice stopped (rejected: differs from resident playback). Keeping the first ring of frames resident for an instant restart (rejected: more memory per track, and more code paths; can be added later).
+
+## #130 — Underrun is silence without skipping
+
+**Decision:** Frames the ring cannot supply while the pass has not ended render as silence, count one per frame in `StreamHandle::underrun_frames` and `Mixer::stream_underruns`, and the voice resumes with the next real frame. The loader publishes a frame only once it knows another frame follows, or together with the end-of-pass flag in the same atomic store, so the frames after the last real frame are never counted as underruns.
+**Rationale:** Not skipping keeps the music intact. Publishing the last frame with the end flag means "ring empty and not ended" is always a real gap (the tester's invariant: underruns equal the silent frames inserted).
+**Alternatives:** Skipping ahead to stay in time (rejected: needs the loader to discard on demand; music would jump). Ending the voice on underrun (rejected: one slow disk read would stop the music).
+
+## #130 — Ring charged whole and clamped to the known length
+
+**Decision:** `open_stream` charges `ring_frames x 4 x channels` bytes to the bundle's `DecodeBudget` at open, all or nothing, and returns them when the track drops. The ring is the requested size clamped to at least 1 frame, at most the 10-minute cap at the mixer rate and, when the header gives it, at most the output length (WAV data-chunk size bounded by the bytes present, last Ogg granule). The decoded length is not charged.
+**Rationale:** The ring is the only decoded PCM a streamed track holds, so it is what the D25 budget must bound. Clamping to the known length means a short track never holds a ring larger than itself. Header values only shrink the allocation, never grow it.
+**Alternatives:** Charging the ring in growth steps (rejected: the ring is allocated once). Charging the decoded length (rejected: that is what streaming removes).
+
+## #130 — 10-minute cap kept for streams
+
+**Decision:** Streams keep the `MAX_SECONDS` (600 s) cap: checked at open from the header (exactly 600 s accepted) and again while decoding through the shared resampler, where a longer stream fails the pass (`failed()`), plays what was buffered, then ends.
+**Rationale:** R11: an untrusted bundle must not make the loader decode forever, for example with a missing or wrong length in the header. One rule for resident and streamed sounds.
+**Alternatives:** No cap for streams (rejected: unbounded loader work per untrusted file). A larger cap for music (rejected: not asked for; can be raised later through the constant).
+
+## #130 — Polling loader, no wakeup from the audio thread
+
+**Decision:** The loader parks with `park_timeout` (2 ms) between checks of free ring space, the epoch and the stop flag. The audio thread never signals, locks or waits on it. `StreamHandle::wait_filled` (load and test threads only) unparks the loader and waits on a condition variable that only the loader and the waiters use.
+**Rationale:** D5 forbids syscalls and locks on the audio thread; `unpark` can be a syscall. A 2 ms poll against a 1.37 s default ring leaves a wide margin.
+**Alternatives:** Unparking the loader from `render` (rejected: syscall on the audio thread). A semaphore (rejected: same problem).
+
+## #130 — Additive `table_audio` instead of changing `RegisteredSound`
+
+**Decision:** pin_app gets `TableAudio`, `table_audio` and `AudioEngine::with_streams` next to `table_samples`, `RegisteredSound` and `AudioEngine::new`, which are unchanged. Routing the loader (table.rs, threads.rs, the orchestrator mod.rs re-exports) through them is a follow-up outside this issue's owned paths.
+**Rationale:** Existing unowned tests use `table_samples` and the `RegisteredSound` tuple; an additive API keeps them passing without edits (R1, R10).
+**Alternatives:** Making `RegisteredSound` an enum of resident or streamed (rejected: breaks unowned call sites and tests).
+
+## #130 — A streamed track owns its compressed bytes in memory
+
+**Decision:** `open_stream` takes the file's compressed bytes as a `Vec<u8>` that the track owns; the loader decodes from memory and never touches the filesystem.
+**Rationale:** The bundle snapshot already hands out whole compressed files, and the I/O worker is the only thread that reads files (R4). Compressed music is about a tenth of its decoded size, and the decoded-audio budget bounds decoded PCM only, as the human ruling on the 512 MiB budget says.
+**Alternatives:** Reading the file in chunks on the loader thread (rejected: a second thread touching the filesystem, and the snapshot is an in-memory view). Charging the compressed bytes to the budget (rejected: the budget is defined as decoded audio).
