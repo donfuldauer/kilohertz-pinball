@@ -31,7 +31,8 @@
 
 use super::config::{
     AUTO_PROFILE, AppConfig, CameraPreset, DisplayMode, MAX_DECODED_BUDGET_MIB, MAX_DISPLAY_INDEX,
-    MAX_PIP_WIDTH, MIN_DECODED_BUDGET_MIB, MIN_PIP_WIDTH, PipCorner, ScoreDisplayKind, StagingMode,
+    MAX_PIP_WIDTH, MAX_UI_SCALE, MIN_DECODED_BUDGET_MIB, MIN_PIP_WIDTH, MIN_UI_SCALE, PipCorner,
+    ScoreDisplayKind, StagingMode,
 };
 use super::live::InputMonitor;
 use super::scan::TableEntry;
@@ -123,6 +124,8 @@ pub enum SettingRow {
     CameraPreset,
     /// [`AppConfig::score_display`] (DMD vs. LCD).
     ScoreDisplay,
+    /// [`AppConfig::ui_scale`]: menu size on screen (applied live).
+    UiScale,
     /// [`AppConfig::input_profile`].
     InputProfile,
     /// [`AppConfig::staging_mode`].
@@ -169,7 +172,7 @@ pub struct NumericRange {
 
 impl SettingRow {
     /// Rows of the display panel, in order (menu rows `1..`).
-    pub const DISPLAY: [SettingRow; 11] = [
+    pub const DISPLAY: [SettingRow; 12] = [
         SettingRow::DisplayMode,
         SettingRow::PlayfieldDisplay,
         SettingRow::BackglassDisplay,
@@ -180,6 +183,7 @@ impl SettingRow {
         SettingRow::ScorePipWidth,
         SettingRow::CameraPreset,
         SettingRow::ScoreDisplay,
+        SettingRow::UiScale,
         SettingRow::DecodedAudioBudget,
     ];
 
@@ -214,6 +218,7 @@ impl SettingRow {
             SettingRow::ScorePipWidth => "Score PiP width",
             SettingRow::CameraPreset => "Camera",
             SettingRow::ScoreDisplay => "Score display",
+            SettingRow::UiScale => "UI scale",
             SettingRow::InputProfile => "Input profile",
             SettingRow::StagingMode => "Flipper staging",
             SettingRow::DualStageLower => "Dual-stage lower",
@@ -249,6 +254,7 @@ impl SettingRow {
             SettingRow::NudgeCurve => r(0.1, 5.0, 0.1),
             SettingRow::NudgeDeadzone => r(0.0, 1.0, 0.005),
             SettingRow::NudgeMax => r(0.0, 10.0, 0.1),
+            SettingRow::UiScale => r(f64::from(MIN_UI_SCALE), f64::from(MAX_UI_SCALE), 0.25),
             SettingRow::DecodedAudioBudget => r(
                 f64::from(MIN_DECODED_BUDGET_MIB),
                 f64::from(MAX_DECODED_BUDGET_MIB),
@@ -275,6 +281,7 @@ impl SettingRow {
             SettingRow::NudgeCurve => cal.nudge.curve_exponent.into(),
             SettingRow::NudgeDeadzone => cal.nudge.deadzone.into(),
             SettingRow::NudgeMax => cal.nudge.max.into(),
+            SettingRow::UiScale => c.ui_scale.into(),
             SettingRow::DecodedAudioBudget => c.audio.decoded_budget_mib.into(),
             _ => return None,
         })
@@ -305,6 +312,7 @@ impl SettingRow {
                 format!("{}", c.calibration.plunger.release_window_ms)
             }
             SettingRow::DecodedAudioBudget => format!("{} MiB", c.audio.decoded_budget_mib),
+            SettingRow::UiScale => format!("{:.2}x", c.ui_scale),
             SettingRow::BackglassPipWidth | SettingRow::ScorePipWidth => {
                 format!("{:.0} %", self.number(c).unwrap_or(0.0) * 100.0)
             }
@@ -367,6 +375,8 @@ pub enum SettingChange {
     Wireframe(bool),
     /// Decoded-audio budget, MiB (clamped to 64..=8192).
     DecodedAudioBudget(u32),
+    /// Menu scale factor (clamped to 0.5..=4; non-finite → the default).
+    UiScale(f32),
 }
 
 impl SettingChange {
@@ -391,6 +401,7 @@ impl SettingChange {
             SettingRow::NudgeCurve => SettingChange::NudgeCurve(v),
             SettingRow::NudgeDeadzone => SettingChange::NudgeDeadzone(v),
             SettingRow::NudgeMax => SettingChange::NudgeMax(v),
+            SettingRow::UiScale => SettingChange::UiScale(v),
             SettingRow::DecodedAudioBudget => {
                 // Saturating cast; NaN → 0 (clamped to the minimum on apply).
                 SettingChange::DecodedAudioBudget(value.round() as u32)
@@ -1234,6 +1245,7 @@ impl MenuState {
                 c.audio.decoded_budget_mib =
                     mib.clamp(MIN_DECODED_BUDGET_MIB, MAX_DECODED_BUDGET_MIB);
             }
+            SettingChange::UiScale(v) => c.ui_scale = clamp(v, SettingRow::UiScale),
         }
         let extra = std::mem::take(&mut self.config.extra);
         let changed = self.config != before;
@@ -1248,5 +1260,118 @@ impl MenuState {
             .retain(|c| !matches!(c, UiCommand::ConfigChanged(_)));
         self.commands
             .push(UiCommand::ConfigChanged(Box::new(self.config.clone())));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::config::DEFAULT_UI_SCALE;
+
+    fn display_menu() -> MenuState {
+        let mut m = MenuState::default();
+        m.apply(MenuInput::Toggle);
+        m.apply(MenuInput::ShowPanel(Panel::Display));
+        m.drain_commands();
+        m
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): the `UiScale` row sits in the display
+    /// panel right after `ScoreDisplay` and before the audio budget row
+    /// (which stays last, under its "Advanced" heading).
+    #[test]
+    fn spec_4_4_ui_scale_row_placement() {
+        let d = SettingRow::DISPLAY;
+        let at = |r| d.iter().position(|x| *x == r).unwrap();
+        assert_eq!(d.len(), 12);
+        assert_eq!(at(SettingRow::UiScale), at(SettingRow::ScoreDisplay) + 1);
+        assert_eq!(
+            at(SettingRow::DecodedAudioBudget),
+            at(SettingRow::UiScale) + 1
+        );
+        assert_eq!(d.last(), Some(&SettingRow::DecodedAudioBudget));
+        assert!(!SettingRow::INPUT.contains(&SettingRow::UiScale));
+        assert_eq!(SettingRow::UiScale.label(), "UI scale");
+        assert_eq!(
+            SettingRow::UiScale.range(),
+            Some(NumericRange {
+                min: 0.5,
+                max: 4.0,
+                step: 0.25
+            })
+        );
+        let mut c = AppConfig::default();
+        assert_eq!(SettingRow::UiScale.number(&c), Some(1.0));
+        assert_eq!(SettingRow::UiScale.value_text(&c), "1.00x");
+        c.ui_scale = 2.5;
+        assert_eq!(SettingRow::UiScale.number(&c), Some(2.5));
+        assert_eq!(SettingRow::UiScale.value_text(&c), "2.50x");
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): `SettingChange::UiScale` clamps to the
+    /// row range and resets a non-finite value to the default.
+    #[test]
+    fn spec_4_4_ui_scale_change_clamps() {
+        assert_eq!(
+            SettingChange::number(SettingRow::UiScale, 1.5),
+            Some(SettingChange::UiScale(1.5))
+        );
+        let mut m = display_menu();
+        for (v, want) in [
+            (3.0, 3.0),
+            (100.0, 4.0),
+            (0.1, 0.5),
+            (-2.0, 0.5),
+            (f32::INFINITY, DEFAULT_UI_SCALE),
+            (f32::NAN, DEFAULT_UI_SCALE),
+            (f32::NEG_INFINITY, DEFAULT_UI_SCALE),
+        ] {
+            m.apply(MenuInput::Set(SettingChange::UiScale(3.5)));
+            m.apply(MenuInput::Set(SettingChange::UiScale(v)));
+            assert_eq!(m.config().ui_scale, want, "{v}");
+        }
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): `Left` / `Right` on the row step by
+    /// 0.25 inside 0.5..=4 and emit one coalesced `ConfigChanged` holding
+    /// the latest scale.
+    #[test]
+    fn spec_4_4_ui_scale_steps_and_emits_config_changed() {
+        let mut m = display_menu();
+        let row = 1 + SettingRow::DISPLAY
+            .iter()
+            .position(|r| *r == SettingRow::UiScale)
+            .unwrap();
+        m.apply(MenuInput::FocusRow(row));
+        assert_eq!(m.focused_setting(), Some(SettingRow::UiScale));
+        m.apply(MenuInput::Right);
+        assert_eq!(m.config().ui_scale, 1.25);
+        m.apply(MenuInput::Right);
+        assert_eq!(m.config().ui_scale, 1.5);
+        m.apply(MenuInput::Left);
+        assert_eq!(m.config().ui_scale, 1.25);
+        let changed: Vec<_> = m
+            .pending_commands()
+            .iter()
+            .filter_map(|c| match c {
+                UiCommand::ConfigChanged(c) => Some(c.ui_scale),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed, [1.25]);
+        // Select does nothing on a numeric row.
+        m.apply(MenuInput::Select);
+        assert_eq!(m.config().ui_scale, 1.25);
+        for _ in 0..20 {
+            m.apply(MenuInput::Right);
+        }
+        assert_eq!(m.config().ui_scale, 4.0);
+        m.drain_commands();
+        m.apply(MenuInput::Right);
+        assert!(m.pending_commands().is_empty(), "no change at the top");
+        for _ in 0..20 {
+            m.apply(MenuInput::Left);
+        }
+        assert_eq!(m.config().ui_scale, 0.5);
     }
 }

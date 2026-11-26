@@ -55,6 +55,20 @@ pub fn sanitize_pixels_per_point(scale: f32) -> f32 {
     }
 }
 
+/// The `pixels_per_point` the menu is laid out at for a display scale `base`
+/// and the user's menu scale `ui_scale` (`config.toml` `ui_scale`):
+/// [`sanitize_pixels_per_point`]`(base × ui_scale)`, so a `ui_scale` of 2
+/// lays the panel out in half as many points and it appears twice as large.
+/// A non-finite or non-positive `ui_scale` counts as 1.
+pub fn effective_pixels_per_point(base: f32, ui_scale: f32) -> f32 {
+    let scale = if ui_scale.is_finite() && ui_scale > 0.0 {
+        ui_scale
+    } else {
+        1.0
+    };
+    sanitize_pixels_per_point(base * scale)
+}
+
 /// The menu panel: centred, [`PANEL_WIDTH_FRACTION`] × [`PANEL_HEIGHT_FRACTION`]
 /// of `screen`, capped at [`PANEL_MAX_WIDTH`] × [`PANEL_MAX_HEIGHT`] points.
 pub fn menu_panel_rect(screen: egui::Rect) -> egui::Rect {
@@ -517,6 +531,151 @@ mod tests {
         assert_eq!(sanitize_pixels_per_point(0.01), MIN_PIXELS_PER_POINT);
         assert_eq!(sanitize_pixels_per_point(100.0), MAX_PIXELS_PER_POINT);
         assert_eq!(sanitize_pixels_per_point(1.5), 1.5);
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): the menu scale multiplies the display
+    /// scale; a bad scale counts as 1; the result is clamped like any ppp.
+    #[test]
+    fn spec_4_4_effective_pixels_per_point() {
+        assert_eq!(effective_pixels_per_point(1.0, 2.0), 2.0);
+        assert_eq!(effective_pixels_per_point(1.5, 2.0), 3.0);
+        assert_eq!(effective_pixels_per_point(2.0, 0.5), 1.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -2.0] {
+            assert_eq!(effective_pixels_per_point(1.25, bad), 1.25, "{bad}");
+        }
+        assert_eq!(effective_pixels_per_point(4.0, 4.0), MAX_PIXELS_PER_POINT);
+        assert_eq!(effective_pixels_per_point(0.25, 0.5), MIN_PIXELS_PER_POINT);
+        assert_eq!(effective_pixels_per_point(f32::NAN, 2.0), 1.0);
+    }
+
+    proptest::proptest! {
+        /// SPEC §4 Subphase 4.4 (#131): any inputs give a finite ppp inside
+        /// the accepted range, monotonic in `ui_scale` for a sane base.
+        #[test]
+        fn spec_4_4_effective_ppp_is_sane(
+            base in proptest::prelude::any::<f32>(),
+            a in 0.5f32..=4.0,
+            b in 0.5f32..=4.0,
+        ) {
+            for s in [a, b, f32::NAN, -a] {
+                let p = effective_pixels_per_point(base, s);
+                proptest::prop_assert!(
+                    p.is_finite() && (MIN_PIXELS_PER_POINT..=MAX_PIXELS_PER_POINT).contains(&p)
+                );
+            }
+            let base = sanitize_pixels_per_point(base);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            proptest::prop_assert!(
+                effective_pixels_per_point(base, lo) <= effective_pixels_per_point(base, hi)
+            );
+        }
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131), analytic layout check: at a 2× menu
+    /// scale the same label is twice as tall in pixels, and the panel in
+    /// pixels is the one `menu_panel_rect_px` gives for the effective ppp.
+    #[test]
+    fn spec_4_4_ui_scale_doubles_text_height_in_pixels() {
+        let text_px_height = |scale: f32| {
+            let ctx = egui::Context::default();
+            overlay_style(&ctx);
+            let ppp = effective_pixels_per_point(1.0, scale);
+            let size = [3840u32, 2160];
+            let out = ctx.run_ui(raw_input(size, ppp, Vec::new(), None), |ui| {
+                show_overlay(ui, |ui| ui.label("Scale"));
+            });
+            assert_eq!(out.pixels_per_point, ppp);
+            let [x0, y0, x1, y1] = menu_panel_rect_px(size, ppp);
+            let frame = OverlayFrame::new(&ctx, out);
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for p in &frame.primitives {
+                // Clip rects and vertices are in points; × ppp = pixels.
+                let inside = |q: egui::Pos2| {
+                    q.x * ppp >= x0 as f32 - 0.5
+                        && q.y * ppp >= y0 as f32 - 0.5
+                        && q.x * ppp <= x1 as f32 + 0.5
+                        && q.y * ppp <= y1 as f32 + 0.5
+                };
+                let egui::epaint::Primitive::Mesh(m) = &p.primitive else {
+                    panic!("the menu uses no paint callbacks");
+                };
+                let c = p.clip_rect;
+                assert!(
+                    (inside(c.min) && inside(c.max)) || m.vertices.iter().all(|v| inside(v.pos)),
+                    "primitive clipped to {c:?} draws outside the panel at ppp {ppp}"
+                );
+                if m.texture_id == egui::TextureId::default() {
+                    // Glyph quads: the font atlas texture with real UVs.
+                    for v in m.vertices.iter().filter(|v| v.uv != egui::epaint::WHITE_UV) {
+                        lo = lo.min(v.pos.y * ppp);
+                        hi = hi.max(v.pos.y * ppp);
+                    }
+                }
+            }
+            frame.discard();
+            ((x1 - x0) as f32, hi - lo)
+        };
+        let (w1, h1) = text_px_height(1.0);
+        let (w2, h2) = text_px_height(2.0);
+        assert!(h1 > 4.0, "text height {h1}");
+        let ratio = h2 / h1;
+        assert!((1.8..=2.2).contains(&ratio), "text height ratio {ratio}");
+        // 3840 px wide: the panel is capped at 960 points, so 960 px at 1×
+        // and 1920 px at 2×.
+        assert_eq!((w1, w2), (960.0, 1920.0));
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131), GPU analytic check (D30 step a): the
+    /// painted menu's pixel footprint at `ui_scale` 2 is twice as wide and
+    /// twice as tall as at 1, on a target big enough that the panel cap (in
+    /// points) does not clamp either, and never leaves
+    /// `menu_panel_rect_px(size, effective ppp)`.
+    #[cfg(feature = "gpu-tests")]
+    #[test]
+    fn spec_4_4_ui_scale_doubles_the_painted_panel() {
+        let Some(gpu) = crate::gpu::shared_context_for_tests("ui_scale_paint") else {
+            return;
+        };
+        let bg = [230.0 / 255.0, 217.0 / 255.0, 153.0 / 255.0, 1.0];
+        let bg_u8: [u8; 4] = [230, 217, 153, 255];
+        let size = [3840u32, 2160];
+        let footprint = |scale: f32| {
+            let ppp = effective_pixels_per_point(1.0, scale);
+            let ctx = egui::Context::default();
+            overlay_style(&ctx);
+            let out = ctx.run_ui(raw_input(size, ppp, Vec::new(), None), |ui| {
+                show_overlay(ui, |ui| {
+                    ui.heading("Kilohertz Pinball");
+                    ui.label("Tables  Display  Input");
+                })
+            });
+            let frame = OverlayFrame::new(&ctx, out);
+            let px = paint_offscreen(gpu, size[0], size[1], bg, frame).expect("paint");
+            let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+            for y in 0..size[1] {
+                for x in 0..size[0] {
+                    let i = ((y * size[0] + x) * 4) as usize;
+                    if px[i..i + 4] != bg_u8 {
+                        (x0, y0) = (x0.min(x), y0.min(y));
+                        (x1, y1) = (x1.max(x + 1), y1.max(y + 1));
+                    }
+                }
+            }
+            let [px0, py0, px1, py1] = menu_panel_rect_px(size, ppp);
+            assert!(
+                x0 >= px0 && y0 >= py0 && x1 <= px1 && y1 <= py1,
+                "painted {:?} outside the panel {:?} at ppp {ppp}",
+                [x0, y0, x1, y1],
+                [px0, py0, px1, py1]
+            );
+            ((x1 - x0) as f32, (y1 - y0) as f32)
+        };
+        let (w1, h1) = footprint(1.0);
+        let (w2, h2) = footprint(2.0);
+        assert!(w1 > 100.0 && h1 > 100.0, "{w1}x{h1}");
+        for r in [w2 / w1, h2 / h1] {
+            assert!((1.95..=2.05).contains(&r), "{w1}x{h1} -> {w2}x{h2}");
+        }
     }
 
     #[test]
