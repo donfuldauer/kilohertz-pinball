@@ -11,11 +11,16 @@ use pin_tablegen::cabinet::{CABINET_GLB_FILE, MATERIAL_NAMES, NODE_NAMES, genera
 
 /// FNV-1a of `generate_cabinet` for each preset (in [`PRESETS`] order).
 /// Update only with a reviewed geometry change (the analytic tests in
-/// `cabinet_dimensions.rs` must pass first).
+/// `cabinet_dimensions.rs` and `cabinet_backbox.rs` must pass first).
+/// Re-pinned by KP-030 (#111) for the nine backbox and blade nodes and seven
+/// materials; the #110 part of the file is unchanged (the unit test
+/// `first_28_nodes_and_17_materials_are_unchanged` still matches the #110
+/// hashes 0x727c_42ed_7f77_e9d9, 0x7e5f_ec6f_89f8_ddfc and
+/// 0xd9e0_84af_da1f_4489 written without the new nodes).
 const GOLDEN: [u64; 3] = [
-    0x727c_42ed_7f77_e9d9,
-    0x7e5f_ec6f_89f8_ddfc,
-    0xd9e0_84af_da1f_4489,
+    0x93c1_e1f1_2b01_e4cd,
+    0x288f_75a4_2cef_7386,
+    0x2616_2c8e_d524_94d6,
 ];
 
 /// Acceptance (determinism, R3): two runs give identical bytes and the
@@ -98,7 +103,8 @@ fn node_list_is_stable_and_loads() {
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 28, "unique");
+        assert_eq!(sorted.len(), NODE_NAMES.len(), "unique");
+        assert_eq!(NODE_NAMES.len(), 37);
     }
 }
 
@@ -181,9 +187,19 @@ fn material_of(node: &str) -> String {
         "cabinet.body.side_left" => "cabinet.side_left".into(),
         "cabinet.body.side_right" => "cabinet.side_right".into(),
         "cabinet.body.front" => "cabinet.front".into(),
-        "cabinet.rail.left" | "cabinet.rail.right" | "cabinet.lockdown_bar" => {
-            "cabinet.trim_metal".into()
-        }
+        "cabinet.rail.left"
+        | "cabinet.rail.right"
+        | "cabinet.lockdown_bar"
+        | "cabinet.backbox.translite_frame"
+        | "cabinet.backbox.hinge" => "cabinet.trim_metal".into(),
+        // KP-030 (#111) backbox contract, section F.
+        "cabinet.backbox.shell" => "cabinet.backbox".into(),
+        "cabinet.backbox.speaker_panel" => "cabinet.backbox.speaker_panel".into(),
+        "cabinet.backbox.translite" => "cabinet.backbox.translite".into(),
+        "cabinet.backbox.display" => "cabinet.backbox.display".into(),
+        "cabinet.backbox.grilles" => "cabinet.backbox.grille".into(),
+        "cabinet.blade.left" => "cabinet.blade_left".into(),
+        "cabinet.blade.right" => "cabinet.blade_right".into(),
         "cabinet.glass" => "cabinet.glass".into(),
         "cabinet.coin_door" => "cabinet.coin_door".into(),
         "cabinet.plunger.housing" | "cabinet.plunger.rod" => "cabinet.plunger".into(),
@@ -194,7 +210,7 @@ fn material_of(node: &str) -> String {
 }
 
 /// UVs and materials (REQ-CAB-001, REQ-CAB-007): every node has one UV per
-/// position, all in [0, 1]; the 17 materials are named in order and
+/// position, all in [0, 1]; the 24 materials are named in order and
 /// assigned as documented; each leg material's colour is the linear
 /// conversion of `leg.colour` and its metallic/roughness follow the finish
 /// (wood never metallic); the glass is translucent.
@@ -209,6 +225,7 @@ fn uvs_and_named_materials() {
         let scene = load(&out.glb);
         let names: Vec<&str> = scene.materials.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, MATERIAL_NAMES.to_vec());
+        assert_eq!(MATERIAL_NAMES.len(), 24);
         for m in &scene.meshes {
             assert_eq!(m.uvs.len(), m.positions.len(), "{}", m.name);
             assert!(

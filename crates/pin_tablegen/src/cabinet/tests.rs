@@ -317,13 +317,13 @@ fn colours_and_finishes() {
 }
 
 /// REQ-CAB-007: wood legs are never metallic; the others follow the
-/// finish; the 17 materials are in the documented order.
+/// finish; the 24 materials are in the documented order.
 #[test]
 fn wood_legs_are_not_metallic() {
     let mut g = preset("classic_standard");
     g.legs.rear_left.material = LegMaterial::Wood;
     let mats = materials(&g).unwrap();
-    assert_eq!(mats.len(), 17);
+    assert_eq!(mats.len(), 24);
     for (m, name) in mats.iter().zip(MATERIAL_NAMES) {
         assert_eq!(m.name, name);
     }
@@ -456,12 +456,245 @@ fn node_guard_rejects_non_finite_or_empty_nodes() {
     let good = node("cabinet.glass", parts::glass(&g), M_GLASS);
     assert!(check_nodes(std::slice::from_ref(&good)).is_ok());
     let mut nan = good.clone();
-    nan.mesh.positions[0][1] = f32::NAN;
+    nan.mesh.as_mut().unwrap().positions[0][1] = f32::NAN;
     assert_eq!(
         check_nodes(&[good.clone(), nan]).unwrap_err().element,
         "cabinet"
     );
-    let mut empty = good;
-    empty.mesh.indices.clear();
+    let mut empty = good.clone();
+    empty.mesh.as_mut().unwrap().indices.clear();
     assert_eq!(check_nodes(&[empty]).unwrap_err().element, "cabinet");
+    // A node without a mesh (the grilles of a backbox without grilles) is
+    // allowed.
+    let mut none = good;
+    none.mesh = None;
+    assert!(none.all_finite());
+    assert!(check_nodes(&[none]).is_ok());
+}
+
+/// Every preset with every backbox front and top profile that the contract
+/// accepts: an arched top on `modern_standard` sags below the translite
+/// opening's top edge at its sides (crown 677.4 mm, opening top 692 mm),
+/// a `backbox.top_profile` error.
+fn profile_variants() -> Vec<CabinetGeometry> {
+    use pin_core::schema::cabinet::{BackboxFrontProfile, BackboxTopProfile};
+    let mut out = Vec::new();
+    for id in pin_core::schema::cabinet::preset_ids() {
+        for front in [BackboxFrontProfile::Flat, BackboxFrontProfile::Angled] {
+            for top in [
+                BackboxTopProfile::Flat,
+                BackboxTopProfile::Angled,
+                BackboxTopProfile::Arched,
+            ] {
+                let mut g = preset(id);
+                g.backbox.front_profile = front;
+                g.backbox.top_profile = top;
+                match generate_cabinet(&g) {
+                    Ok(_) => out.push(g),
+                    Err(e) => {
+                        assert_eq!((*id, top), ("modern_standard", BackboxTopProfile::Arched));
+                        assert_eq!(e.element, "backbox.top_profile");
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn backbox_parts(g: &CabinetGeometry) -> Vec<(&'static str, Part)> {
+    let [bl, br] = backbox::blades(g);
+    vec![
+        ("shell", backbox::shell(g)),
+        ("speaker_panel", backbox::speaker_panel(g)),
+        ("translite_frame", backbox::translite_frame(g)),
+        ("translite", backbox::translite(g)),
+        ("grilles", backbox::grilles(g)),
+        ("hinge", backbox::hinge(g)),
+        ("blade.left", bl),
+        ("blade.right", br),
+    ]
+}
+
+/// REQ-CAB-001: every closed backbox part and both blades, for every
+/// preset and every front and top profile, face outward with
+/// counter-clockwise windings and unit normals; the display quad faces
+/// the player.
+#[test]
+fn backbox_parts_face_outward_counter_clockwise() {
+    for g in &profile_variants() {
+        for (name, p) in backbox_parts(g) {
+            let m = &p.mesh;
+            assert!(!m.is_empty(), "{name} empty");
+            assert!(m.signed_volume() > 0.0, "{name} faces inward");
+            assert!(m.windings_match_normals(), "{name} winding");
+            for n in &m.normals {
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                assert!((len - 1.0).abs() < 1e-9, "{name}");
+            }
+        }
+        let d = backbox::display(g).mesh;
+        assert_eq!((d.positions.len(), d.indices.len()), (4, 6));
+        assert!(d.windings_match_normals());
+        let f = backbox::Face::new(g);
+        // Outward normal of the face: (0, -c, s).
+        let n = d.normals[0];
+        assert!((n[1] + f.c).abs() < 1e-9 && (n[2] - f.s).abs() < 1e-9);
+    }
+}
+
+/// REQ-CAB-003: the face helpers agree: `p` and `uv_of` invert each other,
+/// `v_top` lands on the top surface on every plane, `v_at_z` at its height,
+/// and the front top edge is at `zb + H` (the arch's crown at `u = 0`).
+#[test]
+fn face_helpers_are_consistent() {
+    let variants = profile_variants();
+    assert_eq!(variants.len(), 16);
+    for g in &variants {
+        let f = backbox::Face::new(g);
+        assert!((f.zb + f.h - g.backbox_top_height_mm()).abs() < 1e-6);
+        for (u, v, w) in [(0.0, 0.0, 0.0), (-100.0, 250.0, 19.0), (300.0, 700.0, 5.0)] {
+            let p = f.p(u, v, w);
+            let (uu, vv) = f.uv_of(p);
+            assert!((uu - u).abs() < 1e-9 && (vv - v).abs() < 1e-9);
+            for x in [-f.w * 0.5, 0.0, 100.0] {
+                for dz in [0.0, f.t] {
+                    let q = f.p(x, f.v_top(x, w, dz), w);
+                    assert!((q[2] - (f.z_top(x, q[1]) - dz)).abs() < 1e-9);
+                }
+            }
+            assert!((f.p(u, f.v_at_z(f.zb + 7.0, w), w)[2] - (f.zb + 7.0)).abs() < 1e-9);
+        }
+        let top = f.p(0.0, f.v_top(0.0, 0.0, 0.0), 0.0);
+        assert!((top[2] - (f.zb + f.h)).abs() < 1e-9);
+        assert!((top[1] - f.y_ft).abs() < 1e-9);
+    }
+}
+
+/// D32 texture slots: explicit UVs replace the box projection and are
+/// clamped to [0, 1]; a mesh whose UVs no longer match its vertex count
+/// falls back to the box projection.
+#[test]
+fn explicit_uvs_are_clamped_and_used() {
+    let mut m = MeshMm::default();
+    m.polygon(&[
+        [0.0, 0.0, 0.0],
+        [10.0, 0.0, 0.0],
+        [10.0, 0.0, 10.0],
+        [0.0, 0.0, 10.0],
+    ]);
+    m.set_uvs(|p| [p[0] / 5.0 - 0.5, 0.25]);
+    let glb = m.to_glb();
+    assert_eq!(
+        glb.uvs,
+        vec![[0.0, 0.25], [1.0, 0.25], [1.0, 0.25], [0.0, 0.25]]
+    );
+    m.polygon(&[[0.0; 3], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]]);
+    let glb = m.to_glb();
+    assert!(glb.uvs.iter().flatten().all(|c| (0.0..=1.0).contains(c)));
+    assert_ne!(glb.uvs[0], [0.0, 0.25]);
+}
+
+/// REQ-CAB-001 section F: the seven backbox and blade materials follow the
+/// 17 earlier ones, in order, with the documented factors; the grille
+/// follows `trim.metal_finish`.
+#[test]
+fn backbox_materials_follow_the_contract() {
+    let mut g = preset("modern_standard");
+    g.trim.metal_finish = Finish::BrushedSteel;
+    let mats = materials(&g).unwrap();
+    let names: Vec<&str> = mats.iter().map(|m| m.name).collect();
+    assert_eq!(names, MATERIAL_NAMES.to_vec());
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let b = &mats[M_BACKBOX];
+    assert_eq!(
+        (b.base_color, b.metallic, b.roughness, b.blend),
+        (white, 0.0, 0.5, false)
+    );
+    let sp = &mats[M_SPEAKER_PANEL];
+    assert!(sp.base_color[..3].iter().all(|&c| c < 0.05) && sp.roughness == 0.7);
+    let gr = &mats[M_GRILLE];
+    assert_eq!(
+        (gr.metallic, gr.roughness),
+        finish_factors(Finish::BrushedSteel)
+    );
+    assert!(gr.base_color[..3].iter().all(|&c| c < 0.2));
+    for i in [M_TRANSLITE, M_DISPLAY, M_BLADE_LEFT, M_BLADE_RIGHT] {
+        assert_eq!(mats[i].base_color, white);
+        assert!(!mats[i].blend);
+    }
+    assert_eq!(NODE_NAMES[N_GRILLES], "cabinet.backbox.grilles");
+}
+
+/// REQ-CAB-001 / G: with no grilles the grilles part is empty and the node
+/// is written without a mesh; every other node keeps its mesh.
+#[test]
+fn zero_grilles_write_a_mesh_less_node() {
+    let mut g = preset("classic_standard");
+    g.backbox.grilles.clear();
+    assert!(backbox::grilles(&g).mesh.is_empty());
+    let out = generate_cabinet(&g).unwrap();
+    assert_eq!(out.nodes.len(), NODE_NAMES.len());
+    let json_len = u32::from_le_bytes(out.glb[12..16].try_into().unwrap()) as usize;
+    let json = core::str::from_utf8(&out.glb[20..20 + json_len]).unwrap();
+    assert!(json.contains("{\"name\":\"cabinet.backbox.grilles\"}"));
+    assert!(json.contains("{\"name\":\"cabinet.backbox.hinge\",\"mesh\":33}"));
+}
+
+/// REQ-CAB-003: a window or an opening that leaves its plate with nothing
+/// is an error naming the key, not an empty node.
+#[test]
+fn a_hole_covering_its_whole_plate_is_an_error() {
+    let mut g = preset("classic_standard");
+    let bb = &mut g.backbox;
+    bb.score_display.width = bb.width;
+    bb.score_display.height = bb.speaker_panel_height;
+    bb.score_display.centre_v = bb.speaker_panel_height * 0.5;
+    bb.grilles.clear();
+    assert_eq!(
+        generate_cabinet(&g).unwrap_err().element,
+        "backbox.score_display.width"
+    );
+    let mut g = preset("classic_standard");
+    let bb = &mut g.backbox;
+    bb.translite_opening.width = bb.width;
+    bb.translite_opening.bottom = bb.speaker_panel_height;
+    bb.translite_opening.height = bb.height - bb.speaker_panel_height;
+    bb.backglass.width = bb.width;
+    bb.backglass.height = bb.translite_opening.height;
+    assert_eq!(
+        generate_cabinet(&g).unwrap_err().element,
+        "backbox.translite_opening.width"
+    );
+}
+
+/// REQ-CAB-001 (stable list): the first 28 nodes and 17 materials are the
+/// #110 model byte for byte: written alone they give the FNV-1a hashes
+/// pinned for the three presets before the backbox was added (#110's
+/// `cabinet_bundle.rs` goldens).
+#[test]
+fn first_28_nodes_and_17_materials_are_unchanged() {
+    const GOLDEN_110: [u64; 3] = [
+        0x727c_42ed_7f77_e9d9,
+        0x7e5f_ec6f_89f8_ddfc,
+        0xd9e0_84af_da1f_4489,
+    ];
+    let fnv = |bytes: &[u8]| {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    };
+    for (id, want) in ["classic_standard", "classic_widebody", "modern_standard"]
+        .into_iter()
+        .zip(GOLDEN_110)
+    {
+        let (nodes, mats) = build(&preset(id)).unwrap();
+        assert_eq!(nodes.len(), 37);
+        assert_eq!(mats.len(), 24);
+        let glb = glb::write("cabinet", &nodes[..28], &mats[..17]);
+        assert_eq!(fnv(&glb), want, "{id}");
+    }
 }
