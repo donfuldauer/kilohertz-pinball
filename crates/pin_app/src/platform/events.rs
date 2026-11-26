@@ -16,13 +16,21 @@
 //! toggle the menu before the router sees them, and every cabinet event goes
 //! through [`MenuController::route`] (consumed while the menu is open)
 //! instead of straight into the input ring. Without one nothing changes.
+//!
+//! Releases are never lost to a full input ring (gate #163 round 11): a
+//! button release or an axis return to 0.0 that the ring rejects is retained
+//! in a fixed-capacity store (one entry per cabinet button and axis) with its
+//! original timestamp and retried, in order, before any later input event and
+//! on every [`EventForwarder::poll`]. While anything is retained no later
+//! event overtakes it: later releases and resets join the store, other events
+//! are dropped and counted as before.
 
 use super::input_router::{InputRouter, gamepad_button};
 use super::keymap;
 use crate::ui::{MenuController, is_menu_toggle_button, is_menu_toggle_key};
 use arrayvec::ArrayVec;
-use pin_core::InputEvent;
 use pin_core::spsc::SpscProducer;
+use pin_core::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_render::topology::{WindowEvent, WindowEventKind};
 use sdl3::event::{Event, WindowEvent as SdlWindowEvent};
 use sdl3::joystick::JoystickId;
@@ -151,10 +159,93 @@ pub struct ForwardStats {
     pub window_unknown: u64,
 }
 
+/// Capacity of the retained-release store: one entry per cabinet button and
+/// per cabinet axis (later releases of the same button or resets of the same
+/// axis coalesce into the existing entry, so it cannot overflow).
+pub const MAX_RETAINED_RELEASES: usize = CabinetInput::COUNT + CabinetAxis::ALL.len();
+
+/// What a retained event releases (its coalescing key).
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ReleaseKey {
+    Button(CabinetInput),
+    Axis(CabinetAxis),
+}
+
+/// The key of `ev` when it is a release (button up) or an axis reset
+/// (value 0.0); `None` for presses and non-zero axis motion.
+fn release_key(ev: &InputEvent) -> Option<ReleaseKey> {
+    match ev.kind {
+        InputEventKind::Button {
+            input,
+            pressed: false,
+        } => Some(ReleaseKey::Button(input)),
+        InputEventKind::Axis { axis, value: 0.0 } => Some(ReleaseKey::Axis(axis)),
+        _ => None,
+    }
+}
+
+/// The producer end of the input ring plus the releases it rejected (module
+/// docs). Fixed capacity: pushing never allocates.
+struct InputPath {
+    ring: SpscProducer<InputEvent>,
+    /// Releases and axis resets the ring rejected, oldest first, at most one
+    /// per [`ReleaseKey`].
+    retained: ArrayVec<InputEvent, MAX_RETAINED_RELEASES>,
+}
+
+impl InputPath {
+    fn new(ring: SpscProducer<InputEvent>) -> Self {
+        Self {
+            ring,
+            retained: ArrayVec::new(),
+        }
+    }
+
+    /// Pushes retained events, oldest first, until the ring rejects one.
+    /// `true` when none is left.
+    fn retry(&mut self, stats: &mut ForwardStats) -> bool {
+        let mut sent = 0;
+        for ev in &self.retained {
+            if self.ring.push(*ev).is_err() {
+                break;
+            }
+            stats.input_forwarded += 1;
+            sent += 1;
+        }
+        self.retained.drain(..sent);
+        self.retained.is_empty()
+    }
+
+    /// Keeps the release `ev` (key `key`) for a later retry; a release of
+    /// the same button or a reset of the same axis already retained keeps
+    /// its place and timestamp.
+    fn retain(&mut self, key: ReleaseKey, ev: InputEvent) {
+        if self.retained.iter().any(|r| release_key(r) == Some(key)) {
+            return;
+        }
+        // Cannot fail: one entry per key, `MAX_RETAINED_RELEASES` keys.
+        let _ = self.retained.try_push(ev);
+    }
+
+    /// Pushes `ev` after every retained event; a release or reset that
+    /// cannot go yet is retained, anything else that cannot go is dropped.
+    fn push(&mut self, stats: &mut ForwardStats, ev: InputEvent) {
+        let clear = self.retry(stats);
+        if clear && self.ring.push(ev).is_ok() {
+            stats.input_forwarded += 1;
+            return;
+        }
+        match release_key(&ev) {
+            Some(key) => self.retain(key, ev),
+            None => stats.input_dropped += 1,
+        }
+    }
+}
+
 /// Pushes translated events into the input ring (→ sim) and the window ring
 /// (→ render).
 pub struct EventForwarder {
-    input: SpscProducer<InputEvent>,
+    input: InputPath,
     window: SpscProducer<WindowEvent>,
     /// SDL window id of each `TopologyPlan` window, by plan index.
     window_ids: ArrayVec<u32, 3>,
@@ -170,7 +261,7 @@ impl EventForwarder {
     /// A forwarder writing into the given ring producers.
     pub fn new(input: SpscProducer<InputEvent>, window: SpscProducer<WindowEvent>) -> Self {
         Self {
-            input,
+            input: InputPath::new(input),
             window,
             window_ids: ArrayVec::new(),
             stats: ForwardStats::default(),
@@ -183,13 +274,15 @@ impl EventForwarder {
     /// engine threads on a table swap, issue #85): events forwarded after
     /// this call go to `input` and `window` only. The menu, the router (and
     /// its held inputs and gamepads), the registered windows and the
-    /// counters are kept; the old producers are dropped.
+    /// counters are kept; the old producers are dropped, and so are any
+    /// releases retained for the old ring (the simulation that saw their
+    /// presses is gone).
     pub fn replace_channels(
         &mut self,
         input: SpscProducer<InputEvent>,
         window: SpscProducer<WindowEvent>,
     ) {
-        self.input = input;
+        self.input = InputPath::new(input);
         self.window = window;
     }
 
@@ -219,7 +312,7 @@ impl EventForwarder {
 
     /// An input event for the ring: through the menu when there is one.
     fn deliver(
-        input: &mut SpscProducer<InputEvent>,
+        input: &mut InputPath,
         stats: &mut ForwardStats,
         menu: Option<&mut MenuController>,
         ev: InputEvent,
@@ -304,12 +397,16 @@ impl EventForwarder {
         self.router.as_mut()
     }
 
-    fn push_input(input: &mut SpscProducer<InputEvent>, stats: &mut ForwardStats, ev: InputEvent) {
-        if input.push(ev).is_ok() {
-            stats.input_forwarded += 1;
-        } else {
-            stats.input_dropped += 1;
-        }
+    /// Pushes `ev` into the input ring behind any retained releases (see
+    /// the [module docs](self)).
+    fn push_input(input: &mut InputPath, stats: &mut ForwardStats, ev: InputEvent) {
+        input.push(stats, ev);
+    }
+
+    /// Releases and axis resets the input ring rejected that are still
+    /// waiting to be pushed (oldest first).
+    pub fn retained_releases(&self) -> &[InputEvent] {
+        &self.input.retained
     }
 
     /// A gamepad was connected (the platform passes its SDL GUID): the
@@ -320,8 +417,10 @@ impl EventForwarder {
         }
     }
 
-    /// Time-driven input at `now_ns` (SDL ns clock): ends digital nudges.
-    /// Called by [`Platform::pump`](super::Platform::pump) every iteration.
+    /// Time-driven input at `now_ns` (SDL ns clock): retries releases the
+    /// input ring rejected (with their original timestamps), then ends
+    /// digital nudges. Called by [`Platform::pump`](super::Platform::pump)
+    /// every iteration.
     pub fn poll(&mut self, now_ns: u64) {
         let Self {
             input,
@@ -330,6 +429,7 @@ impl EventForwarder {
             menu,
             ..
         } = self;
+        input.retry(stats);
         if let Some(r) = router.as_mut() {
             r.poll(now_ns, &mut |ev| {
                 Self::deliver(input, stats, menu.as_mut(), ev);
@@ -363,6 +463,7 @@ impl EventForwarder {
     /// returned [`Translated::Input`] is the last event that reached the
     /// ring ([`Translated::Ignored`] when the menu consumed them all).
     pub fn forward(&mut self, event: &Event) -> Translated {
+        self.input.retry(&mut self.stats);
         if self.menu_toggle(event) {
             return Translated::Ignored;
         }
@@ -868,5 +969,252 @@ mod tests {
         assert!(wrx2.pop().is_some());
         assert_eq!(f.stats().input_forwarded, 2);
         assert_eq!(f.stats().window_forwarded, 2);
+    }
+    fn drain(rx: &mut pin_core::spsc::SpscConsumer<InputEvent>) -> Vec<InputEvent> {
+        std::iter::from_fn(|| rx.pop()).collect()
+    }
+
+    fn trigger(ts: u64, value: i16) -> Event {
+        Event::GamepadAxisMotion {
+            timestamp: ts,
+            which: JoystickId::new(3),
+            axis: Axis::TriggerLeft,
+            value,
+        }
+    }
+
+    /// Gate #163 round 11, thread 4705691340 (REQ-LAT-004 timestamps kept):
+    /// the sim has applied a flipper press, the ring is full, Escape opens
+    /// the menu. The synthetic releases are retained, not dropped, the open
+    /// menu consumes the physical key-up, and once the ring drains the
+    /// releases arrive in order with the toggle's timestamp before any later
+    /// gameplay event.
+    #[test]
+    fn menu_releases_survive_a_full_ring() {
+        let dir = std::env::temp_dir().join(format!("pin_app_events_r11a_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (itx, mut irx) = channel(2);
+        let (wtx, _wrx) = channel(1);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        f.forward(&key(true, Scancode::LShift, 5, false));
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::button(5, CabinetInput::LeftFlipper, true)],
+            "the sim applied the press"
+        );
+        f.forward(&key(true, Scancode::RShift, 6, false));
+        f.forward(&key(true, Scancode::Space, 7, false));
+        // Ring full: Escape opens the menu and owes three releases.
+        f.forward(&key(true, Scancode::Escape, 8, false));
+        assert!(f.menu().unwrap().is_open());
+        let owed = [
+            InputEvent::button(8, CabinetInput::LeftFlipper, false),
+            InputEvent::button(8, CabinetInput::RightFlipper, false),
+            InputEvent::button(8, CabinetInput::Launch, false),
+        ];
+        assert_eq!(f.retained_releases(), owed);
+        assert_eq!(f.stats().input_dropped, 0);
+        // The physical key-up is consumed by the open menu.
+        f.forward(&key(false, Scancode::LShift, 9, false));
+        assert_eq!(
+            drain(&mut irx),
+            [
+                InputEvent::button(6, CabinetInput::RightFlipper, true),
+                InputEvent::button(7, CabinetInput::Launch, true),
+            ]
+        );
+        // poll retries with the original timestamps, as far as space allows.
+        f.poll(10);
+        assert_eq!(drain(&mut irx), owed[..2]);
+        assert_eq!(f.retained_releases(), &owed[2..]);
+        // Closing the menu and playing again: the owed release goes first.
+        f.forward(&key(true, Scancode::Escape, 11, false));
+        f.forward(&key(false, Scancode::Escape, 12, false));
+        assert!(!f.menu().unwrap().is_open());
+        f.forward(&key(true, Scancode::LShift, 13, false));
+        assert_eq!(
+            drain(&mut irx),
+            [
+                owed[2],
+                InputEvent::button(13, CabinetInput::LeftFlipper, true)
+            ]
+        );
+        assert!(f.retained_releases().is_empty());
+        assert_eq!(f.stats().input_dropped, 0);
+        assert_eq!(f.stats().input_forwarded, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 11: an axis reset the menu owes (analog flipper back to 0.0)
+    /// is retained behind the owed button release and delivered with the
+    /// toggle timestamp.
+    #[test]
+    fn menu_axis_reset_survives_a_full_ring() {
+        let dir = std::env::temp_dir().join(format!("pin_app_events_r11b_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (itx, mut irx) = channel(1);
+        let (wtx, _wrx) = channel(1);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        f.forward(&trigger(1, 32767));
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::axis(1, CabinetAxis::LeftFlipper, 1.0)]
+        );
+        f.forward(&key(true, Scancode::RShift, 2, false));
+        f.forward(&key(true, Scancode::Escape, 3, false));
+        assert_eq!(
+            f.retained_releases(),
+            [
+                InputEvent::button(3, CabinetInput::RightFlipper, false),
+                InputEvent::axis(3, CabinetAxis::LeftFlipper, 0.0),
+            ]
+        );
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::button(2, CabinetInput::RightFlipper, true)]
+        );
+        f.poll(4);
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::button(3, CabinetInput::RightFlipper, false)]
+        );
+        f.poll(5);
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::axis(3, CabinetAxis::LeftFlipper, 0.0)]
+        );
+        assert!(f.retained_releases().is_empty());
+        assert_eq!(f.stats().input_dropped, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 11: a later press of the same input never overtakes its
+    /// retained release. With room for both, the release goes first; with
+    /// room for only the release, the press is dropped (counted, as any
+    /// gameplay event the ring rejects) and the release still goes.
+    #[test]
+    fn a_press_never_overtakes_its_retained_release() {
+        for room in [2usize, 1] {
+            let (itx, mut irx) = channel(2);
+            let (wtx, _wrx) = channel(1);
+            let mut f = EventForwarder::new(itx, wtx);
+            f.forward(&key(true, Scancode::LShift, 1, false));
+            assert_eq!(drain(&mut irx).len(), 1);
+            f.forward(&key(true, Scancode::RShift, 2, false));
+            f.forward(&key(true, Scancode::Space, 3, false));
+            f.forward(&key(false, Scancode::LShift, 4, false));
+            let release = InputEvent::button(4, CabinetInput::LeftFlipper, false);
+            assert_eq!(f.retained_releases(), [release]);
+            // A press of the same input while the ring is still full: dropped.
+            f.forward(&key(true, Scancode::LShift, 5, false));
+            assert_eq!(f.retained_releases(), [release]);
+            assert_eq!(f.stats().input_dropped, 1);
+            let mut got = Vec::new();
+            for _ in 0..room {
+                got.push(irx.pop().unwrap());
+            }
+            f.forward(&key(true, Scancode::LShift, 7, false));
+            got.extend(drain(&mut irx));
+            let press7 = InputEvent::button(7, CabinetInput::LeftFlipper, true);
+            let want: Vec<InputEvent> = if room == 2 {
+                vec![
+                    InputEvent::button(2, CabinetInput::RightFlipper, true),
+                    InputEvent::button(3, CabinetInput::Launch, true),
+                    release,
+                    press7,
+                ]
+            } else {
+                vec![
+                    InputEvent::button(2, CabinetInput::RightFlipper, true),
+                    InputEvent::button(3, CabinetInput::Launch, true),
+                    release,
+                ]
+            };
+            assert_eq!(got, want, "room {room}");
+            assert_eq!(f.stats().input_dropped, if room == 2 { 1 } else { 2 });
+            let p = got.iter().position(|e| *e == release).unwrap();
+            assert!(got[..p].iter().all(|e| e.timestamp_ns < 4));
+        }
+    }
+
+    /// Round 11: `replace_router` with a full ring keeps the old router's
+    /// releases (swap timestamp) and delivers them before the new router's
+    /// events once the ring drains.
+    #[test]
+    fn router_swap_releases_survive_a_full_ring() {
+        let (itx, mut irx) = channel(1);
+        let (wtx, _wrx) = channel(1);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.forward(&key(true, Scancode::LShift, 1, false));
+        f.replace_router(20, InputRouter::new());
+        let release = InputEvent::button(20, CabinetInput::LeftFlipper, false);
+        assert_eq!(f.retained_releases(), [release]);
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::button(1, CabinetInput::LeftFlipper, true)]
+        );
+        f.forward(&key(true, Scancode::RShift, 25, false));
+        assert_eq!(drain(&mut irx), [release]);
+        assert_eq!(f.stats().input_dropped, 1, "the new press found no room");
+        f.forward(&key(false, Scancode::RShift, 26, false));
+        f.forward(&key(true, Scancode::RShift, 27, false));
+        assert_eq!(
+            drain(&mut irx),
+            [InputEvent::button(26, CabinetInput::RightFlipper, false)]
+        );
+        f.poll(30);
+        assert!(f.retained_releases().is_empty());
+    }
+
+    /// Round 11: coalescing keeps one entry per button and axis (the first,
+    /// with its timestamp and place), so the store never overflows; presses
+    /// and non-zero motion are dropped and counted; with room, nothing is
+    /// retained.
+    #[test]
+    fn retained_store_coalesces_and_never_overflows() {
+        let (itx, mut irx) = channel(1);
+        let (wtx, _wrx) = channel(1);
+        let mut f = EventForwarder::new(itx, wtx);
+        let push = |f: &mut EventForwarder, ev| {
+            EventForwarder::push_input(&mut f.input, &mut f.stats, ev);
+        };
+        push(&mut f, InputEvent::button(1, CabinetInput::Start, true));
+        assert!(f.retained_releases().is_empty(), "room: nothing retained");
+        let mut want = Vec::new();
+        for round in 0..3u64 {
+            for (k, i) in CabinetInput::ALL.into_iter().enumerate() {
+                let ev = InputEvent::button(10 + round * 100 + k as u64, i, false);
+                push(&mut f, ev);
+                push(&mut f, InputEvent::button(ev.timestamp_ns, i, true));
+                if round == 0 {
+                    want.push(ev);
+                }
+            }
+            for (k, a) in CabinetAxis::ALL.into_iter().enumerate() {
+                let ev = InputEvent::axis(50 + round * 100 + k as u64, a, 0.0);
+                push(&mut f, ev);
+                push(&mut f, InputEvent::axis(ev.timestamp_ns, a, 0.5));
+                if round == 0 {
+                    want.push(ev);
+                }
+            }
+        }
+        assert_eq!(f.retained_releases().len(), MAX_RETAINED_RELEASES);
+        assert_eq!(f.retained_releases(), want.as_slice());
+        let presses = 3 * (CabinetInput::COUNT + CabinetAxis::ALL.len()) as u64;
+        assert_eq!(f.stats().input_dropped, presses);
+        let mut got = Vec::new();
+        while let Some(e) = irx.pop() {
+            got.push(e);
+            f.poll(0);
+        }
+        assert_eq!(got[0], InputEvent::button(1, CabinetInput::Start, true));
+        assert_eq!(&got[1..], want.as_slice());
+        assert_eq!(f.stats().input_forwarded, 1 + want.len() as u64);
     }
 }

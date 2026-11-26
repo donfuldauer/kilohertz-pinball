@@ -1441,6 +1441,16 @@ impl CabinetGeometry {
                 gp.width
             )
         })?;
+        // The sheet rests on the body: its projection along the cabinet (at the mount
+        // pitch) cannot exceed the body's outer length (REQ-CAB-005 sanity bound).
+        let proj = f64::from(gp.length) * libm::cos(deg_to_rad(f64::from(m.pitch_deg)));
+        require(proj <= f64::from(b.length), || {
+            format!(
+                "`glass_panel.length` {} (projected {proj:.1} mm at the mount pitch) exceeds the \
+                 cabinet body length {}",
+                gp.length, b.length
+            )
+        })?;
         self.backbox.check(b)?;
         let c = &self.controls;
         for (path, v) in [
@@ -1876,6 +1886,10 @@ mod tests {
             ("mount.offset_x", |g| g.mount.offset_x = f32::NAN),
             ("glass_panel.thickness", |g| g.glass_panel.thickness = 10.0),
             ("glass_panel.width", |g| g.glass_panel.width = 600.0),
+            ("glass_panel.length", |g| {
+                g.mount.pitch_deg = 0.0;
+                g.glass_panel.length = 2000.0;
+            }),
             ("backbox.front_y", |g| g.backbox.front_y = -1.0),
             ("backbox.bottom_z", |g| g.backbox.bottom_z = 10.0),
             ("backbox.speaker_panel_height", |g| {

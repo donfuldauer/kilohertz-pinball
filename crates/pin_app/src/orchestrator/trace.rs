@@ -1512,8 +1512,10 @@ mod tests {
             sim.end_tick(k, &up);
             sim.begin_tick((k + 1) * TICK_NS, &up);
         }
+        // A raise past the press's 0.5 rad base in the energised direction:
+        // it would be recorded if the watch had outlived its deadline.
         let mut moved_later = up;
-        moved_later.flippers[0].angle_rad = 0.1;
+        moved_later.flippers[0].angle_rad = 0.6;
         sim.end_tick(10_000, &moved_later);
         let t = c.collect(0);
         assert_eq!(t.overflows.pending, 3);

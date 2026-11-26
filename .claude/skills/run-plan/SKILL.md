@@ -88,7 +88,7 @@ run the phase gate from PROCESS.md P5 on `main`: the full three-OS CI matrix of 
 `main`, replay hashes, earlier phases' tests, the tick-time benchmark (method in
 `docs/DEVELOPMENT.md`), and any automated gate the phase owns (A1, A2, A3). Green: record a
 phase-gate row in `docs/RUN_LOG.md` with the commit SHA, the CI run and `reviewed <sha>` (the
-gate review's merge commit), committed with the next PR; no git tag (D39). Red: each failure becomes a new issue against the owning area; never
+reviewed head CodeRabbit approved, not the merge commit; PROCESS.md P6 "Gate reviews" step 7), committed with the next PR; no git tag (D39). Red: each failure becomes a new issue against the owning area; never
 pause for a person.
 
 ## 6. When to stop

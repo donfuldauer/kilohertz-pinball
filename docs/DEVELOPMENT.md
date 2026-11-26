@@ -285,8 +285,10 @@ Workflows live in `.github/workflows/`. The single required status check on `mai
 (Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe), `dof-bridge` and `replay-hash-aarch64`
 (qemu-user) only when their paths change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
 `*-cross` jobs), all GPU adapters and coverage. A red `main` stops merges until a fix or revert
-lands (P6 routine step 3). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
-and complete.
+lands (P6 routine step 3). Pull-request runs are cancelled when superseded. An active `main` or dispatch run is never
+cancelled (`cancel-in-progress` is false for those events); a pending one waiting behind it is
+replaced by a newer run in the same group (workflow, ref and event), so only the newest queued
+run is guaranteed to run.
 
 | Workflow / job | Runs | What it does |
 |---|---|---|
@@ -315,7 +317,9 @@ x86_64-linux `state_hash=<16 hex digits>` of the replay-hash fixture at 10 000 t
 macOS arm64), Windows x86_64 and x86_64 macOS under Rosetta 2 must reproduce both; other cross-OS
 hashes (`soak.yml`) stay report-only. A later unit that changes simulation output for every table
 re-baselines the golden and `EXPECTED` once, in its own PR (R3); the assert script strips `\r`, so
-a CRLF checkout compares equal.
+a CRLF checkout compares equal. Updating the hashes does not replace the validation: the same PR
+reruns Gate A1 (`GAMES=1000 scripts/gate_a1.sh`) and Gate A2 (`scripts/gate_a2.sh`), as described
+under "Gate scripts" below.
 
 ## Coverage floors
 
@@ -520,8 +524,10 @@ cargo test -p pin_app --test windowed       # the verdict, parser, property and 
 python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure
 ```
 
-The bundle defaults to `<target>/greybox` after `tables/greybox/build.sh <target>/greybox`;
-set `KP_GREYBOX_BUNDLE` only to use another bundle. The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
+The bundle defaults to `<target>/greybox` (`run.sh` builds it with `tables/greybox/build.sh`);
+both `scripts/windowed/run.sh` and the direct `cargo test` command honour `KP_GREYBOX_BUNDLE` to
+use another bundle (`run.sh` builds that path, resolves a relative one against the repository root,
+and `--print-paths` shows the effective `bundle=`). The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
 `KP_GREYBOX_BUNDLE` (default `<target>/greybox`), `KP_WINDOWED_OUT` (default
 `<target>/windowed`), `KP_WINDOWED_RUN_MS` (default 60000), `KP_WINDOWED_SEED`,
 `KP_WINDOWED_FRAME_MS` (default 125), `KP_PIN_APP`, `LP_NUM_THREADS` (default 2). `run.sh` takes a
@@ -532,8 +538,9 @@ absolute `CARGO_TARGET_DIR` before Cargo runs.
 `latency_trace.csv` (the trace), `summary.txt` (verdicts and summary table), `pin_app_stderr.log`
 (the app's stderr, with the adapter line and the shutdown line), `frame_0_rest.png`,
 `frame_1_left_held.png`, `frame_2_right_held.png`, `frame_3_rest.png`. Every file is from the
-current run: older ones are removed when a run starts, and a failed run still writes
-`pin_app_stderr.log` and a failure `summary.txt`.
+current run: older ones are removed when a run starts (a failed removal leaves a
+`windowed setup: cleanup` summary), and a failed run still writes `pin_app_stderr.log` and a
+failure `summary.txt`.
 
 ## Owned paths and shared files
 

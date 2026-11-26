@@ -196,7 +196,8 @@ fn parse_overflows(rest: &str) -> Result<u64, String> {
 /// Missing headers or trailer lines, a frame row or trailer before the
 /// frame header, a missing, duplicate or unknown overflow counter, a
 /// missing `run_end_ns` line, wrong field counts, non-integer fields, text
-/// after the trailer.
+/// after the trailer, frame ids that are not consecutive from 0 (a gap, a
+/// duplicate, a decrease, or a start other than 0).
 pub fn parse_trace(text: &str) -> Result<Trace, String> {
     #[derive(PartialEq)]
     enum Part {
@@ -262,8 +263,16 @@ pub fn parse_trace(text: &str) -> Result<Trace, String> {
                 if f.len() != 3 {
                     return Err(format!("trace line {n}: frame row needs 3 fields"));
                 }
+                let frame = at(n, int(f[0]))?;
+                let want = t.frames.len() as u64;
+                if frame != want {
+                    return Err(format!(
+                        "trace line {n}: frame id {frame}, expected {want} (frame ids must be \
+                         consecutive from 0)"
+                    ));
+                }
                 t.frames.push(Frame {
-                    frame: at(n, int(f[0]))?,
+                    frame,
                     snap_tick: at(n, int(f[1]))?,
                     present_ns: at(n, ns("present_ns", f[2]))?,
                 });

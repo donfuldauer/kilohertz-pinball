@@ -309,10 +309,9 @@ fn req_vis_002_spinner_quaternion_matches_state() {
                 None => pivot = Some(t.position_m),
                 Some(p) => assert_eq!(p, t.position_m, "pivot moved"),
             }
+            // Every tick is compared, at any angle (no cutoff): `wrap` reduces the
+            // difference modulo 2*pi exactly (f64 `%` is exact).
             let state = f64::from(sim.mech_set().spinner_state(0).expect("spinner").0);
-            if state.abs() >= 20.0 {
-                continue;
-            }
             let (ang, ax) = angle_axis(t.orientation);
             let dot = ax[0] * axis[0] + ax[1] * axis[1] + ax[2] * axis[2];
             if ang > 1e-6 {

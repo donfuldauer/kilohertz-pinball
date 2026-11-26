@@ -9369,3 +9369,91 @@ requiring a new single review PR after a split (contradicts P6 step 3).
 **Rationale.** The review (comment 4704516466) showed that `rolled(-45.0)` (mount height 80 mm, pitch 0) puts the right corners about 283.5 mm below the body bottom, and the wall-top-only check accepted it; a negative pitch can do the same at the rear (height 20 mm at -6.5 degrees gives about -101 mm). Level and mildly negative roll or pitch inside the body stay valid; every preset and fixture is unchanged.
 
 **Alternatives.** A CHANGE_REQUESTS entry (rejected: no contract shape changes). Checking the surface only (rejected: the review asked for both, and the glass check costs nothing; the glass top is never below its surface corner, which a unit test documents). Clamping the corners (rejected: it would hide an invalid mount instead of naming `mount.height`).
+
+## #163 gate round 11 — Gate review boundary is the reviewed head, not the merge commit
+
+**Decision.** The `reviewed <sha>` recorded for a gate is its reviewed head: the exact commit CodeRabbit last reviewed and approved on every review PR (for a split review, the gate-head SHA the area PRs were built from). It is captured before the gate issue PR merges. Only a documentation-only commit adding the gate's RUN_LOG row may sit on top of it at merge time; any other commit, including a merge of `main`, needs another review round. The merge commit into `main` is linked in the RUN_LOG for the record but is never recorded as `reviewed`. The routine re-sync rule (re-sync only when files overlap) is unchanged. pr-watch and work-issue merge only PRs whose base is `main`; review-only PRs are always closed unmerged.
+
+**Rationale.** The gate issue PR merges with a merge commit, so the reviewed head is an ancestor of it. The next gate's cumulative diff from the reviewed head therefore still contains every commit that reached `main` after or during the review, and no commit ever falls into an unreviewed gap. Recording the merge commit silently marked those commits as reviewed. This needs no extra review round, no change to the routine merge rules and no git tags (D39).
+
+**Alternatives.** Make re-syncing the gate branch with `main` and re-reviewing the intervening `main` changes mandatory before recording `reviewed <merge sha>` (rejected: every routine merge during an open gate review would force another CodeRabbit round and can starve the gate, and a merge landing between approval and the gate merge would still slip through). Record the merge commit and list the uncovered commits separately (rejected: the base would no longer be one SHA).
+
+## #163 gate round 11 — Windowed run.sh honours KP_GREYBOX_BUNDLE and fails closed on cleanup
+
+**Decision.** `scripts/windowed/run.sh` takes the bundle from `KP_GREYBOX_BUNDLE` (default `<target>/greybox`; a relative value is resolved against the repository root). It installs its EXIT failure trap, with stage `cleanup`, before it removes the previous artifacts. It removes `summary.txt` first and on its own, and treats any summary as stale until cleanup has finished.
+
+**Rationale.** docs/DEVELOPMENT.md already documented the variable as an override, so the script now honours it. A stale PASS summary must never survive a failed cleanup.
+
+**Alternatives.** Document that only the direct `cargo test` command honours the override (rejected: the documented behaviour was the intended one). Keep installing the trap after cleanup (rejected: a cleanup failure then exits with no summary at all).
+
+## #163 gate round 11 — Glass sheet length bound
+
+**Decision.** `CabinetGeometry::check_consistency` rejects a cabinet when `glass_panel.length * cos(mount.pitch_deg)` is greater than `body.length`, and the error names `glass_panel.length`. The check sits next to the existing width span check.
+
+**Rationale.** It mirrors the existing upper bound on width and does not depend on the table. The sheet rests on the body, so its run along the cabinet cannot exceed the body's outer length. SPEC Appendix A.4 does not imply a tighter bound. All three presets (a 1092 mm sheet in 1308–1315 mm bodies) still pass.
+
+**Alternatives.** `body.length - wall_thickness` (rejected: SPEC does not state it). Using the total playfield pitch (body plus mount) instead of `mount.pitch_deg` (rejected: the brief names the mount pitch, and the difference is under 0.7% at the presets' 6.5 degree pitch). A containment check in `validate` (rejected: it does not depend on the table and would change the containment error order).
+
+## #163 gate round 11 — trace destination vs configuration file
+
+**Decision.** `--latency-trace` is refused at startup with `--latency-trace: <dest> is the configuration file` when the destination is the configuration file (the `--config` value, else `pin_app::ui::default_config_path`), or when the configuration path is one of the trace's sibling temp-file names. When both files exist they are compared by device and inode, so a symlink or hard link counts; when either does not exist yet, they are compared by absolute, lexically normalised path, with the parent directory canonicalised when it exists.
+
+**Rationale.** The shutdown commit renames over the destination and the menu saves the configuration during the run, so either could destroy the other. Refusing before anything is created matches the bundle-alias refusal, and one message keeps the REQ-LAT-003 refusal wording uniform.
+
+**Alternatives.** A separate message for the temp-file case (rejected: rare, and the destination is still the path the user typed). Allowing a hard link to the configuration because the rename only replaces the link (rejected: being conservative matches the `.zip` bundle rule).
+
+## #163 gate round 11 — POSIX ACL fixture required in CI
+
+**Decision.** When the ACL test's fixture `setxattr` fails with `ENOTSUP`, `EOPNOTSUPP`, `EPERM` or `ENODATA`, the test fails if `GITHUB_ACTIONS=true` or `KP_REQUIRE_POSIX_ACL=1`. Otherwise it prints one `SKIPPED ... (set KP_REQUIRE_POSIX_ACL=1 to fail instead)` line, documented as an unsupported environment and not a pass of the property. The nonblocking direct device open (`O_NONBLOCK`, then `fstat` on the descriptor, then clear `O_NONBLOCK`) uses `sdl3::libc`, which sdl3 re-exports unconditionally.
+
+**Rationale.** CI Linux runners provide POSIX ACLs, so the gate must not pass without exercising the property (R10), while developers on filesystems without ACLs can still run the suite. The libc re-export avoids a new dependency.
+
+**Alternatives.** Always fail (rejected: breaks local runs on tmpfs or overlay filesystems). `#[ignore]` (forbidden by R10). A direct `[target.'cfg(unix)'.dependencies] libc` entry in pin_app (cleaner, but adds a manifest change; can follow later).
+
+## #163 gate round 11 — Mip mean tolerance for chained rounding
+
+**Decision.** The display-texture mip shader weights each source texel by its overlap with the destination span (odd sides reduce 2t+1 texels with integer weights t-d, t, d+1; exact 2:1 reductions keep the byte-identical `(sum + 2) / 4` average). The random-size mip property asserts that every reduction step keeps the mean of the level above within 0.5 (exact integers) and that the 1x1 mip is within 0.5 × (number of reductions) of the whole-image average; it does not assert "within 1 byte" for every size up to 65x65.
+
+**Rationale.** Each level rounds to nearest once, so error builds up by up to 0.5 per level. The proptest found a 16x1 image (an exact 2:1 power-of-two chain, which must stay byte-identical to the old shader) whose 1x1 mip is 28 against an average of 26.5625, so a "within 1" assertion would contradict the byte-identity requirement. The per-step check is the property that shows every texel contributes; the old shader fails it on edge-only images.
+
+**Alternatives.** Carry higher precision between levels (rejected: breaks exact 2:1 byte identity and needs a non-Rgba8 intermediate). A fixed looser tolerance (rejected: arbitrary). Assert only the final level (rejected: does not show which step loses texels).
+
+## #163 gate round 11 — Which rejected input events the forwarder retains
+
+**Decision.** The event forwarder retains every button release and every axis-to-0.0 event that the full input ring rejects, whatever produced it (menu toggle, router swap, router flush or a physical key-up), in a fixed store with one entry per cabinet button or axis; the first entry keeps its place and timestamp. Retained events are retried oldest first before any later push and on every poll. While anything is retained, later presses and non-zero motion are dropped and counted in `input_dropped`. `replace_channels` discards the store. `ForwardStats` gains no field; the store is exposed as `EventForwarder::retained_releases()`.
+
+**Rationale.** A rejected release is what leaves an input stuck in the simulation, whatever its origin. Dropping later presses while a release is owed is the only way to guarantee nothing overtakes it without unbounded storage, and the ring is full in that case anyway. After a table swap the old simulation is gone, so its owed releases have no target.
+
+**Alternatives.** Retain only menu- or router-generated releases (rejected: leaves the same stuck input for physical releases). Queue presses too (rejected: unbounded, and changes the documented drop semantics). Keep the store across `replace_channels` (rejected: sends releases for presses the new simulation never saw).
+
+## #163 gate round 11 — Neutral axis events when the input router is replaced
+
+**Decision.** `InputRouter::release_all` sends one neutral event per analog axis that any routed pad or the digital nudge left non-zero, in `CabinetAxis::ALL` order (Plunger, NudgeX, NudgeY, LeftFlipper, RightFlipper), after the pending flush and the button releases, and clears every pad's emitted state.
+
+**Rationale.** This matches the order `MenuController::toggle` uses, is deterministic, keeps the earlier digital-nudge-only output identical, and covers every analog axis the retiring router left non-zero.
+
+**Alternatives.** Plunger and nudge only (rejected: leaves an analog flipper trigger stuck the same way). Digital nudge first, then pad axes (rejected: order would depend on the source, with a risk of duplicate events).
+
+## #163 gate round 11 — Latency trace installs only before the first tick
+
+**Decision.** `SimLoop::set_latency_trace` installs the writer only while `tick() == 0`. A later call drops the writer without installing it, leaves any installed trace untouched and increments `late_trace_refusals()`. It never panics and its signature is unchanged. `set_epoch_ns` after a tick-0 install still restarts the writer at the new epoch.
+
+**Rationale.** The writer seeds its previous-tick marks from the epoch, which is correct only for tick 1. Every caller (the sim thread spawn and the windowed tests) installs at tick 0, so supporting late installs would add state with no user. Refusing keeps REQ-LAT-003/004 rows truthful and keeps the call allocation-free.
+
+**Alternatives.** Seed a late writer with the loop's last tick end and drain marks (rejected: the loop would need the last drain time even without a trace, a clock read on every tick). Panic or `debug_assert!` on a late install (rejected by the brief). Return a `Result` (rejected: changes the signature and every caller).
+
+## #163 gate round 11 — Captive Newton balls in the snapshot
+
+**Decision.** `Simulation::publish_snapshot` publishes every captive Newton ball as an ordinary `balls` entry, after the free balls (ascending handle), in `[[mechs]]` order and chain ball index, truncated at `MAX_BALLS`; each dropped captive counts once per tick in `SimCounters::captive_balls_unpublished` (saturating). Each entry takes its position from the path, velocity = unit path tangent × path speed, the chain's profile and the mech's `layer`, identity orientation and zero angular velocity (captive spin and orientation are not modelled). A captive with a non-finite position or velocity is skipped. `balls_in_play` and `HostView::balls_in_play` stay free-only, so `balls()[..balls_in_play()]` are exactly the free balls. The publish tests check the captive against the path start to 1e-6 m at load; after load they require the published position to equal the solver's chain position exactly, with y within 1e-3 m, because the captive settles about 2e-5 m along the path under the playfield pitch.
+
+**Rationale.** SPEC Appendix A and DECISIONS "#88 KP-008 — Newton captive ball range" require captive balls as ordinary `balls` entries; without them no consumer, renderer included, sees a collidable ball (reproduced on a one-Newton fixture and on greybox, sky_deck and apex_circuit). Free balls first keeps the free-ball prefix stable. The snapshot is not hashed, so the replay digest (`state_hash=25097c21c2c3adc1`) is unchanged.
+
+**Alternatives.** Change the contract so the cradle slot carries the ball (rejected: the slot holds only a swing angle, and #88 rejected extra slots). Derive spin from rolling (rejected: there is no orientation state to match). Count captives in `balls_in_play` (rejected: rules end a ball on `balls_in_play() == 0`). Count one per tick instead of one per dropped captive (rejected: less informative; equal for one chain). Note for KP-025/KP-027: the Newton assembly mesh must not contain the ball, or it is drawn twice.
+
+## #163 gate round 11 — Optional `[art]` in an unpreset cabinet.toml
+
+**Decision.** The round 11 finding that a cabinet.toml without `preset` must give every key, `[art]` included, is rejected for code. The schema and the acceptance test keep treating an absent `[art]` table as an empty art map. The SPEC wording is raised as a P8 erratum in `docs/HUMAN_QUEUE.md` (`[KP-009-art-optional]`): add "`[art]` may be omitted; absent means no entries" to Appendix A.4.
+
+**Rationale.** A.4 defines `[art]` entries as additive, so an empty map and an absent table mean the same thing. Requiring the table would break every committed cabinet that has no art and would add nothing. SPEC edits are owner-only (P8), so the wording waits for the owner, and the code follows the intent until then.
+
+**Alternatives.** Require `[art]` in unpreset cabinets (rejected: breaks valid cabinets for no behavioural gain). Edit SPEC directly (rejected: owner-only, P8).

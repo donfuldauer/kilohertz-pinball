@@ -5,9 +5,12 @@
 //! chain. Mip level 0 is drawn by the existing renderer
 //! ([`BackglassRenderer`] / [`ScoreRenderer`]) over the whole texture, exactly
 //! as `render_*_to_image` draws an offscreen image of the same size; levels
-//! 1.. are a 2 × 2 box average of the level above, computed on the stored
-//! (display-encoded) bytes with integer round-to-nearest. A redraw happens
-//! only when the content changed (DMD frame, LCD draw list, lamp levels per
+//! 1.. are an area-weighted average of the level above (the 2 × 2 box
+//! average for an exact 2:1 reduction; on an odd side every texel
+//! contributes by its overlap, so the 1 × 1 level is the whole-image
+//! average), computed on the stored (display-encoded) bytes in integers with
+//! round-to-nearest. A redraw happens only when the content changed (DMD
+//! frame, LCD draw list, lamp levels per
 //! [`BackglassRenderer::needs_redraw`]) or after `mark_dirty`; it redraws
 //! level 0 and regenerates every mip in one submit. The GPU texture object is
 //! created once and kept for the life of the display, so a material bound to
@@ -53,9 +56,29 @@ pub(super) fn check_texture_size(width: u32, height: u32, max: u32) -> Result<()
     Ok(())
 }
 
-/// 2 × 2 box-filter mip step: one fullscreen triangle per level, reading the
-/// level above with `textureLoad` (edge texels clamped for odd sizes) and
-/// averaging the bytes as integers, rounded to nearest.
+/// Area-weighted mip step: one fullscreen triangle per level, reading the
+/// level above with `textureLoad` and averaging its bytes with integer
+/// weights, rounded to nearest (halves round up).
+///
+/// Per axis, a source side `s` maps to `t = max(1, s / 2)` destination
+/// texels; destination texel `d` covers the source span
+/// `[d * s / t, (d + 1) * s / t)` and each source texel is weighted by its
+/// overlap with that span:
+///
+/// * `s` even (an exact 2:1 axis): texels `2d, 2d + 1`, weights `1, 1` of 2;
+/// * `s` odd and above 1: texels `2d, 2d + 1, 2d + 2`, weights
+///   `t - d, t, d + 1` of `s` (every texel of the axis contributes; with
+///   `s = 3` the one destination texel covers the whole axis);
+/// * `s == 1`: texel 0, weight 1 of 1.
+///
+/// The two axes combine as the product of their weights over the divisor
+/// `D = Dx * Dy`; the result is `floor((S + floor(D / 2)) / D)` of the
+/// weighted byte sum `S`, so an exact 2 × 2 reduction is
+/// `(sum + 2) / 4`, the plain four-texel average. `S` can exceed 32 bits on
+/// large odd sides, so it is carried as quotient and remainder per row
+/// (every intermediate stays below `2.5 * D`, within `u32` for sides up to
+/// 32 768). All arithmetic on bytes is integer, so the result is the same
+/// on every adapter.
 const MIP_WGSL: &str = r#"
 @group(0) @binding(0) var src: texture_2d<f32>;
 
@@ -66,20 +89,53 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-fn load_bytes(p: vec2<i32>, last: vec2<i32>) -> vec4<u32> {
-    let c = textureLoad(src, min(p, last), 0);
+fn load_bytes(p: vec2<u32>, last: vec2<u32>) -> vec4<u32> {
+    let c = textureLoad(src, vec2<i32>(min(p, last)), 0);
     return vec4<u32>(round(clamp(c, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0));
+}
+
+// Weights of the source texels 2d, 2d + 1, 2d + 2 for destination texel d
+// of a source side s, and their divisor (w).
+fn axis_weights(s: u32, d: u32) -> vec4<u32> {
+    if (s == 1u) {
+        return vec4<u32>(1u, 0u, 0u, 1u);
+    }
+    if ((s & 1u) == 0u) {
+        return vec4<u32>(1u, 1u, 0u, 2u);
+    }
+    let t = s / 2u;
+    return vec4<u32>(t - d, t, d + 1u, s);
 }
 
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let last = vec2<i32>(textureDimensions(src)) - vec2<i32>(1, 1);
-    let base = vec2<i32>(floor(pos.xy)) * 2;
-    let sum = load_bytes(base, last)
-        + load_bytes(base + vec2<i32>(1, 0), last)
-        + load_bytes(base + vec2<i32>(0, 1), last)
-        + load_bytes(base + vec2<i32>(1, 1), last);
-    let avg = (sum + vec4<u32>(2u)) / 4u;
+    let size = textureDimensions(src);
+    let last = size - vec2<u32>(1u, 1u);
+    let d = vec2<u32>(floor(pos.xy));
+    let base = d * 2u;
+    let wx = axis_weights(size.x, d.x);
+    let wy = axis_weights(size.y, d.y);
+    // S = dx * a + b with a = sum wy * (row / dx), b = sum wy * (row % dx).
+    var a = vec4<u32>(0u);
+    var b = vec4<u32>(0u);
+    for (var j = 0u; j < 3u; j = j + 1u) {
+        let wyj = wy[j];
+        if (wyj == 0u) {
+            continue;
+        }
+        var row = vec4<u32>(0u);
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            let wxi = wx[i];
+            if (wxi == 0u) {
+                continue;
+            }
+            row = row + wxi * load_bytes(base + vec2<u32>(i, j), last);
+        }
+        a = a + wyj * (row / wx.w);
+        b = b + wyj * (row % wx.w);
+    }
+    let den = wx.w * wy.w;
+    let avg = a / wy.w + (wx.w * (a % wy.w) + b + den / 2u) / den;
     return vec4<f32>(avg) / 255.0;
 }
 "#;
@@ -88,6 +144,73 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 #[cfg(test)]
 pub(super) fn mip_shader_source() -> &'static str {
     MIP_WGSL
+}
+
+/// Per-axis weights `[w0, w1, w2, divisor]` of the source texels `2d`,
+/// `2d + 1`, `2d + 2` for destination texel `d` of a source side `s`, as in
+/// `axis_weights` of [`MIP_WGSL`].
+#[cfg(test)]
+pub(super) fn mip_axis_weights(s: u32, d: u32) -> [u32; 4] {
+    if s == 1 {
+        [1, 0, 0, 1]
+    } else if s.is_multiple_of(2) {
+        [1, 1, 0, 2]
+    } else {
+        let t = s / 2;
+        [t - d, t, d + 1, s]
+    }
+}
+
+/// CPU reference of one step of [`MIP_WGSL`]: the next level of the
+/// `w × h` level `src` (row-major texels), with its size
+/// `(max(1, w / 2), max(1, h / 2))`. Each byte is the area-weighted sum
+/// `S` over the divisor `D` of [`mip_axis_weights`], computed exactly in
+/// 64 bits and rounded to nearest with halves up: `(S + D / 2) / D`.
+#[cfg(test)]
+pub(super) fn mip_reference(src: &[[u8; 4]], w: u32, h: u32) -> (Vec<[u8; 4]>, u32, u32) {
+    assert_eq!(src.len(), (w as usize) * (h as usize), "mip_reference size");
+    let (w2, h2) = ((w / 2).max(1), (h / 2).max(1));
+    let at = |x: u32, y: u32| src[(y.min(h - 1) * w + x.min(w - 1)) as usize];
+    let mut out = Vec::with_capacity((w2 * h2) as usize);
+    for y in 0..h2 {
+        let wy = mip_axis_weights(h, y);
+        for x in 0..w2 {
+            let wx = mip_axis_weights(w, x);
+            let den = u64::from(wx[3]) * u64::from(wy[3]);
+            let mut texel = [0u8; 4];
+            for (c, out_c) in texel.iter_mut().enumerate() {
+                let mut sum = 0u64;
+                for j in 0..3 {
+                    for i in 0..3 {
+                        let weight = u64::from(wx[i as usize]) * u64::from(wy[j as usize]);
+                        sum += weight * u64::from(at(2 * x + i, 2 * y + j)[c]);
+                    }
+                }
+                *out_c = u8::try_from((sum + den / 2) / den).expect("weighted mean of bytes");
+            }
+            out.push(texel);
+        }
+    }
+    (out, w2, h2)
+}
+
+/// The final division of [`MIP_WGSL`] in its 32-bit form: given the weighted
+/// row sums `rows[j] = (wy_j, sum_i wx_i * byte_ij)` and the divisors
+/// `dx`, `dy`, returns `(S + D / 2) / D` for `S = sum_j wy_j * row_j`,
+/// `D = dx * dy`, or `None` if any intermediate overflows `u32`.
+#[cfg(test)]
+pub(super) fn mip_split_divide(rows: &[(u32, u32)], dx: u32, dy: u32) -> Option<u32> {
+    let (mut a, mut b) = (0u32, 0u32);
+    for &(wy, row) in rows {
+        a = a.checked_add(wy.checked_mul(row / dx)?)?;
+        b = b.checked_add(wy.checked_mul(row % dx)?)?;
+    }
+    let den = dx.checked_mul(dy)?;
+    let rest = dx
+        .checked_mul(a % dy)?
+        .checked_add(b)?
+        .checked_add(den / 2)?;
+    Some(a / dy + rest / den)
 }
 
 /// The texture, its views and the mip generator shared by both displays.

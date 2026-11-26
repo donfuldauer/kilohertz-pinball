@@ -21,7 +21,10 @@ configured; `docs/PROCESS.md` P1). Never sleep-poll in a foreground loop.
   `gh pr view --json number,url,headRefName,headRefOid`).
 - Whether to merge once ready (`work-issue` §7 merges automatically when all P6 merge conditions
   hold; standalone invocations stop and report once all checks are green and, for a gate,
-  CodeRabbit approved, unless the user explicitly asked to merge).
+  CodeRabbit approved, unless the user explicitly asked to merge). A merge only ever applies to a
+  `<P>` whose base is `main` (`gh pr view <P> --json baseRefName` is `main`); a review-only PR
+  (base `review-base/<gate>`: a step-2 gate review PR, a `review/<gate>-missed` backstop PR, or an
+  area PR) is never merged by `pr-watch`, whatever was requested (§2).
 
 ## 1. Inspect the PR state
 
@@ -66,7 +69,10 @@ threads:
        findings, threads and approval are read from it as `<R>`. Fixes land on `main` through
        ordinary PRs (watched as routine PRs) that are then merged into the review branch; push
        nothing to the review branch otherwise. The last reviewed head is recorded as
-       `reviewed <sha>`, and no phase-gate row is recorded until the review is approved.
+       `reviewed <sha>` (the commit CodeRabbit last reviewed and approved, never a later `main`
+       commit; P6 "Review PR" step 6), and no phase-gate row is recorded until the review is
+       approved. The backstop review PR is never merged (§2): once approved, it is closed
+       unmerged through the P6 step 7 close-out.
        **Split missed gate** (P6 "Review PR" step 3): when the backstop review was split into area
        PRs (heads `review/<gate>-<area>`, base `review-base/<gate>`), there is no gate issue PR
        and no single review PR. `<P>`'s role is the gate head: the `main` commit the backstop was
@@ -162,8 +168,16 @@ You are **done** when all applicable conditions hold on the current `headRefOid`
 
 When all applicable conditions hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
-- If invoked standalone and the user explicitly asked to merge, confirm every `docs/PROCESS.md`
-  P6 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
+- If `<P>`'s base is not `main` (`gh pr view <P> --json baseRefName`; for example a
+  `review/<gate>-missed` backstop PR or a split missed gate's area PRs, base `review-base/<gate>`),
+  never merge it, even on an explicit request: report the approval and apply the review-only
+  close-out of `docs/PROCESS.md` P6 "Gate reviews" step 7 (close every review PR of the gate
+  without merging, with a comment; delete `review-base/<gate>` and the `review/<gate>-*`
+  branches, leaving them if the proxy refuses; for a missed gate, record
+  `reviewed <reviewed head sha>`, the commit CodeRabbit last approved, and the phase-gate row
+  once the P5 phase gate on `main` is green, with the next PR).
+- If invoked standalone, `<P>`'s base is `main`, and the user explicitly asked to merge, confirm
+  every `docs/PROCESS.md` P6 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
   `headRefOid` (test or conformance suites alone are not a substitute), dispositions for every
   CodeRabbit review-body finding without an inline thread (if reviewed), `main`'s last push CI
   green, and the branch up to date with `main` where required — and run
@@ -316,4 +330,5 @@ your current session:
 
 Sleep-poll in a foreground loop; resolve a thread without a disposition reply; resolve an unfixed
 R11 security issue or a verified unfixed correctness defect; ask a person to resolve a review
-thread; skip, ignore, or weaken a test to get CI green; push directly to `main`.
+thread; skip, ignore, or weaken a test to get CI green; push directly to `main`; merge a PR whose
+base is not `main` (a review-only PR is closed unmerged).

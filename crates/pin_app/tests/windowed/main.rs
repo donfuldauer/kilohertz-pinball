@@ -26,7 +26,9 @@ use proptest::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
-use verdict::{Frame, Params, Row, Shutdown, Trace, evaluate, parse_shutdown, parse_trace};
+use verdict::{
+    Frame, Params, Row, Shutdown, Trace, evaluate, evaluate_text, parse_shutdown, parse_trace,
+};
 
 // ---------------------------------------------------------------------------
 // Allocation guard (armed per thread).
@@ -683,6 +685,72 @@ fn req_lat_003_parser_is_strict_about_headers_and_trailer() {
     let empty = c.collect(1).to_csv();
     let t = parse_trace(&empty).unwrap();
     assert!(t.rows.is_empty() && t.frames.is_empty());
+}
+
+/// A trace text with no events and the given frame ids (present times 1 ms
+/// apart).
+fn trace_with_frame_ids(ids: &[u64]) -> String {
+    let mut t = format!("{}\n\n{}\n", verdict::EVENT_HEADER, verdict::FRAME_HEADER);
+    for (k, id) in ids.iter().enumerate() {
+        t.push_str(&format!("{id},{},{}\n", k * 10, 1_000_000 * (k + 1)));
+    }
+    t.push_str("# overflows: input=0 move=0 frame=0 pending=0\n# run_end_ns=99000000\n");
+    t
+}
+
+/// REQ-LAT-001 check b (gate 30 round 11): frame ids must be consecutive
+/// from 0. A gap, a start at 1, a duplicate and a decreasing id are
+/// rejected naming the line, the expected and the found id; an empty table
+/// and two concatenated engine traces (second engine offset by the first's
+/// last frame + 1) stay valid. The review's case (frames 0, 2, 3, 4 with
+/// frame 2 meeting the deadline and the raise at frame 4, which check b
+/// would pass as raw 4 less one allowance of two frames) never reaches
+/// check b.
+#[test]
+fn req_lat_001_parse_trace_rejects_non_consecutive_frame_ids() {
+    for (ids, line, want, found) in [
+        (&[0u64, 1, 3][..], 6, 2, 3),
+        (&[1, 2, 3][..], 4, 0, 1),
+        (&[0, 1, 1][..], 6, 2, 1),
+        (&[0, 1, 2, 1][..], 7, 3, 1),
+        (&[0, 2, 3, 4][..], 5, 1, 2),
+    ] {
+        let e = parse_trace(&trace_with_frame_ids(ids)).unwrap_err();
+        let msg = format!("trace line {line}: frame id {found}, expected {want}");
+        assert!(e.starts_with(&msg), "{ids:?}: {e}");
+    }
+    assert!(
+        parse_trace(&trace_with_frame_ids(&[]))
+            .unwrap()
+            .frames
+            .is_empty()
+    );
+    assert_eq!(
+        parse_trace(&trace_with_frame_ids(&[0, 1, 2, 3, 4, 5]))
+            .unwrap()
+            .frames
+            .len(),
+        6
+    );
+    // Two engine traces joined by the app: the second's ids continue.
+    let second: Vec<u64> = (0..3).map(|i| 3 + i).collect();
+    let first_ids = [0u64, 1, 2];
+    let both: Vec<u64> = first_ids.iter().copied().chain(second).collect();
+    assert_eq!(
+        parse_trace(&trace_with_frame_ids(&both))
+            .unwrap()
+            .frames
+            .len(),
+        6
+    );
+    // The review's scenario through the whole text path: unreadable.
+    let e = evaluate_text(
+        &trace_with_frame_ids(&[0, 2, 3, 4]),
+        "pin_app: 1000 sim ticks (0 dropped), 4 frames, input dropped 0, 0 haptic events\n",
+        &Params::default(),
+    )
+    .unwrap_err();
+    assert!(e.contains("frame id 2, expected 1"), "{e}");
 }
 
 /// REQ-LAT-001 check b: a press whose bat never moved, or that no frame
@@ -2175,7 +2243,7 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
         .recv_timeout(Duration::from_secs(60))
         .expect("the reader reached its blocking read");
     let clock = Cell::new(Duration::ZERO);
-    let done = finish_capture(
+    let (done, text) = finish_capture(
         reader,
         &log,
         STDERR_DRAIN_TIMEOUT,
@@ -2184,7 +2252,8 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
     );
     assert!(!done, "a pipe held open is not waited for");
     assert_eq!(clock.get(), STDERR_DRAIN_TIMEOUT);
-    let text = log.lock().unwrap().clone();
+    // The note is on the returned snapshot, not on the live buffer.
+    assert_eq!(*log.lock().unwrap(), "line 1\nline 2\n");
     assert_eq!(
         text,
         format!(
@@ -2203,7 +2272,7 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
         std::io::Cursor::new(b"a\npin_app: render on x\nlast".to_vec()),
         Arc::clone(&log),
     );
-    let done = finish_capture(
+    let (done, text) = finish_capture(
         reader,
         &log,
         STDERR_DRAIN_TIMEOUT,
@@ -2211,7 +2280,162 @@ fn req_lat_003_harness_stderr_drain_is_bounded() {
         &mut std::thread::yield_now,
     );
     assert!(done);
-    assert_eq!(*log.lock().unwrap(), "a\npin_app: render on x\nlast\n");
+    assert_eq!(text, "a\npin_app: render on x\nlast\n");
+    assert_eq!(*log.lock().unwrap(), text);
+}
+
+/// A reader that yields `first`, blocks until `hold` is dropped, then
+/// yields `late` and ends (a child that writes after the drain gave up).
+struct LateReader {
+    first: Option<&'static [u8]>,
+    late: Option<&'static [u8]>,
+    reached: std::sync::mpsc::Sender<()>,
+    hold: std::sync::mpsc::Receiver<()>,
+}
+
+impl std::io::Read for LateReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(b) = self.first.take() {
+            buf[..b.len()].copy_from_slice(b);
+            return Ok(b.len());
+        }
+        if self.late.is_some() {
+            let _ = self.reached.send(());
+            let _ = self.hold.recv();
+        }
+        match self.late.take() {
+            Some(b) => {
+                buf[..b.len()].copy_from_slice(b);
+                Ok(b.len())
+            }
+            None => Ok(0),
+        }
+    }
+}
+
+/// REQ-LAT-003 harness (gate 30 round 11): after a drain timeout the saved
+/// snapshot is a copy taken under the lock with the note appended to the
+/// copy; a line the detached reader appends afterwards reaches the live
+/// buffer only, so the saved file ends with the note.
+#[test]
+fn req_lat_003_harness_timeout_snapshot_excludes_late_reader_lines() {
+    use driver::{STDERR_DRAIN_TIMEOUT, capture_lines, drain_timeout_note, finish_capture};
+    use std::sync::{Arc, Mutex, mpsc};
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (hold_tx, hold_rx) = mpsc::channel::<()>();
+    let log = Arc::new(Mutex::new(String::new()));
+    let reader = capture_lines(
+        LateReader {
+            first: Some(b"early\n"),
+            late: Some(b"late\n"),
+            reached: reached_tx,
+            hold: hold_rx,
+        },
+        Arc::clone(&log),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the reader reached its blocking read");
+    let clock = Cell::new(Duration::ZERO);
+    let (done, saved) = finish_capture(
+        reader,
+        &log,
+        STDERR_DRAIN_TIMEOUT,
+        &mut || clock.get(),
+        &mut || clock.set(clock.get() + Duration::from_millis(5)),
+    );
+    assert!(!done);
+    let want = format!("early\n{}", drain_timeout_note(STDERR_DRAIN_TIMEOUT));
+    assert_eq!(saved, want);
+    // The detached reader now appends its line (failsafe bound, not a
+    // measurement).
+    drop(hold_tx);
+    let start = std::time::Instant::now();
+    while !log.lock().unwrap().contains("late\n") {
+        assert!(start.elapsed() < Duration::from_secs(60), "reader stuck");
+        std::thread::yield_now();
+    }
+    assert_eq!(saved, want, "the saved snapshot is a copy");
+    assert!(saved.ends_with(&drain_timeout_note(STDERR_DRAIN_TIMEOUT)));
+    assert!(!saved.contains("late"));
+}
+
+/// REQ-LAT-001: a down that wakes on time keeps the planned 375 ms hold, a
+/// down that wakes 200 ms late keeps the same hold (the slip grows by the
+/// measured lateness after the sleep), and a step that is already late
+/// grows the slip by `now - due`, exactly once per step.
+#[test]
+fn req_lat_001_harness_oversleep_shifts_later_steps() {
+    use driver::schedule_step;
+    let plan = [Duration::from_millis(1000), Duration::from_millis(1375)];
+    let run = |oversleep: Duration| {
+        let clock = Cell::new(Duration::ZERO);
+        let first = Cell::new(true);
+        let mut slip = Duration::ZERO;
+        let mut sent = Vec::new();
+        for at in plan {
+            schedule_step(at, &mut slip, &mut || clock.get(), &mut |d| {
+                let extra = if first.replace(false) {
+                    oversleep
+                } else {
+                    Duration::ZERO
+                };
+                clock.set(clock.get() + d + extra);
+            });
+            sent.push(clock.get());
+        }
+        (sent, slip)
+    };
+    let (sent, slip) = run(Duration::ZERO);
+    assert_eq!(sent[1] - sent[0], Duration::from_millis(375));
+    assert_eq!(slip, Duration::ZERO);
+    let (sent, slip) = run(Duration::from_millis(200));
+    assert_eq!(sent[0], Duration::from_millis(1200));
+    assert_eq!(sent[1] - sent[0], Duration::from_millis(375));
+    assert_eq!(slip, Duration::from_millis(200));
+    // A late step (no sleep): slip grows by now - due, once.
+    let clock = Cell::new(Duration::from_millis(1300));
+    let mut slip = Duration::ZERO;
+    let slept = Cell::new(false);
+    schedule_step(
+        Duration::from_millis(1000),
+        &mut slip,
+        &mut || clock.get(),
+        &mut |_| slept.set(true),
+    );
+    assert!(!slept.get());
+    assert_eq!(slip, Duration::from_millis(300));
+}
+
+/// REQ-LAT-003 harness (gate 30 round 11): the verdict summary is written
+/// through a function that reports the failure with the path (a parent that
+/// is a regular file cannot be written under), and the good case writes
+/// exactly the text.
+#[test]
+fn req_lat_003_harness_summary_write_failure_is_reported() {
+    let dir = driver_dir("summary_write");
+    std::fs::create_dir_all(&dir).unwrap();
+    write_summary(&dir, "verdict: PASS\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("summary.txt")).unwrap(),
+        "verdict: PASS\n"
+    );
+    let blocker = dir.join("not_a_dir");
+    std::fs::write(&blocker, "x").unwrap();
+    let e = write_summary(&blocker, "verdict: PASS\n").unwrap_err();
+    assert!(
+        e.contains("summary.txt") && e.contains("not_a_dir") && e.contains("writing"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Writes the verdict summary to `<out_dir>/summary.txt`; the error names
+/// the full path, so a full disk fails the test instead of leaving the
+/// artifacts without a verdict.
+fn write_summary(out_dir: &std::path::Path, summary: &str) -> Result<(), String> {
+    let path = out_dir.join("summary.txt");
+    std::fs::write(&path, summary).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 /// The windowed driver's artifact directory for `tag` (emptied first).
@@ -2369,8 +2593,8 @@ fn windowed_latency_60s() {
         out.exit,
         out.screenshots
     );
-    let _ = std::fs::write(cfg.out_dir.join("summary.txt"), &summary);
     println!("{summary}");
+    write_summary(&cfg.out_dir, &summary).unwrap_or_else(|e| panic!("summary not saved: {e}"));
     assert!(
         out.exit.success(),
         "pin_app exited with {}\n{}",

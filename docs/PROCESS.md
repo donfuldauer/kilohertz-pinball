@@ -516,7 +516,10 @@ review opens now:
 push `review/<gate>-missed` at that merge commit on `main` and open it against
 `review-base/<gate>` (step 1) as step 2 describes; there is no gate issue PR left to merge, fixes
 land on `main` through ordinary PRs that are then merged into the review branch, and the review
-PR's last reviewed head is recorded as `reviewed <sha>`. The phase-gate row is not recorded
+PR's reviewed head (the commit CodeRabbit last reviewed and approved, "Review PR" step 6; for a
+split review, the gate-head SHA the area PRs record as built-from) is recorded as
+`reviewed <reviewed head sha>`, never a later `main` commit. The review PR is never merged; it
+is closed as step 7 describes. The phase-gate row is not recorded
 until that review is approved. Gate reviews still run one at a time (below).
 
 **Review PR.** A gate review is one review-only pull request whose diff is everything merged since
@@ -524,9 +527,12 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
 `docs/RUN_LOG.md`:
 
 1. **Base.** The base commit is the `reviewed <sha>` recorded in the newest gate-review row of
-   `docs/RUN_LOG.md` (if the latest gate's merge is not recorded yet, the merge commit of that
-   gate issue's PR); if there is none, it is `4113e42` (the last commit of the former per-PR
-   review rhythm). Push a branch `review-base/<gate>` at that commit.
+   `docs/RUN_LOG.md`, which is that gate's **reviewed head** (step 6), never a merge commit. If
+   the latest gate's reviewed head is not recorded yet, use the reviewed head of that gate's
+   review: the commit CodeRabbit's approving review covered on its review PR (`commit.oid` of
+   that review, which is the review PR's `headRefOid` at approval), or, for a split review, the
+   gate-head SHA its area PRs record as built-from. If there is none, it is `4113e42` (the last
+   commit of the former per-PR review rhythm). Push a branch `review-base/<gate>` at that commit.
 2. **Open.** Once the gate issue's own PR passes its verifier, open a second PR with the gate
    issue's branch as head and `review-base/<gate>` as base, titled
    `Gate review: <phase or milestone> (do not merge)`, whose body links the gate issue's PR, lists
@@ -605,7 +611,16 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    milestone, its exit criteria) pass on the candidate head. The step 2 review PR's head is the
    candidate head itself. An area PR (step 3) is reviewed on its own head: the condition holds
    when every area PR records the candidate head as the gate-head SHA it was built from and is
-   approved on its own head; the superseded oversized review PR is excluded. Post-merge, the P5
+   approved on its own head; the superseded oversized review PR is excluded. The candidate head
+   must be the exact commit CodeRabbit last reviewed and approved on every review PR (for area
+   PRs, the gate-head SHA they were built from); that commit is the gate's **reviewed head**.
+   The only commit allowed on top of it is the documentation-only commit that adds the gate's
+   `docs/RUN_LOG.md` row (step 7); any other commit pushed after the last review, a merge of
+   `main` into the gate branch included, needs another review round first. When the RUN_LOG-row
+   commit follows the reviewed head, the reviewed head stays the last commit CodeRabbit reviewed,
+   and the RUN_LOG-row commit (like the merge commit into `main` and everything that reached
+   `main` through other PRs after the reviewed head) falls inside the next gate review's
+   cumulative diff. Post-merge, the P5
    phase gate on `main` (tests on all three operating systems, replay hashes, earlier phases'
    tests, the tick-time benchmark) confirms the phase; its row goes in `docs/RUN_LOG.md` with the
    next PR. A red post-merge phase gate becomes new issues (P7) and never reverts the merge by
@@ -615,8 +630,12 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    `review/<gate>-*` branches (if the session proxy refuses branch deletion, leave them; they are
    inert). The gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues) is committed
    on the gate branch before the final verifier run; the next PR's RUN_LOG row records
-   `reviewed <merge sha>` for the gate, which is the base of the next gate review. Nothing is
-   pushed to `main` directly. Then unblock dependents.
+   `reviewed <reviewed head sha>` for the gate (the reviewed head of step 6, captured before the
+   merge; it is the base of the next gate review) and links the gate issue PR's merge commit
+   separately for the record. The merge commit is never recorded as `reviewed`: commits that
+   reached `main` after the reviewed head were not covered by this review, and starting the next
+   review at the reviewed head (an ancestor of the merge commit) keeps them in its diff. Nothing
+   is pushed to `main` directly. Then unblock dependents.
 
 Gate reviews never run in parallel (a missed-gate review from the backstop above included): a
 second gate that becomes ready while one is open waits for the first to close out, so its base is

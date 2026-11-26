@@ -58,7 +58,9 @@
 //!   temp file is created before anything starts (an unwritable path fails the run with
 //!   `pin_app: --latency-trace: <error>`, a value starting with `--` with
 //!   `pin_app: --latency-trace needs a path`, and the `--table` bundle file
-//!   itself is refused unmodified), written on the main thread after the
+//!   itself and the configuration file (`--config` or the default, also
+//!   before its first save: `--latency-trace: <path> is the configuration
+//!   file`) are refused unmodified), written on the main thread after the
 //!   threads were joined and renamed over the path (the path is never
 //!   truncated, so a hard-linked bundle is safe), with the run's end on the SDL clock read when the
 //!   run loop ended (`# run_end_ns=`), and summarised after the shutdown lines as
@@ -72,8 +74,8 @@
 //!   selected table bundle`) and not loaded, and the trace is then not
 //!   published at shutdown (`pin_app: --latency-trace: <path> ...: the
 //!   trace was not published`; the run fails). While tracing, the main thread prints `pin_app: latency
-//!   trace: first frame presented` once the first frame was presented (the
-//!   windowed harness waits for it). Without the flag nothing changes.
+//!   trace: first frame presented` once any engine of the run presented
+//!   its first playfield frame (the windowed harness waits for it). Without the flag nothing changes.
 //! * `--config <path>` (REQ-VIEW-006): the `config.toml` to load at start
 //!   and save on every menu change; default `config.toml` in SDL's per-user
 //!   data directory (`pin_app::ui::default_config_path`). `Esc` or the
@@ -108,7 +110,7 @@ use pin_app::platform::{
 use pin_app::profiler::{Profiler, ProfilerReader, hud_lines};
 use pin_app::ui::{
     AppConfig, AppSetting, MenuController, MenuShare, TableLoadState, browser_dir,
-    changed_settings, keyboard_router,
+    changed_settings, config_path_arg, default_config_path, keyboard_router,
 };
 use pin_audio::mixer::MixerConfig;
 use pin_audio::ssf::SsfConfig;
@@ -592,17 +594,178 @@ fn finish_trace(
     None
 }
 
+/// The `config.toml` path of this run (REQ-VIEW-006): the `--config <file>`
+/// value, else [`pin_app::ui::default_config_path`]. A malformed
+/// `--config` is the same error `MenuController::for_app` reports.
+fn config_path(args: &[String]) -> Result<PathBuf, String> {
+    Ok(match config_path_arg(args)? {
+        Some(p) => p,
+        None => default_config_path().0,
+    })
+}
+
+/// `path` made absolute (a relative path is resolved against the current
+/// directory) and lexically normalised without touching the filesystem
+/// (`.` dropped, `..` folded into its parent; `..` at the root stays at the
+/// root), then, when the normalised parent directory exists, the parent
+/// replaced by its canonical form (so a symlinked parent directory resolves
+/// to its target). The file name itself is never resolved. For comparing
+/// paths that may not exist yet ([`is_config_path`]).
+fn normalised_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut out = PathBuf::new();
+    for c in abs.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Never above the root (`pop` keeps the root component).
+                if out.parent().is_some() {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if let (Some(parent), Some(name)) = (out.parent(), out.file_name())
+        && let Ok(p) = std::fs::canonicalize(parent)
+    {
+        return p.join(name);
+    }
+    out
+}
+
+/// Whether `a` and `b` name the same file (REQ-LAT-003, gate 163 round 11,
+/// review comment 4705691334): when both exist, the same file
+/// ([`same_file`]: device and inode on Unix, so a symlink or hard link to
+/// the other counts); when either does not exist (yet), the same
+/// [`normalised_path`].
+fn is_config_path(a: &Path, a_meta: Option<&std::fs::Metadata>, b: &Path) -> bool {
+    match (a_meta, std::fs::metadata(b).ok()) {
+        (Some(am), Some(bm)) => same_file(am, a, &bm, b),
+        _ => normalised_path(a) == normalised_path(b),
+    }
+}
+
+/// The refusal when the `--latency-trace` destination `dest` (metadata
+/// `dest_meta`, `None` when it does not exist) would overwrite or replace
+/// the configuration file `config` (REQ-LAT-003, REQ-VIEW-006; gate 163
+/// round 11, review comment 4705691334): `dest` is the configuration file
+/// ([`is_config_path`]; also a path that does not exist yet, so a first
+/// save is protected too), or `config` is one of the trace's sibling
+/// temp-file names (`.kp-trace.<pid>.<n>.tmp` beside `dest`, which the
+/// commit would move away). The text is `--latency-trace: <dest> is the
+/// configuration file`. `None` for a separate destination.
+fn config_alias(
+    dest: &Path,
+    dest_meta: Option<&std::fs::Metadata>,
+    config: &Path,
+) -> Option<String> {
+    let refuse = || {
+        Some(format!(
+            "--latency-trace: {} is the configuration file",
+            dest.display()
+        ))
+    };
+    if is_config_path(dest, dest_meta, config) {
+        return refuse();
+    }
+    let dir = trace_dir(dest);
+    let config = normalised_path(config);
+    let pid = std::process::id();
+    if (0..TRACE_TMP_TRIES).any(|n| normalised_path(&dir.join(trace_tmp_name(pid, n))) == config) {
+        return refuse();
+    }
+    None
+}
+
+/// The directory the trace's sibling temp file is created in: `dest`'s
+/// parent, `.` for a bare file name.
+fn trace_dir(dest: &Path) -> PathBuf {
+    match dest.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// The trace temp file's name for attempt `n` of process `pid`: a short
+/// fixed prefix, never the destination's name, so a destination name at
+/// the file-name limit still gets a temp file.
+fn trace_tmp_name(pid: u32, n: u32) -> String {
+    format!(".kp-trace.{pid}.{n}.tmp")
+}
+
+/// Opens an existing non-regular `--latency-trace` destination (a device)
+/// for direct writing. On Unix the open is nonblocking (`O_NONBLOCK`), so
+/// a destination that turned into a FIFO after the metadata check (gate
+/// 163 round 11, review 6070807835) cannot block the start: with no reader
+/// the open fails at once (`ENXIO`), and with one the opened descriptor's
+/// own metadata shows the FIFO, which is refused with `--latency-trace:
+/// <dest>: is a FIFO`. A descriptor that is no FIFO (a device; a directory
+/// fails to open for writing) has `O_NONBLOCK` cleared again before it is
+/// kept, so later writes block as before.
+#[cfg(unix)]
+fn open_direct(path: &Path) -> Result<std::fs::File, String> {
+    use sdl3::libc;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let io = |e: std::io::Error| format!("--latency-trace: {}: {e}", path.display());
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(io)?;
+    if is_fifo(&file.metadata().map_err(io)?) {
+        return Err(format!("--latency-trace: {}: is a FIFO", path.display()));
+    }
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is the open descriptor of `file`, alive for both calls;
+    // F_GETFL and F_SETFL take and return plain integers.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io(std::io::Error::last_os_error()));
+    }
+    Ok(file)
+}
+
+/// Opens an existing non-regular `--latency-trace` destination (a device)
+/// for direct writing: off Unix there are no FIFOs to guard against.
+#[cfg(not(unix))]
+fn open_direct(path: &Path) -> Result<std::fs::File, String> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("--latency-trace: {}: {e}", path.display()))
+}
+
 /// `--latency-trace <file>`: checked and prepared now so an unwritable path
 /// fails before the app starts. A value that starts with `--` is an option,
 /// not a path (`./--x` is a path). An existing destination that is the
 /// `--table` bundle file (a `.zip` bundle) or lies inside the `--table`
 /// bundle folder (a folder bundle, at any depth: [`bundle_alias`]) is
 /// refused before anything is created (`--latency-trace: <dest> is the
-/// --table bundle` / `is in the --table bundle`). A destination whose metadata cannot be read
+/// --table bundle` / `is in the --table bundle`). A destination that is the
+/// configuration file (`--config <file>`, else
+/// [`pin_app::ui::default_config_path`]), existing or not yet created, or
+/// whose sibling temp-file name is the configuration path, is refused
+/// before anything is created (`--latency-trace: <dest> is the
+/// configuration file`, [`config_alias`]), so the shutdown commit can never
+/// replace saved settings. A destination whose metadata cannot be read
 /// for a reason other than "not found" (e.g. `trace.csv/` under a regular
 /// file), a missing destination named with a trailing path separator, and
 /// (Unix) an existing FIFO, which a write-only open would block on, are
-/// refused before anything is opened. The destination itself is never
+/// refused before anything is opened; a device is opened nonblocking and
+/// its descriptor checked again ([`open_direct`]). The destination itself is never
 /// opened for writing here (unless it is a device) and never truncated: the
 /// trace goes to a sibling temp file, created now with mode `0600` (Unix)
 /// with `create_new` as the writability probe and renamed over the
@@ -622,6 +785,9 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
         // E.g. `trace.csv/` under a regular file (ENOTDIR): not "missing".
         Err(e) => return Err(io(e)),
     };
+    if let Some(e) = config_alias(&path, dest_meta.as_ref(), &config_path(args)?) {
+        return Err(e);
+    }
     if dest_meta.is_none() && ends_in_separator(&path) {
         return Err(format!(
             "--latency-trace: {}: is a directory path",
@@ -649,10 +815,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
         && !m.is_file()
     {
         // A device (a directory fails to open): written directly.
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .map_err(io)?;
+        let file = open_direct(&path)?;
         return Ok(Some(TraceSink {
             dest: path,
             tmp: None,
@@ -662,16 +825,11 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     if path.file_name().is_none() {
         return Err(io(std::io::Error::other("not a file name")));
     }
-    let dir = match path.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
+    let dir = trace_dir(&path);
     let pid = std::process::id();
     let mut last = None;
     for n in 0..TRACE_TMP_TRIES {
-        // A short fixed prefix, never the destination's name: a
-        // destination name at the file-name limit still gets a temp file.
-        let tmp = dir.join(format!(".kp-trace.{pid}.{n}.tmp"));
+        let tmp = dir.join(trace_tmp_name(pid, n));
         match owner_only(std::fs::OpenOptions::new().write(true).create_new(true)).open(&tmp) {
             Ok(file) => {
                 return Ok(Some(TraceSink {
@@ -1001,6 +1159,19 @@ fn final_trace(
     }
 }
 
+/// Whether any engine of the run has presented a playfield frame (gate 163
+/// round 11, review 6070807835): the running engine's collector `current`
+/// ([`TraceCollector::frames_presented`]) or the `banked` traces of the
+/// engines stopped by table swaps ([`bank_trace`]), whose frame table holds
+/// a row per presented playfield frame (a frame lost to a full ring is
+/// counted in its `overflows.frames`). A frame the old engine presented
+/// just before a swap banked it therefore still raises the run's one-shot
+/// `pin_app: latency trace: first frame presented` line.
+fn any_frame_presented(current: Option<&TraceCollector>, banked: Option<&CollectedTrace>) -> bool {
+    current.is_some_and(|t| t.frames_presented() > 0)
+        || banked.is_some_and(|b| !b.frames.is_empty() || b.overflows.frames > 0)
+}
+
 /// Submits the menu's load request `(id, path)` to the I/O worker. When the
 /// submission fails (the worker never started or has stopped: no reply can
 /// come) the error is printed and reported to the menu with `id`, so it
@@ -1264,7 +1435,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
         };
         let live = running.stats();
         // Only a playfield present (the trace's own frame count) raises it.
-        if !first_frame_announced && trace.as_ref().is_some_and(|t| t.frames_presented() > 0) {
+        if !first_frame_announced && any_frame_presented(trace.as_ref(), banked_trace.as_ref()) {
             first_frame_announced = true;
             eprintln!("pin_app: latency trace: first frame presented");
         }
@@ -1987,8 +2158,15 @@ mod tests {
     /// created `0600`, so its ACL mask is `---`; the commit never chmods it,
     /// so the published trace (a new destination, and one replacing an
     /// existing `0644` file) is `0600` and its access ACL, if any, has an
-    /// effective mask of `---` (the named user gets nothing). Skipped, with
-    /// the reason printed, where the filesystem has no POSIX ACLs.
+    /// effective mask of `---` (the named user gets nothing).
+    ///
+    /// The default-ACL fixture must be set up (gate 163 round 11, review
+    /// 6070807835, R10): when `setxattr` fails and either
+    /// `GITHUB_ACTIONS=true` (the CI Linux environment, which provides
+    /// POSIX ACLs) or `KP_REQUIRE_POSIX_ACL=1` is set, the test fails with
+    /// the errno. Only locally, with neither set, an unsupported filesystem
+    /// prints one `SKIPPED ...` line and returns: an unsupported
+    /// environment, not a pass of the property.
     #[test]
     #[cfg(target_os = "linux")]
     fn req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users() {
@@ -2011,14 +2189,25 @@ mod tests {
             (0x20, 4, u32::MAX),
         ]);
         if let Err(errno) = setxattr(&dir, c"system.posix_acl_default", &blob) {
-            if [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EPERM, libc::ENODATA].contains(&errno) {
-                eprintln!(
-                    "SKIPPED req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users: POSIX ACLs unsupported here (errno {errno})"
-                );
-                std::fs::remove_dir_all(&dir).unwrap();
-                return;
+            std::fs::remove_dir_all(&dir).unwrap();
+            let unsupported =
+                [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EPERM, libc::ENODATA].contains(&errno);
+            if !unsupported {
+                panic!("setxattr(system.posix_acl_default) failed: errno {errno}");
             }
-            panic!("setxattr(system.posix_acl_default) failed: errno {errno}");
+            if acl_required(
+                std::env::var_os("GITHUB_ACTIONS").as_deref(),
+                std::env::var_os("KP_REQUIRE_POSIX_ACL").as_deref(),
+            ) {
+                panic!(
+                    "POSIX ACL fixture setup failed (errno {errno}) but ACLs are required here \
+                     (GITHUB_ACTIONS=true or KP_REQUIRE_POSIX_ACL=1): the ACL property was not tested"
+                );
+            }
+            eprintln!(
+                "SKIPPED req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users: POSIX ACLs unsupported here (errno {errno}) (set KP_REQUIRE_POSIX_ACL=1 to fail instead)"
+            );
+            return;
         }
         let fresh = dir.join("fresh.csv");
         for p in [&fresh, &old] {
@@ -2751,5 +2940,210 @@ mod tests {
         c.apply(MenuInput::LoadTable(0), 3, &mut |_| {});
         assert!(c.take_load_request().is_some(), "another load is accepted");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Whether the POSIX ACL fixture of
+    /// `req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users`
+    /// must be set up (gate 163 round 11, review 6070807835, R10): in CI
+    /// (`GITHUB_ACTIONS=true`) or when `KP_REQUIRE_POSIX_ACL=1`.
+    #[cfg(target_os = "linux")]
+    fn acl_required(
+        github_actions: Option<&std::ffi::OsStr>,
+        require: Option<&std::ffi::OsStr>,
+    ) -> bool {
+        github_actions.is_some_and(|v| v == "true") || require.is_some_and(|v| v == "1")
+    }
+
+    /// REQ-LAT-003 (gate 163 round 11, review 6070807835, R10): an ACL
+    /// fixture failure may only be reported as an unsupported environment
+    /// locally; in CI or with `KP_REQUIRE_POSIX_ACL=1` it fails the test.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn gate163_r11_acl_fixture_is_required_in_ci() {
+        use std::ffi::OsStr;
+        let t = Some(OsStr::new("true"));
+        let one = Some(OsStr::new("1"));
+        assert!(acl_required(t, None));
+        assert!(acl_required(None, one));
+        assert!(acl_required(t, one));
+        assert!(!acl_required(None, None));
+        assert!(!acl_required(
+            Some(OsStr::new("false")),
+            Some(OsStr::new("0"))
+        ));
+    }
+
+    /// REQ-LAT-003 / REQ-VIEW-006 (gate 163 round 11, review comment
+    /// 4705691334): a `--latency-trace` destination that is the `--config`
+    /// file is refused before anything is created, whether the file exists
+    /// (the same path, a symlink to it, a hard link) or not yet (relative
+    /// vs absolute spelling, `./x` vs `x`, `d/../x`), and so is a
+    /// configuration path equal to the trace's sibling temp-file name; the
+    /// configuration file keeps its bytes. A separate destination still
+    /// opens.
+    #[test]
+    fn req_lat_003_trace_destination_equal_to_the_config_is_refused() {
+        let dir = fresh_dir("r11_config");
+        let cfg = dir.join("session.toml");
+        let c = cfg.to_str().unwrap().to_owned();
+        let refused = |trace: &str, config: &str| {
+            let e = open_latency_trace(&args(&["--config", config, "--latency-trace", trace]))
+                .expect_err("refused");
+            assert_eq!(
+                e,
+                format!("--latency-trace: {trace} is the configuration file")
+            );
+        };
+        // Not yet existing (protects the first save).
+        refused(&c, &c);
+        let dot = format!("{}/./sub/../session.toml", dir.display());
+        refused(&dot, &c);
+        assert!(names(&dir).is_empty(), "nothing created: {:?}", names(&dir));
+        // Relative vs absolute and `./x` vs `x`, resolved against the cwd.
+        let rel = format!("kp-r11-cfg-{}.toml", std::process::id());
+        let abs = std::env::current_dir().unwrap().join(&rel);
+        refused(&rel, abs.to_str().unwrap());
+        refused(&format!("./{rel}"), &rel);
+        refused(abs.to_str().unwrap(), &format!("./{rel}"));
+        assert!(!abs.exists(), "nothing created");
+        // Existing configuration file.
+        std::fs::write(&cfg, "wireframe = true\n").unwrap();
+        refused(&c, &c);
+        refused(&dot, &c);
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.csv");
+            std::os::unix::fs::symlink(&cfg, &link).unwrap();
+            refused(link.to_str().unwrap(), &c);
+            let hard = dir.join("hard.csv");
+            std::fs::hard_link(&cfg, &hard).unwrap();
+            refused(hard.to_str().unwrap(), &c);
+            // A symlinked parent directory naming a file not created yet.
+            let alias = dir.join("alias");
+            std::os::unix::fs::symlink(&dir, &alias).unwrap();
+            let new_cfg = dir.join("new.toml");
+            refused(
+                alias.join("new.toml").to_str().unwrap(),
+                new_cfg.to_str().unwrap(),
+            );
+            assert!(!new_cfg.exists(), "nothing created");
+        }
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "wireframe = true\n");
+        // The configuration path is the trace's temp-file name.
+        let trace = dir.join("t.csv");
+        let tmp = dir.join(super::trace_tmp_name(std::process::id(), 0));
+        refused(trace.to_str().unwrap(), tmp.to_str().unwrap());
+        assert!(!tmp.exists() && !trace.exists(), "nothing created");
+        // A separate destination still opens and publishes.
+        let sink = open_latency_trace(&args(&[
+            "--config",
+            &c,
+            "--latency-trace",
+            trace.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .unwrap();
+        sink.commit(b"csv").unwrap();
+        assert_eq!(std::fs::read_to_string(&trace).unwrap(), "csv");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "wireframe = true\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 / REQ-VIEW-006 (gate 163 round 11, review comment
+    /// 4705691334): without `--config` the configuration path compared is
+    /// the default one (`pin_app::ui::default_config_path`); a trace
+    /// destination naming it is refused before anything is created.
+    #[test]
+    fn req_lat_003_trace_destination_equal_to_the_default_config_is_refused() {
+        let (default, _) = pin_app::ui::default_config_path();
+        assert_eq!(super::config_path(&args(&[])).unwrap(), default);
+        let existed = default.exists();
+        let d = default.to_str().unwrap();
+        let e = open_latency_trace(&args(&["--latency-trace", d])).unwrap_err();
+        assert_eq!(e, format!("--latency-trace: {d} is the configuration file"));
+        assert_eq!(default.exists(), existed, "nothing created");
+        // An explicit `--config` replaces the default.
+        let dir = fresh_dir("r11_default");
+        let trace = dir.join("t.csv");
+        let other = dir.join("other.toml");
+        assert_eq!(
+            super::config_path(&args(&["--config", other.to_str().unwrap()])).unwrap(),
+            other
+        );
+        let sink = open_latency_trace(&args(&["--latency-trace", trace.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        drop(sink);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 163 round 11, review 6070807835): the direct
+    /// (device) open is nonblocking and checks the opened descriptor: a
+    /// FIFO with no reader fails at once (it never blocks), a FIFO with a
+    /// reader is refused as a FIFO, and `/dev/null` is opened with
+    /// `O_NONBLOCK` cleared again and written.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_direct_open_never_blocks_on_a_fifo() {
+        use super::open_direct;
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = fresh_dir("r11_fifo");
+        let fifo = dir.join("trace.fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !matches!(&made, Ok(s) if s.success()) {
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("mkfifo is required for the FIFO check and failed: {made:?}");
+        }
+        let f = fifo.to_str().unwrap();
+        // No reader: a blocking write-only open would hang here.
+        let e = open_direct(&fifo).unwrap_err();
+        assert!(e.starts_with(&format!("--latency-trace: {f}: ")), "{e}");
+        // A reader present: the open succeeds, the descriptor is a FIFO.
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(sdl3::libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        assert_eq!(
+            open_direct(&fifo).unwrap_err(),
+            format!("--latency-trace: {f}: is a FIFO")
+        );
+        drop(reader);
+        let mut null = open_direct(Path::new("/dev/null")).unwrap();
+        // SAFETY: `null`'s descriptor is open for the call.
+        let flags = unsafe { sdl3::libc::fcntl(null.as_raw_fd(), sdl3::libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(flags & sdl3::libc::O_NONBLOCK, 0, "O_NONBLOCK cleared");
+        null.write_all(b"csv").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 11 (review 6070807835, REQ-LAT-003): the run's
+    /// one-shot `first frame presented` line counts the running engine's
+    /// presented frames and those of engines already banked by a swap
+    /// (also a frame lost to a full ring), so a frame presented just before
+    /// a swap still raises it.
+    #[test]
+    fn gate163_r11_banked_frames_raise_the_first_frame_marker() {
+        use super::{any_frame_presented, bank_trace};
+        assert!(!any_frame_presented(None, None));
+        let idle = engine_trace(0, 0);
+        assert!(!any_frame_presented(Some(&idle), None));
+        assert!(any_frame_presented(Some(&engine_trace(1, 5)), None));
+        // The old engine presented, then a swap banked it.
+        let mut banked = None;
+        bank_trace(&mut banked, Some(engine_trace(1, 5)), 10);
+        assert!(any_frame_presented(Some(&idle), banked.as_ref()));
+        assert!(any_frame_presented(None, banked.as_ref()));
+        // A banked engine with no frame does not raise it.
+        let mut empty = None;
+        bank_trace(&mut empty, Some(engine_trace(0, 0)), 10);
+        assert!(!any_frame_presented(Some(&idle), empty.as_ref()));
+        // A frame lost to a full ring still counts.
+        let mut lost = empty.unwrap();
+        lost.overflows.frames = 1;
+        assert!(any_frame_presented(Some(&idle), Some(&lost)));
     }
 }

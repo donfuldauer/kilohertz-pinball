@@ -16,9 +16,11 @@
 # `verdict: FAIL (windowed setup: ...)` summary.txt there, never a stale PASS.
 # The fallback never overwrites a summary the driver wrote, and cargo's exit
 # status is the script's exit status.
-# A relative CARGO_TARGET_DIR or <out_dir> is taken relative to the
+# KP_GREYBOX_BUNDLE overrides the bundle (default <target>/greybox) that
+# tables/greybox/build.sh writes and the driver loads; --print-paths shows it.
+# A relative CARGO_TARGET_DIR, KP_GREYBOX_BUNDLE or <out_dir> is taken relative to the
 # repository root, and the absolute CARGO_TARGET_DIR is what Cargo sees.
-# Environment: LP_NUM_THREADS (default 2, the documented cap),
+# Environment: LP_NUM_THREADS (default 2, the documented cap), KP_GREYBOX_BUNDLE,
 # KP_WINDOWED_RUN_MS (default 60000), KP_WINDOWED_SEED,
 # KP_WINDOWED_FRAME_MS, CARGO_TARGET_DIR.
 # Artifacts in <out_dir> (default <target>/windowed): latency_trace.csv,
@@ -42,7 +44,11 @@ case $out in
   /*) ;;
   *) out=$root/$out ;;
 esac
-bundle=$target/greybox
+bundle=${KP_GREYBOX_BUNDLE:-$target/greybox}
+case $bundle in
+  /*) ;;
+  *) bundle=$root/$bundle ;;
+esac
 app=$target/release/pin_app
 if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
   echo "run.sh: CARGO_BUILD_TARGET is not supported (the app is measured at $target/release/pin_app); unset it" >&2
@@ -53,18 +59,28 @@ if [ "$print_paths" = 1 ]; then
   exit 0
 fi
 export CARGO_TARGET_DIR="$target"
-# Drop the previous run's artifacts (the driver removes the same list) and
-# publish a failure summary if anything below fails before the driver runs.
+# Publish a failure summary if anything below fails before the driver runs;
+# the trap is installed before the cleanup so a cleanup failure is reported too.
 mkdir -p "$out"
-rm -f "$out/latency_trace.csv" "$out/pin_app_stderr.log" "$out/summary.txt" "$out"/frame_*.png
-stage="setup"
+stage="cleanup"
+cleaned=0
 setup_failed() {
   status=$?
-  if [ "$status" -ne 0 ] && [ ! -s "$out/summary.txt" ]; then
+  # Before the cleanup finished, any summary is the previous run's: overwrite it.
+  if [ "$status" -ne 0 ] && { [ "$cleaned" = 0 ] || [ ! -s "$out/summary.txt" ]; }; then
     printf 'verdict: FAIL (windowed setup: %s)\n' "$stage" >"$out/summary.txt" 2>/dev/null || :
   fi
 }
 trap setup_failed EXIT
+# Drop the previous run's artifacts (the driver removes the same list). The old
+# summary goes first and alone, so a later failure never leaves it behind.
+rm -rf -- "$out/summary.txt"
+rm -rf -- "$out/latency_trace.csv" "$out/pin_app_stderr.log"
+for f in "$out"/frame_*.png; do
+  [ -e "$f" ] || [ -L "$f" ] || continue
+  rm -rf -- "$f"
+done
+cleaned=1
 for tool in Xvfb xdotool xwd convert; do
   stage="$tool not found"
   command -v "$tool" >/dev/null 2>&1 || {

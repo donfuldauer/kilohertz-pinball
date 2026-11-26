@@ -862,3 +862,29 @@ mod outline_geometry {
         }
     }
 }
+
+/// REQ-BUILD-003 (R3): the frame's point, direction and composed-rotation
+/// products go through `pin_physics::quat_ops` and equal the independent glam
+/// value within 1e-6 for several pitched placements.
+#[test]
+fn quat_ops_products_match_glam_oracle() {
+    for pitch in [0.0_f32, 6.5, 7.0, 15.0, -12.0, 45.0] {
+        let f = BackboxFrame::new([10.0, 1150.0, 250.0], pitch);
+        let p = Vec3::new(0.12, -0.03, 0.2);
+        // Point class.
+        assert!(f.to_table(p).abs_diff_eq(f.origin_m + f.rotation * p, 1e-6));
+        // Direction class.
+        assert!(f.normal().abs_diff_eq(f.rotation * Vec3::NEG_Y, 1e-6));
+        assert!(f.up().abs_diff_eq(f.rotation * Vec3::Z, 1e-6));
+        // Rotation composition class.
+        for a in [0.3_f32, -1.1, 2.0] {
+            let h = 0.5 * a;
+            let r = Quat::from_xyzw(0.0, libm::sinf(h), 0.0, libm::cosf(h));
+            let prod = pin_physics::quat_ops::mul(f.rotation, r);
+            assert!(
+                prod.abs_diff_eq(f.rotation * r, 1e-6),
+                "pitch {pitch} a {a}"
+            );
+        }
+    }
+}

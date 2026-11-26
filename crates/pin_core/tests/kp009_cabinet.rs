@@ -429,6 +429,48 @@ fn req_cab_005_other_containment_fields() {
     assert!(invalid_msg(bad.validate(&envelope(0, None))).contains("body.width"));
 }
 
+/// REQ-CAB-005, SPEC A.4 `[glass_panel]`: a sheet whose projection along the cabinet
+/// (at the mount pitch) exceeds `body.length` cannot fit and is rejected naming
+/// `glass_panel.length`; the limit itself, a pitched sheet that fits and every preset's
+/// 1,092 mm sheet are accepted.
+#[test]
+fn req_cab_005_glass_sheet_longer_than_body_names_glass_panel_length() {
+    // The review case: level mount, 2,000 mm sheet in a 1,315 mm cabinet.
+    let mut g = preset("classic_standard");
+    g.mount.pitch_deg = 0.0;
+    g.glass_panel.length = 2000.0;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(m.contains("`glass_panel.length`"), "{m}");
+    assert!(m.contains("exceeds the cabinet body length"), "{m}");
+    let m = invalid_msg(g.check_consistency());
+    assert!(m.contains("`glass_panel.length`"), "{m}");
+
+    // Exactly at the limit (level mount, sheet length == body length): accepted.
+    let mut at = preset("classic_standard");
+    at.mount.pitch_deg = 0.0;
+    at.glass_panel.length = at.body.length;
+    assert_eq!(at.check_consistency(), Ok(()));
+    // Just above the limit: rejected.
+    at.glass_panel.length = at.body.length + 1.0;
+    assert!(invalid_msg(at.check_consistency()).contains("`glass_panel.length`"));
+
+    // A 1,500 mm sheet does not fit level, but fits pitched at 30° (1,500 cos 30° ≈ 1,299).
+    let mut pitched = preset("classic_standard");
+    pitched.glass_panel.length = 1500.0;
+    pitched.mount.pitch_deg = 0.0;
+    assert!(invalid_msg(pitched.check_consistency()).contains("`glass_panel.length`"));
+    pitched.mount.pitch_deg = 30.0;
+    assert_eq!(pitched.check_consistency(), Ok(()));
+
+    // Every preset (1,092 mm sheet) still validates.
+    for (i, id) in PRESETS.iter().enumerate() {
+        let g = preset(id);
+        assert_eq!(g.glass_panel.length, 1092.0, "{id}");
+        assert_eq!(g.check_consistency(), Ok(()), "{id}");
+        assert_eq!(g.validate(&envelope(i, None)), Ok(()), "{id}");
+    }
+}
+
 /// REQ-CAB-007, REQ-CAB-005: an out-of-range leveler extension names
 /// `legs.<leg>.leveler.extension`, in the file and on the resolved geometry.
 #[test]

@@ -883,13 +883,12 @@ fn drive(
     // that may be down is released before `drive` returns.
     let injection = (|| -> Result<(), String> {
         for a in &plan {
-            let due = plan_start + Duration::from_micros(a.at_us) + slip;
-            let now = Instant::now();
-            if now < due {
-                std::thread::sleep(due - now);
-            } else {
-                slip += now - due;
-            }
+            schedule_step(
+                Duration::from_micros(a.at_us),
+                &mut slip,
+                &mut || plan_start.elapsed(),
+                &mut std::thread::sleep,
+            );
             match a.step {
                 Step::Down(k) => {
                     if Instant::now() >= press_end {
@@ -1022,6 +1021,29 @@ pub fn capture_lines(
     })
 }
 
+/// Waits for one plan step planned `at` after the plan start, shifted by
+/// `slip` (the delay accumulated so far). `now` is the time since the plan
+/// start and `sleep` waits for a duration. A step that is already late grows
+/// `slip` by its lateness; a step that waits grows `slip` by how late the
+/// wait returned (an oversleep). Exactly one of the two per step, so every
+/// later step, a key release included, keeps its planned distance from the
+/// step before it.
+pub fn schedule_step(
+    at: Duration,
+    slip: &mut Duration,
+    now: &mut dyn FnMut() -> Duration,
+    sleep: &mut dyn FnMut(Duration),
+) {
+    let due = at + *slip;
+    let t = now();
+    if t < due {
+        sleep(due - t);
+        *slip += now().saturating_sub(due);
+    } else {
+        *slip += t - due;
+    }
+}
+
 /// The note added to the captured stderr when the drain timed out.
 pub fn drain_timeout_note(limit: Duration) -> String {
     format!(
@@ -1032,24 +1054,30 @@ pub fn drain_timeout_note(limit: Duration) -> String {
 }
 
 /// Waits at most `limit` for the capture thread `reader` to reach the end
-/// of the stream; on time it is joined (the log is complete), otherwise it
-/// is left detached and [`drain_timeout_note`] is appended to `log`, which
-/// keeps every line captured so far. Returns whether the drain completed.
+/// of the stream. On time it is joined and the complete log is returned
+/// with `true`. Otherwise the reader is left detached and the result is
+/// `false` with a snapshot of `log` taken under its lock (every line
+/// captured so far) with [`drain_timeout_note`] appended to the copy, so
+/// a line the detached reader appends later is not in it.
 pub fn finish_capture(
     reader: std::thread::JoinHandle<()>,
     log: &Mutex<String>,
     limit: Duration,
     now: &mut dyn FnMut() -> Duration,
     pause: &mut dyn FnMut(),
-) -> bool {
+) -> (bool, String) {
+    let snapshot = || {
+        log.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
     if wait_until(&mut || reader.is_finished(), limit, now, pause) {
         let _ = reader.join();
-        return true;
+        return (true, snapshot());
     }
-    log.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push_str(&drain_timeout_note(limit));
-    false
+    let mut text = snapshot();
+    text.push_str(&drain_timeout_note(limit));
+    (false, text)
 }
 
 /// The run's preflight: creates `cfg.out_dir`, removes the previous run's
@@ -1175,14 +1203,13 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     }
     app.0 = None;
     let drain_start = Instant::now();
-    finish_capture(
+    let (_, stderr) = finish_capture(
         reader,
         &log,
         STDERR_DRAIN_TIMEOUT,
         &mut || drain_start.elapsed(),
         &mut || std::thread::sleep(Duration::from_millis(5)),
     );
-    let stderr = stderr_now();
     let _ = std::fs::write(cfg.out_dir.join("pin_app_stderr.log"), &stderr);
     let failed = |what: String| -> String {
         let _ = std::fs::write(

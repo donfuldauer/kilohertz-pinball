@@ -181,6 +181,7 @@ pub struct SimLoop<S: SimStep> {
     inputs_delivered: u64,
     input_overflow_ticks: u64,
     trace: Option<trace::SimTraceWriter>,
+    late_trace_refusals: u64,
 }
 
 impl<S: SimStep> SimLoop<S> {
@@ -202,6 +203,7 @@ impl<S: SimStep> SimLoop<S> {
             inputs_delivered: 0,
             input_overflow_ticks: 0,
             trace: None,
+            late_trace_refusals: 0,
         }
     }
 
@@ -211,9 +213,36 @@ impl<S: SimStep> SimLoop<S> {
     /// its bat's first move ([`trace::SimTraceWriter`]; allocation-free).
     /// Without it (the default) nothing is recorded and the ticks are
     /// unchanged.
+    ///
+    /// **Precondition: install before the first tick.** The writer starts
+    /// at the epoch: the first executed tick records the epoch as its
+    /// previous tick end and drain, which is right only for tick 1. Once a
+    /// tick has run ([`tick`](Self::tick) `!= 0`) the call is refused: the
+    /// writer is dropped uninstalled, any trace already installed keeps
+    /// recording unchanged, and the refusal is counted
+    /// ([`late_trace_refusals`](Self::late_trace_refusals)). It never
+    /// panics. Installing at tick 0 works with or without a later
+    /// [`set_epoch_ns`](Self::set_epoch_ns), which restarts the writer at
+    /// the new epoch.
     pub fn set_latency_trace(&mut self, mut writer: trace::SimTraceWriter) {
+        if self.tick != 0 {
+            self.late_trace_refusals = self.late_trace_refusals.saturating_add(1);
+            return;
+        }
         writer.start(self.epoch_ns);
         self.trace = Some(writer);
+    }
+
+    /// Whether a latency-trace writer is installed
+    /// ([`set_latency_trace`](Self::set_latency_trace)).
+    pub fn latency_trace_installed(&self) -> bool {
+        self.trace.is_some()
+    }
+
+    /// Calls to [`set_latency_trace`](Self::set_latency_trace) refused
+    /// because a tick had already run (the writer was not installed).
+    pub fn late_trace_refusals(&self) -> u64 {
+        self.late_trace_refusals
     }
 
     /// Sets the simulated-time epoch: tick `k` ends at `epoch_ns + k · TICK_NS`
@@ -844,5 +873,151 @@ mod epoch_tests {
         assert!(cfg.loop_profiler.is_some());
         let (_tx, rx) = channel::<InputEvent>(2);
         assert!(ThreadsConfig::idle(rx).loop_profiler.is_none());
+    }
+}
+
+/// Late latency-trace install (gate 163 round 11, review 6070807835;
+/// REQ-LAT-003 / REQ-LAT-004, SPEC §7.5): a writer is installed only before
+/// the first tick, so no row ever takes the startup epoch as the mark of a
+/// tick that is not tick 1.
+#[cfg(test)]
+mod late_trace_tests {
+    use super::*;
+    use crate::orchestrator::trace::{CollectedTrace, FlipperBindings, latency_trace};
+    use pin_core::CabinetInput;
+    use pin_core::spsc::{SpscProducer, channel};
+    use std::cell::Cell;
+
+    thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
+
+    /// The controlled trace clock (per test thread).
+    fn now() -> u64 {
+        NOW.with(Cell::get)
+    }
+
+    const EPOCH: u64 = 3_000_000_000;
+
+    fn new_loop() -> (SpscProducer<InputEvent>, SimLoop<IdleSim>) {
+        let (tx, rx) = channel::<InputEvent>(16);
+        let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+        (tx, SimLoop::new(IdleSim, rx, w))
+    }
+
+    /// Runs ticks `from..=to` on time (the clock at tick `k`'s start is its
+    /// end plus 50 us), pushing a press stamped inside every tick.
+    fn run_with_presses(
+        tx: &mut SpscProducer<InputEvent>,
+        l: &mut SimLoop<IdleSim>,
+        from: u64,
+        to: u64,
+    ) {
+        for k in from..=to {
+            let end = tick_end_ns(l.epoch_ns(), k);
+            tx.push(InputEvent::button(end - 1, CabinetInput::LeftFlipper, true))
+                .unwrap();
+            NOW.with(|c| c.set(end + 50_000));
+            l.run_ticks(1);
+        }
+    }
+
+    /// Every row's previous-tick marks are those of the tick before its
+    /// applying tick (the epoch only for tick 1).
+    fn assert_prev_marks(t: &CollectedTrace, epoch: u64) {
+        for r in &t.rows {
+            let i = &r.input;
+            let prev_end = tick_end_ns(epoch, i.apply_tick - 1);
+            assert_eq!(i.prev_tick_end_sdl_ns, prev_end, "tick {}", i.apply_tick);
+            let prev_drain = if i.apply_tick == 1 {
+                epoch
+            } else {
+                prev_end + 50_000
+            };
+            assert_eq!(i.prev_drain_sdl_ns, prev_drain, "tick {}", i.apply_tick);
+            assert!(!i.stall, "tick {}", i.apply_tick);
+        }
+    }
+
+    /// Installed at tick 0 (after the epoch is set), the writer records the
+    /// epoch as tick 1's previous marks and real marks afterwards.
+    #[test]
+    fn req_lat_003_install_at_tick_0_records_the_epoch() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        assert!(l.latency_trace_installed());
+        assert_eq!(l.late_trace_refusals(), 0);
+        run_with_presses(&mut tx, &mut l, 1, 3);
+        let t = c.collect(0);
+        let ticks: Vec<u64> = t.rows.iter().map(|r| r.input.apply_tick).collect();
+        assert_eq!(ticks, vec![1, 2, 3]);
+        assert_eq!(t.rows[0].input.prev_tick_end_sdl_ns, EPOCH);
+        assert_eq!(t.rows[0].input.prev_drain_sdl_ns, EPOCH);
+        assert_prev_marks(&t, EPOCH);
+    }
+
+    /// `set_epoch_ns` after the install restarts the writer at the new
+    /// epoch, as before.
+    #[test]
+    fn req_lat_004_set_epoch_after_install_restarts_the_writer() {
+        let (mut tx, mut l) = new_loop();
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        l.set_epoch_ns(EPOCH);
+        assert!(l.latency_trace_installed());
+        run_with_presses(&mut tx, &mut l, 1, 2);
+        let t = c.collect(0);
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0].input.prev_tick_end_sdl_ns, EPOCH);
+        assert_eq!(t.rows[0].input.prev_drain_sdl_ns, EPOCH);
+        assert_prev_marks(&t, EPOCH);
+    }
+
+    /// Installed after ticks have run, the writer is refused (counted, no
+    /// panic) and records nothing; the loop still runs its ticks.
+    #[test]
+    fn req_lat_003_install_after_a_tick_is_refused() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH);
+        run_with_presses(&mut tx, &mut l, 1, 20);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        assert!(!l.latency_trace_installed());
+        assert_eq!(l.late_trace_refusals(), 1);
+        run_with_presses(&mut tx, &mut l, 21, 22);
+        assert_eq!(l.tick(), 22);
+        assert_eq!(l.inputs_delivered(), 22);
+        let t = c.collect(0);
+        assert!(
+            t.rows.is_empty(),
+            "a refused writer records no row (none with the startup epoch as tick 21's previous tick)"
+        );
+    }
+
+    /// A late second install leaves the installed writer recording
+    /// unchanged: tick 21's previous marks are tick 20's, never the epoch.
+    #[test]
+    fn req_lat_004_late_reinstall_keeps_the_installed_writer() {
+        let (mut tx, mut l) = new_loop();
+        l.set_epoch_ns(EPOCH);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        run_with_presses(&mut tx, &mut l, 1, 20);
+        let (c2, sim2, _fw2) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim2);
+        assert!(l.latency_trace_installed());
+        assert_eq!(l.late_trace_refusals(), 1);
+        run_with_presses(&mut tx, &mut l, 21, 22);
+        let t = c.collect(0);
+        let ticks: Vec<u64> = t.rows.iter().map(|r| r.input.apply_tick).collect();
+        assert_eq!(ticks, (1..=22).collect::<Vec<u64>>());
+        let r21 = &t.rows[20].input;
+        assert_eq!(r21.prev_tick_end_sdl_ns, tick_end_ns(EPOCH, 20));
+        assert_eq!(r21.prev_drain_sdl_ns, tick_end_ns(EPOCH, 20) + 50_000);
+        assert_prev_marks(&t, EPOCH);
+        assert!(
+            c2.collect(0).rows.is_empty(),
+            "the refused writer recorded nothing"
+        );
     }
 }

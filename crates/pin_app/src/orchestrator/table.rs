@@ -1021,6 +1021,12 @@ mod tests {
             Arc::clone(&entries),
             Arc::clone(&completions),
         ));
+        // Re-bound after `w` so it drops first on every exit path: a failed
+        // assertion below closes the release channel before `IoWorker::drop`
+        // joins the worker, and a handler held on `release.recv()` returns
+        // instead of hanging the join (gate 163 round 11, review
+        // 6070807835).
+        let release_tx = release_tx;
         let (a, b) = (PathBuf::from("dir_a"), PathBuf::from("dir_b"));
         w.request_scan(a.clone()).unwrap();
         assert_eq!(entered.recv().unwrap(), IoRequest::Scan(a.clone()));

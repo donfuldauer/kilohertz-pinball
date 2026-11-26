@@ -109,6 +109,21 @@ fn concurrency_group_cannot_collide_with_ci_yml() {
         "group `{}` is not keyed on the workflow name",
         w.group
     );
+    // `github.workflow` expands to the workflow's `name:` (its file name when
+    // there is none), not to a unique id: equal names would share one group at
+    // the same ref and event.
+    let effective_name = |file: &str| {
+        YamlLoader::load_from_str(&workflow_text(file))
+            .unwrap_or_else(|e| panic!("{file} parses: {e}"))
+            .remove(0)["name"]
+            .as_str()
+            .map_or_else(|| file.to_owned(), str::to_owned)
+    };
+    assert_ne!(
+        effective_name("windowed.yml"),
+        effective_name("ci.yml"),
+        "windowed.yml and ci.yml expand `github.workflow` to the same name, so they share a concurrency group"
+    );
 }
 
 #[test]

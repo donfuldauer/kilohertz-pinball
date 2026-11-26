@@ -159,6 +159,11 @@ pub struct SimCounters {
     pub balls_drained: u32,
     /// Balls removed for leaving the playfield bounds or turning non-finite.
     pub balls_escaped: u32,
+    /// Captive Newton balls left out of [`FrameStateSnapshot::balls`]
+    /// because the free balls and earlier captive balls already filled its
+    /// `MAX_BALLS` entries, summed over ticks (each dropped captive ball
+    /// counts once per tick in which it was dropped; saturating).
+    pub captive_balls_unpublished: u32,
 }
 
 /// The rules backend, kept concrete so its fault state and overflow counter
@@ -207,6 +212,9 @@ pub(crate) struct GateBinding {
 pub(crate) struct NewtonBinding {
     pub chain: usize,
     pub switch: Option<SwitchId>,
+    /// Collision layer of the captive ball (the mech's `layer`, default 0),
+    /// published with it in the snapshot.
+    pub layer: u8,
 }
 
 /// What a dynamic mesh slot reads each tick (see [`SlotPlan`]).

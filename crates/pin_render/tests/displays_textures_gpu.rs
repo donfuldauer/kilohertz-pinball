@@ -1076,3 +1076,217 @@ fn req_view_002_lcd_bad_image_refused_previous_stays() {
         other => panic!("a DMD score texture refuses images: {other:?}"),
     }
 }
+
+// ---------- 9. Area-weighted mips of odd sizes ----------
+// #163 gate round 11 (review 6070807835, texture.rs mip shader): every texel
+// of an odd-sized level contributes to the next level, so the 1x1 mip is the
+// whole-image average; exact 2:1 reductions keep the four-texel average.
+
+/// Per-axis weights `(w0, w1, w2, denominator)` of the source texels
+/// `2d, 2d + 1, 2d + 2` for destination texel `d` of a source side `s`:
+/// the overlap of each texel with the span `[d*s/t, (d+1)*s/t)`, `t =
+/// max(1, s / 2)`, scaled to integers summing to the denominator.
+fn axis_weights(s: u32, d: u32) -> [u64; 4] {
+    if s == 1 {
+        [1, 0, 0, 1]
+    } else if s.is_multiple_of(2) {
+        [1, 1, 0, 2]
+    } else {
+        let t = u64::from(s / 2);
+        let d = u64::from(d);
+        [t - d, t, d + 1, u64::from(s)]
+    }
+}
+
+/// Independent oracle of one mip step: area-weighted integer average of the
+/// bytes, rounded to nearest with halves up.
+fn mip_oracle(src: &Img) -> Img {
+    let (w2, h2) = ((src.w / 2).max(1), (src.h / 2).max(1));
+    let mut px = Vec::with_capacity((w2 * h2 * 4) as usize);
+    for y in 0..h2 {
+        let wy = axis_weights(src.h, y);
+        for x in 0..w2 {
+            let wx = axis_weights(src.w, x);
+            let den = wx[3] * wy[3];
+            for c in 0..4 {
+                let mut sum = 0u64;
+                for j in 0..3u32 {
+                    for i in 0..3u32 {
+                        let wgt = wx[i as usize] * wy[j as usize];
+                        if wgt > 0 {
+                            sum += wgt * u64::from(src.at(2 * x + i, 2 * y + j)[c]);
+                        }
+                    }
+                }
+                px.push(((sum + den / 2) / den) as u8);
+            }
+        }
+    }
+    Img { w: w2, h: h2, px }
+}
+
+/// A backglass texture of exactly the image's size whose level 0 is the
+/// image (one opaque layer drawn 1:1), updated once.
+fn image_texture(ctx: &GpuContext, image: RgbaImage) -> BackglassTexture {
+    let (w, h) = (image.width, image.height);
+    let desc = BackglassDesc {
+        layers: vec![BackglassLayer { image, lamp: None }],
+    };
+    let mut t = BackglassTexture::new(ctx, &desc, w, h).unwrap();
+    assert!(t.update(ctx, &[]));
+    t
+}
+
+/// Every level `k + 1` equals the oracle of level `k` byte for byte.
+fn assert_chain_is_oracle(what: &str, levels: &[Img]) {
+    for k in 1..levels.len() {
+        let want = mip_oracle(&levels[k - 1]);
+        let got = &levels[k];
+        assert_eq!((got.w, got.h), (want.w, want.h), "{what} level {k} size");
+        let bad = got.px.iter().zip(&want.px).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            bad,
+            0,
+            "{what}: REQ-VIEW-002 level {k} differs from the area-weighted average of level {} in {bad} channels",
+            k - 1
+        );
+    }
+}
+
+fn opaque(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 3]) -> RgbaImage {
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, b] = f(x, y);
+            data.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    RgbaImage::from_rgba(w, h, data).unwrap()
+}
+
+/// REQ-VIEW-002 (review 6070807835): a 3x1 image `[0, 0, 255]` red has the
+/// whole-image average 85 as its 1x1 mip (the old 2x2 taps gave 0).
+#[test]
+fn req_view_002_odd_mip_3x1_is_whole_average() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_3x1");
+    let img = opaque(3, 1, |x, _| [if x == 2 { 255 } else { 0 }, 0, 0]);
+    let t = image_texture(ctx, img.clone());
+    assert_eq!(t.mip_level_count(), 2);
+    let levels = read_all(ctx, t.texture(), 3, 1, 2);
+    assert_eq!(levels[0].px, img.pixels, "level 0 is the image");
+    assert_eq!(levels[1].at(0, 0), [85, 0, 0, 255], "REQ-VIEW-002 1x1 mip");
+    assert_chain_is_oracle("3x1", &levels);
+}
+
+/// REQ-VIEW-002 (review 6070807835): an edge-only 5x3 image (255 only in
+/// the last column and the last row) keeps its edge in every level.
+#[test]
+fn req_view_002_odd_mip_edge_only_5x3() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_edge_only_5x3");
+    let img = opaque(5, 3, |x, y| {
+        let v = if x == 4 || y == 2 { 255 } else { 0 };
+        [v, v, v]
+    });
+    let t = image_texture(ctx, img.clone());
+    let n = t.mip_level_count();
+    assert_eq!(n, 3);
+    let levels = read_all(ctx, t.texture(), 5, 3, n);
+    assert_eq!(levels[0].px, img.pixels, "level 0 is the image");
+    // Level 1 is 2x1: x weights (2, 2, 1)/5 and (1, 2, 2)/5, y (1, 1, 1)/3.
+    // Left: only row 2 is lit, weight 5/15 -> 85. Right: x = 4 in rows 0
+    // and 1 (2/15 each) plus row 2 (5/15) -> 9/15 of 255 = 153.
+    assert_eq!(
+        levels[1].at(0, 0),
+        [85, 85, 85, 255],
+        "REQ-VIEW-002 level 1 left"
+    );
+    assert_eq!(
+        levels[1].at(1, 0),
+        [153, 153, 153, 255],
+        "REQ-VIEW-002 level 1 right"
+    );
+    assert_chain_is_oracle("5x3 edge", &levels);
+    // Whole-image average: 7 lit of 15 texels -> 7 * 255 / 15 = 119.
+    let last = levels[2].at(0, 0);
+    assert_eq!(
+        last,
+        [119, 119, 119, 255],
+        "REQ-VIEW-002 1x1 mip of the edge-only image"
+    );
+}
+
+/// REQ-VIEW-002 (review 6070807835): a 255x129 odd chain (a gradient with a
+/// bright last column and row, and a pseudo-random image) equals the
+/// area-weighted oracle at every level; the 1x1 level is the whole-image
+/// average. Every level of the gradient is written for the visual check.
+#[test]
+fn req_view_002_odd_mip_chain_255x129() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_chain_255x129");
+    let (w, h) = (255, 129);
+    let gradient = opaque(w, h, |x, y| {
+        if x == w - 1 || y == h - 1 {
+            [255, 255, 255]
+        } else {
+            [x as u8, (y * 255 / (h - 1)) as u8, ((x + y) / 2) as u8]
+        }
+    });
+    let noise = opaque(w, h, |x, y| {
+        let mut v = x.wrapping_mul(0x9e37_79b9) ^ y.wrapping_mul(0x85eb_ca6b);
+        v ^= v >> 15;
+        v = v.wrapping_mul(0x2c1b_3c6d);
+        v ^= v >> 12;
+        [v as u8, (v >> 8) as u8, (v >> 16) as u8]
+    });
+    for (name, img) in [("odd_gradient", gradient), ("odd_noise", noise)] {
+        let t = image_texture(ctx, img.clone());
+        let n = t.mip_level_count();
+        assert_eq!(n, mip_level_count(w, h));
+        let levels = read_all(ctx, t.texture(), w, h, n);
+        for (a, b) in levels[0].px.iter().zip(&img.pixels) {
+            assert!(a.abs_diff(*b) <= 1, "{name}: level 0 is the image");
+        }
+        assert_chain_is_oracle(name, &levels);
+        let (avg, last) = (mean_all(&levels[0]), mean_all(&levels[n as usize - 1]));
+        assert!(
+            max_diff4(avg, last) <= 1.5,
+            "{name}: REQ-VIEW-002 1x1 mip {last:?} vs whole-image average {avg:?}"
+        );
+        for (k, lv) in levels.iter().enumerate() {
+            save(&format!("{name}_mip{k}"), lv);
+        }
+    }
+}
+
+/// REQ-VIEW-002 (review 6070807835): exact 2:1 reductions keep the
+/// four-texel average `(sum + 2) / 4` byte for byte (a pseudo-random 64x64
+/// image, so every level is an exact 2:1 reduction on both axes).
+#[test]
+fn req_view_002_even_mip_chain_is_four_texel_average() {
+    let (_g, ctx) = setup!("req_view_002_even_mip_chain");
+    let (w, h) = (64, 64);
+    let img = opaque(w, h, |x, y| {
+        let v = (x * 131 + y * 71 + x * y * 17) ^ (x << 3);
+        [v as u8, (v >> 3) as u8, (v >> 5) as u8]
+    });
+    let t = image_texture(ctx, img);
+    let n = t.mip_level_count();
+    let levels = read_all(ctx, t.texture(), w, h, n);
+    for k in 1..levels.len() {
+        let (src, dst) = (&levels[k - 1], &levels[k]);
+        for y in 0..dst.h {
+            for x in 0..dst.w {
+                for c in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|(i, j)| u32::from(src.at(2 * x + i, 2 * y + j)[c]))
+                        .sum();
+                    assert_eq!(
+                        u32::from(dst.at(x, y)[c]),
+                        (sum + 2) / 4,
+                        "REQ-VIEW-002 level {k} ({x},{y}) ch {c}"
+                    );
+                }
+            }
+        }
+    }
+}

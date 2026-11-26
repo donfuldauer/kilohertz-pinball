@@ -350,17 +350,17 @@ impl BackboxFrame {
 
     /// A backbox-frame point (m) in the table frame (m).
     pub fn to_table(&self, p: Vec3) -> Vec3 {
-        self.origin_m + self.rotation * p
+        self.origin_m + pin_physics::quat_ops::mul_vec3(self.rotation, p)
     }
 
     /// The backbox plane normal towards the glass (the player), table frame.
     pub fn normal(&self) -> Vec3 {
-        self.rotation * Vec3::NEG_Y
+        pin_physics::quat_ops::mul_vec3(self.rotation, Vec3::NEG_Y)
     }
 
     /// World-up along the backbox plane, table frame.
     pub fn up(&self) -> Vec3 {
-        self.rotation * Vec3::Z
+        pin_physics::quat_ops::mul_vec3(self.rotation, Vec3::Z)
     }
 }
 
@@ -526,7 +526,8 @@ impl SegmentPanel {
             0.5 * depth_mm,
             0.5 * (self.a[1] + self.b[1]),
         );
-        let center = (mid + rot * Vec3::new(0.0, 0.0, across)) * 1.0e-3;
+        let center =
+            (mid + pin_physics::quat_ops::mul_vec3(rot, Vec3::new(0.0, 0.0, across))) * 1.0e-3;
         let half = Vec3::new(0.5 * len, 0.5 * depth_mm, 0.5 * (self.band.1 - self.band.0)) * 1.0e-3;
         Some((center, half, rot))
     }
@@ -620,7 +621,7 @@ fn to_table(frame: &BackboxFrame, m: &Mesh) -> Mesh {
         normals: m
             .normals
             .iter()
-            .map(|&n| (frame.rotation * Vec3::from(n)).to_array())
+            .map(|&n| (pin_physics::quat_ops::mul_vec3(frame.rotation, Vec3::from(n))).to_array())
             .collect(),
         indices: m.indices.clone(),
     }
@@ -971,12 +972,12 @@ pub fn generate_backbox(
             positions: local
                 .positions
                 .iter()
-                .map(|&p| (center + rot * Vec3::from(p)).to_array())
+                .map(|&p| (center + pin_physics::quat_ops::mul_vec3(rot, Vec3::from(p))).to_array())
                 .collect(),
             normals: local
                 .normals
                 .iter()
-                .map(|&n| (rot * Vec3::from(n)).to_array())
+                .map(|&n| (pin_physics::quat_ops::mul_vec3(rot, Vec3::from(n))).to_array())
                 .collect(),
             indices: local.indices,
         };
@@ -1001,7 +1002,7 @@ pub fn generate_backbox(
             shape: StaticShape::Cuboid {
                 center: frame.to_table(center),
                 half_extents: half,
-                rotation: frame.rotation * rot,
+                rotation: pin_physics::quat_ops::mul(frame.rotation, rot),
             },
             layer_mask: mask,
             material: Material::Wood,
