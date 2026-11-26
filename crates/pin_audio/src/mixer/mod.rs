@@ -52,12 +52,59 @@
 //! bit what a duplicated stereo copy would mix. A [`DecodeBudget`] charges
 //! [`BYTES_PER_MONO_FRAME`] (4) per mono frame and [`BYTES_PER_FRAME`] (8)
 //! per stereo frame, i.e. [`Sample::bytes`].
+//!
+//! # Streaming
+//! Music need not be decoded whole. [`open_stream`] turns a music file's
+//! compressed bytes (owned by the track) into a [`StreamedTrack`]: a
+//! `khz-music-loader` thread decodes and resamples it, through the same
+//! code as [`decode_with_budget`], into a bounded lock-free ring of `f32`
+//! frames, and the audio thread only pops from that ring.
+//! [`Mixer::register_stream`] accepts it on [`Bus::Music`] only (any other
+//! bus hands the track back). When the track is long enough and the loader
+//! keeps up, the mix is bit-identical to mixing the fully decoded sample.
+//! * **Header first.** `open_stream` validates the header synchronously
+//!   with the same errors as [`decode_with_budget`], including the
+//!   10-minute cap, which also holds while decoding.
+//! * **Ring sizing.** The ring holds the requested frames (default
+//!   [`STREAM_RING_FRAMES`]) clamped to at least 1, to at most the 10-minute
+//!   cap and, when the header gives the output length (WAV data-chunk size,
+//!   last Ogg granule), to at most that length. It is allocated once, in
+//!   `open_stream`.
+//! * **Budget.** The [`DecodeBudget`] is charged the ring, not the decoded
+//!   length: `ring_frames × 4 × channels` bytes (the per-frame rule of
+//!   [`Sample::bytes`]), all or nothing at open
+//!   ([`DecodeError::BudgetExhausted`], nothing charged). Dropping the track
+//!   (directly, by replacing its id, or by dropping the mixer) stops and
+//!   joins the loader and returns exactly those bytes.
+//! * **Playback.** A streamed voice follows the voice rules above (gain
+//!   clamp, voice limits and oldest-voice stealing, ducking, master gain,
+//!   clipping, mono panning) and counts in [`Mixer::active_voices`].
+//!   (a) *Underrun:* frames the ring cannot supply while the pass has not
+//!   ended render as silence and count, one per frame, in
+//!   [`StreamHandle::underrun_frames`] and [`Mixer::stream_underruns`]; the
+//!   voice does not skip ahead but resumes with the next real frame. The
+//!   voice ends once the loader has reached the end of the source (or
+//!   failed) and the ring is drained. (b) *One voice per track:* a trigger
+//!   for a streamed sound that is already playing is ignored (no voice, no
+//!   steal); a zero-length track starts nothing. (c) *Rewind:* when a
+//!   streamed voice ends or is stolen, the track rewinds so the next trigger
+//!   plays from source frame 0; stale buffered frames never play, the
+//!   loader refills in the background, and a retrigger before it has
+//!   refilled underruns. [`StreamHandle::is_finished`] reads `false` from
+//!   the moment the voice ends. (d) *Failure:* corrupt data after a valid
+//!   header marks [`StreamHandle::failed`]; the frames buffered before it
+//!   still play, then the voice ends as at the end of the source (not an
+//!   underrun).
+//! * **Threads.** The loader polls with `park_timeout` for free space, a
+//!   rewind or a stop; the audio thread never signals, locks or waits on it.
+//!   [`StreamHandle::wait_filled`] blocks load and test threads only.
 
 mod decode;
 mod engine;
 mod ring;
 #[cfg(feature = "sdl")]
 mod sdl;
+mod stream;
 
 pub use decode::{
     BYTES_PER_FRAME, BYTES_PER_MONO_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES,
@@ -68,3 +115,4 @@ pub use engine::{Bus, Mixer, MixerConfig};
 pub use ring::{SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
 #[cfg(feature = "sdl")]
 pub use sdl::SdlOutput;
+pub use stream::{STREAM_RING_FRAMES, StreamHandle, StreamedTrack, open_stream};
