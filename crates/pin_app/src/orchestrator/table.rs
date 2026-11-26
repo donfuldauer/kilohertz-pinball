@@ -6,16 +6,20 @@
 //! the two steps can never skip validation. [`TableSim`] is the [`SimStep`]
 //! the sim thread drives; it also hands the tick's haptic impulses, sound
 //! commands and display commands (scenes, score reports) to the audio and
-//! render threads through wait-free rings.
+//! render threads through wait-free rings, the impulses to the main
+//! thread's rumble driver, and each tick's cabinet state to the UDP
+//! telemetry encoder (KP-006).
 
-use super::audio::{RegisteredSound, table_samples};
+use super::audio::{RegisteredSound, TelemetryFeed, TelemetryMap, TelemetrySources, table_samples};
 use super::trace::FlipperBindings;
 use super::view::TableVisuals;
 use crate::ui::{TableEntry, scan_tables};
 use pin_assets::{GltfScene, LoadedTable, load_gltf, load_table};
 use pin_audio::mixer::{MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
+use pin_core::haptics::HapticEvent;
 use pin_core::input::HapticsTelemetryEvent;
-use pin_core::{FrameStateSnapshot, InputEvent, SceneId, SimStep};
+use pin_core::schema::table::TableManifest;
+use pin_core::{CoilId, FlipperId, FrameStateSnapshot, InputEvent, SceneId, SimStep};
 use pin_input::haptics::{
     DEFAULT_HAPTICS_RING_CAPACITY, HapticsConsumer, HapticsProducer, haptics_ring,
 };
@@ -150,14 +154,98 @@ pub const DISPLAY_RING_CAPACITY: usize = 256;
 pub const SOUND_RING_CAPACITY: usize = 256;
 
 /// The table [`SimStep`]: steps the [`Simulation`] and pushes each tick's
-/// haptic impulses and sound triggers into the audio thread's rings and its
-/// display commands into the render thread's ring (all wait-free, no
-/// allocation; a full ring drops the newest and counts it).
+/// haptic impulses and sound triggers into the audio thread's rings, its
+/// display commands into the render thread's ring, its impulses into the
+/// rumble ring ([`set_rumble`](Self::set_rumble)) and its cabinet state
+/// into the telemetry encoder ([`set_telemetry`](Self::set_telemetry)) (all
+/// wait-free, no allocation; a full ring drops the newest and counts it).
 pub struct TableSim {
     sim: Simulation,
     haptics: Option<HapticsProducer<HapticsTelemetryEvent>>,
     sounds: Option<SoundSender>,
     displays: Option<HapticsProducer<DisplayCommand>>,
+    rumble: Option<HapticsProducer<HapticEvent>>,
+    telemetry: Option<Box<TelemetryTap>>,
+    /// `(flipper, its coil)` of every flipper, for the coil states.
+    flipper_coils: Vec<(FlipperId, CoilId)>,
+}
+
+/// Coils (by `CoilId`) the telemetry state tracks from host commands.
+const TRACKED_COILS: usize = 256;
+
+/// The telemetry feed and the coil and magnet state it is derived from
+/// (allocated once in [`TableSim::set_telemetry`]).
+struct TelemetryTap {
+    feed: TelemetryFeed,
+    sources: TelemetrySources,
+    /// Coils held on by a host command (`HostCommandQueue::coil_holds`).
+    held: [bool; TRACKED_COILS],
+    /// First tick a host-pulsed coil is off again (a pulse of `d` ms issued
+    /// at tick `t` is energised for ticks `t..t + d`).
+    pulse_until: [u64; TRACKED_COILS],
+}
+
+impl TelemetryTap {
+    /// Applies the host commands of the tick `tick` (pulses, holds, magnet
+    /// powers) to the tracked state. Never allocates.
+    fn apply_commands(&mut self, tick: u64, cmds: &pin_core::script::HostCommandQueue) {
+        for &(c, d) in &cmds.coil_pulses {
+            if let Some(p) = self.pulse_until.get_mut(usize::from(c.0)) {
+                *p = (*p).max(tick.saturating_add(u64::from(d)));
+            }
+        }
+        for &(c, on) in &cmds.coil_holds {
+            let i = usize::from(c.0);
+            if let Some(h) = self.held.get_mut(i) {
+                *h = on;
+                if !on {
+                    // Like the mechs: releasing a hold ends a running pulse.
+                    self.pulse_until[i] = 0;
+                }
+            }
+        }
+        for &(m, power) in &cmds.magnets {
+            if let Some(v) = self.sources.magnets.get_mut(usize::from(m.0)) {
+                *v = power;
+            }
+        }
+    }
+
+    /// The coil states at `tick`: host holds and pulses, flipper coils whose
+    /// flipper is energised, and every mapped coil a mech reports on.
+    fn update_coils(&mut self, tick: u64, sim: &Simulation, flipper_coils: &[(FlipperId, CoilId)]) {
+        self.host_coils(tick);
+        let flippers = sim.flipper_set();
+        for &(f, c) in flipper_coils {
+            if flippers.is_energised(f)
+                && let Some(v) = self.sources.coils.get_mut(usize::from(c.0))
+            {
+                *v = true;
+            }
+        }
+        let mechs = sim.mech_set();
+        for &(_, c) in &self.feed.map().coils {
+            if let Some(v) = self.sources.coils.get_mut(usize::from(c))
+                && !*v
+                && mechs.coil_on(CoilId(c))
+            {
+                *v = true;
+            }
+        }
+    }
+
+    /// The coil states at `tick` from the host holds and pulses alone.
+    fn host_coils(&mut self, tick: u64) {
+        for ((c, &h), &until) in self
+            .sources
+            .coils
+            .iter_mut()
+            .zip(&self.held)
+            .zip(&self.pulse_until)
+        {
+            *c = h || tick < until;
+        }
+    }
 }
 
 impl TableSim {
@@ -168,7 +256,58 @@ impl TableSim {
             haptics,
             sounds: None,
             displays: None,
+            rumble: None,
+            telemetry: None,
+            flipper_coils: Vec::new(),
         }
+    }
+
+    /// Sends every haptic impulse ([`Simulation::haptic_events`]) to the
+    /// main thread's rumble driver as well (SPEC §4 3.4).
+    pub fn set_rumble(&mut self, tx: HapticsProducer<HapticEvent>) {
+        self.rumble = Some(tx);
+    }
+
+    /// Feeds the cabinet state to `feed` every tick (SPEC §4 3.4, KP-006):
+    /// switches ([`Simulation::switch_bits`]), coils (energised flippers
+    /// from [`set_flipper_coils`](Self::set_flipper_coils), host coil holds
+    /// and pulses, mech coils), lamps and GI (the snapshot), magnets (the
+    /// latest host magnet power) and the tick's haptic impulses. Load time:
+    /// allocates the tracking state once. At tick 0 the `on_init` commands
+    /// are applied at once.
+    pub fn set_telemetry(&mut self, feed: TelemetryFeed) {
+        let mut tap = Box::new(TelemetryTap {
+            feed,
+            sources: TelemetrySources::default(),
+            held: [false; TRACKED_COILS],
+            pulse_until: [0; TRACKED_COILS],
+        });
+        tap.sources.switch_bits = self.sim.switch_bits();
+        if self.sim.tick() == 0 {
+            tap.apply_commands(0, self.sim.last_commands());
+        }
+        self.telemetry = Some(tap);
+    }
+
+    /// The coil of each flipper (`(FlipperId, CoilId)`, load time): a
+    /// flipper's coil reads energised on the telemetry while the flipper is.
+    pub fn set_flipper_coils(&mut self, pairs: &[(FlipperId, CoilId)]) {
+        self.flipper_coils = pairs.to_vec();
+    }
+
+    /// The telemetry feed, if one is attached.
+    pub fn telemetry(&self) -> Option<&TelemetryFeed> {
+        self.telemetry.as_ref().map(|t| &t.feed)
+    }
+
+    /// The telemetry sources of the last tick, if a feed is attached.
+    pub fn telemetry_sources(&self) -> Option<&TelemetrySources> {
+        self.telemetry.as_ref().map(|t| &t.sources)
+    }
+
+    /// Haptic impulses dropped because the rumble ring was full.
+    pub fn rumble_dropped(&self) -> u64 {
+        self.rumble.as_ref().map_or(0, HapticsProducer::dropped)
     }
 
     /// Sends every sound command ([`Simulation::sound_commands`]) to the
@@ -238,6 +377,17 @@ impl SimStep for TableSim {
         }
         if let Some(d) = self.displays.as_mut() {
             push_displays(&self.sim, d);
+        }
+        if let Some(r) = self.rumble.as_mut() {
+            for e in self.sim.haptic_events() {
+                r.push(HapticEvent::from(*e));
+            }
+        }
+        if let Some(t) = self.telemetry.as_deref_mut() {
+            t.apply_commands(tick, self.sim.last_commands());
+            t.sources.switch_bits = self.sim.switch_bits();
+            t.update_coils(tick, &self.sim, &self.flipper_coils);
+            t.feed.tick(tick, out, &t.sources, self.sim.haptic_events());
         }
     }
 }
@@ -442,6 +592,12 @@ pub struct LoadedApp {
     pub displays: HapticsConsumer<DisplayCommand>,
     /// The flipper coils of the latency trace (`--latency-trace`).
     pub bindings: FlipperBindings,
+    /// The table manifest (a clone made at load; `[dof]` for the DOF
+    /// bridge).
+    pub manifest: TableManifest,
+    /// The telemetry ids of the table's elements (built at load from the
+    /// manifest numbers and the interned ids).
+    pub telemetry_map: TelemetryMap,
 }
 
 /// Validates and loads the table at `path` for the app: [`validate_table`]
@@ -465,11 +621,21 @@ pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, Stri
         let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
         let (stx, srx) = trigger_ring(SOUND_RING_CAPACITY);
         let (dtx, drx) = haptics_ring(DISPLAY_RING_CAPACITY);
-        let sim = Box::new(
+        let mut sim = Box::new(
             TableSim::new(sim, Some(htx))
                 .with_sounds(stx)
                 .with_displays(dtx),
         );
+        let flipper_coils: Vec<(FlipperId, CoilId)> = checked
+            .table
+            .flippers
+            .iter()
+            .map(|f| (f.id, f.coil))
+            .collect();
+        sim.set_flipper_coils(&flipper_coils);
+        let ids = &checked.table.ids;
+        let telemetry_map =
+            TelemetryMap::from_manifest(&checked.table.manifest, |k, n| ids.get(k, n));
         let visuals = TableVisuals::of(&checked);
         for w in &visuals.warnings {
             eprintln!("pin_app: table display warning: {w}");
@@ -496,6 +662,8 @@ pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, Stri
             haptics: hrx,
             sounds: srx,
             displays: drx,
+            manifest: checked.table.manifest.clone(),
+            telemetry_map,
         })
     })?
 }
@@ -788,5 +956,57 @@ mod tests {
         assert_eq!(panic_text(p.as_ref()), "panicked: bang");
         let p: Box<dyn std::any::Any + Send> = Box::new(5u8);
         assert_eq!(panic_text(p.as_ref()), "panicked: unknown panic");
+    }
+
+    /// KP-006 (SPEC §4 3.4): a host pulse of `d` ms issued at tick `t`
+    /// reads energised for exactly ticks `t..t + d`; a hold stays on until
+    /// released (which also ends a pulse); magnet powers follow the latest
+    /// command; ids beyond the tracked range are ignored.
+    #[test]
+    fn kp006_coil_pulse_and_hold_states() {
+        use pin_core::MagnetId;
+        use pin_core::script::HostCommandQueue;
+        let (tx, _rx) = pin_audio::telemetry::telemetry_channel(8);
+        let mut tap = TelemetryTap {
+            feed: TelemetryFeed::new(tx, TelemetryMap::default()),
+            sources: TelemetrySources::default(),
+            held: [false; TRACKED_COILS],
+            pulse_until: [0; TRACKED_COILS],
+        };
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 30).unwrap();
+        q.pulse_coil(CoilId(5), 0).unwrap();
+        q.pulse_coil(CoilId(900), 30).unwrap();
+        q.hold_coil(CoilId(6), true).unwrap();
+        q.hold_coil(CoilId(700), true).unwrap();
+        q.set_magnet(MagnetId(2), 0.75).unwrap();
+        q.set_magnet(MagnetId(64), 0.75).unwrap();
+        tap.apply_commands(100, &q);
+        let mut on_ticks = 0;
+        for t in 100..200 {
+            tap.host_coils(t);
+            assert!(!tap.sources.coils[5], "a 0 ms pulse never energises");
+            assert!(tap.sources.coils[6], "held at {t}");
+            if tap.sources.coils[4] {
+                assert!((100..130).contains(&t), "tick {t}");
+                on_ticks += 1;
+            }
+        }
+        assert_eq!(on_ticks, 30);
+        assert_eq!(tap.sources.magnets[2], 0.75);
+        // A shorter pulse does not cut a longer one; a released hold ends
+        // a pulse.
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 50).unwrap();
+        q.pulse_coil(CoilId(6), 50).unwrap();
+        tap.apply_commands(200, &q);
+        let mut q = HostCommandQueue::default();
+        q.pulse_coil(CoilId(4), 5).unwrap();
+        q.hold_coil(CoilId(6), false).unwrap();
+        tap.apply_commands(210, &q);
+        tap.host_coils(240);
+        assert!(tap.sources.coils[4] && !tap.sources.coils[6]);
+        tap.host_coils(250);
+        assert!(!tap.sources.coils[4]);
     }
 }
