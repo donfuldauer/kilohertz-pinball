@@ -8794,3 +8794,43 @@ frame and an ordering hazard with the present).
 **Decision:** The non-test diff is about 900 added lines (roughly 40 % rustdoc and comments), slightly over the brief's "about 800" guard; the DOF part (deliverable 4) is about 80 of them (`DofBridge::start_for_table_on`, `DofLaunchConfig::for_app` and the main-thread lifecycle). It is delivered here rather than split into a follow-up issue.
 **Rationale:** The guard exists to keep the change reviewable; DOF is small, self-contained, already covered by unit and integration tests (stand-in bridge), and splitting it would leave the issue's acceptance criterion "DOF launcher with the fake bridge: started on load, stopped on exit" open for a near-empty follow-up.
 **Alternatives:** leaving DOF unimplemented with a follow-up `work-unit` issue (the guard's literal reading; rejected for the reasons above).
+
+## #129 tester — placement of the release-order property and the mutation fuzz
+
+**Decision:** the release-order proptest (brief 2.d) and the panic-counting Ogg mutation fuzz (brief 3) live in `crates/pin_audio/tests/mixer_decode_budget_rand.rs`, not `mixer_decode_budget.rs`.
+
+**Rationale:** the brief allows either file. The rand file has no test that makes the decoder panic on purpose, so the global counting panic hook cannot be raced (a `static Mutex` guards it anyway); `mixer_decode_budget.rs` decodes truncated hostile streams whose caught panics would be counted.
+
+**Alternatives:** a separate test file (outside the owned paths); a hook guard in every test of `mixer_decode_budget.rs`.
+
+## #129 — Checked `DecodeBudget::release` returning `Result` instead of an RAII guard
+
+**Decision:** `DecodeBudget::release(&self, sample: &Sample) -> Result<(), OverRelease>`: an atomic `checked_sub` in a `fetch_update`; when the sample's bytes (`BYTES_PER_FRAME × frames()`) exceed what is charged, it returns `OverRelease { attempted_bytes, used_bytes }` and `used` is unchanged. The internal refund of a decode's own spare or failed charge also uses `checked_sub` (with a `debug_assert!`); no `saturating_sub` is left on the `used` counter (`remaining_bytes` keeps one on `limit - used`, which cannot go negative by invariant).
+
+**Rationale:** decoded samples are owned by the loader (`Arc<Sample>` in the mixer's registry), not by a guard tied to the budget, so a guard would need a lifetime or an `Arc<DecodeBudget>` in every sample. A checked release keeps the existing ownership and makes a double or foreign release visible instead of silently zeroing the accounting.
+
+**Alternatives:** an RAII reservation guard (changes `Sample` ownership across pin_audio and pin_app); keeping the saturating release (the defect the issue names).
+
+## #129 — A sound over the decoded-audio budget is silent; the table still loads
+
+**Decision:** when a sound fails with `DecodeError::BudgetExhausted`, `table_samples` reports exactly one error for it (`sound <id> (<file>): decoded-audio budget of <N> MiB exhausted; raise audio.decoded_budget_mib`, `N = bytes >> 20`), the sound stays silent and the load continues; sounds are decoded in manifest order, so earlier sounds that fit keep their charge.
+
+**Rationale:** the issue's acceptance ("loads with those sounds silent and one error each") is the newer and more precise statement; it matches how every other per-sound failure is already handled (a warning, the sound silent). The older ruling text ("the load fails") predates it; its other requirements (the message names the sound, the budget and the setting) are kept.
+
+**Alternatives:** failing the whole table on the first exhausted sound (older ruling wording; a bundle a few MiB over budget would become unplayable instead of partly silent).
+
+## #129 — Budget plumbing: `load_app_table_with_budget` and `IoWorker::set_decoded_budget_bytes`
+
+**Decision:** `table_samples` takes the budget in bytes. `table.rs` gains `load_app_table_with_budget(path, mixer, bytes)`; `load_app_table(path, mixer)` stays as a wrapper with `DecodeBudget::DEFAULT_BYTES`. `IoWorker` holds the budget in an `Arc<AtomicU64>` (initially the default), set with `set_decoded_budget_bytes` and read by `serve` at the start of each load; `IoWorker::spawn`, `IoRequest` and `IoReply` are unchanged. `main.rs` passes `menu.config().audio.decoded_budget_bytes()` to the `--table` load and to the worker after spawning it, and pushes the new value to the worker whenever the menu applies a config change, so a change applies to the next table load. `table.rs` and `orchestrator/mod.rs` were touched (outside the issue's path list) because the loader's only route to `table_samples` runs through them.
+
+**Rationale:** additive: every existing caller and test keeps compiling; an atomic avoids a new request variant or a mutex, and reading it per load gives the ruling's "applies to the next table load" exactly.
+
+**Alternatives:** a budget field in `IoRequest::Load` (changes an enum other tests construct); passing the budget to `IoWorker::spawn` (cannot follow a menu change without respawning the worker).
+
+## #129 — lewton floor 1: overflow is a decode error, valid values unchanged
+
+**Decision:** in the vendored lewton floor 1 path (`render_point`, `render_line`, `floor_one_curve_compute_amplitude`, `floor_one_curve_synthesis`, the multiplier lookup) every operation that upstream did in `u32`/`i32` is evaluated with `checked_*` in the same type, a `u32` above `i32::MAX` used as `i32` or a negative `i32` cast to `u32` is rejected, and `adx == 0`, a short Y list, a multiplier outside 1..=4 and an inverse-dB index past the table are rejected; each gives `AudioReadError::AudioBadFormat` (`DecodeError::Malformed` in pin_audio). Where upstream did not overflow, the result is the upstream value bit for bit (checked by a 4000-case sweep against a verbatim copy of the upstream functions).
+
+**Rationale:** evaluating the same expressions in the same type with overflow detection is the only choice that is provably bit-identical on valid streams and an error exactly where upstream panicked (debug) or wrapped (release); widening to `i64` and continuing would silently produce values upstream never did.
+
+**Alternatives:** relying on `overflow-checks` plus `catch_unwind` (release would still wrap); clamping intermediate values (changes decoded output of edge streams).

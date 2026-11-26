@@ -27,7 +27,8 @@
 use super::table::ValidatedTable;
 use pin_assets::IdKind;
 use pin_audio::mixer::{
-    Bus, DecodeBudget, Mixer, MixerConfig, Sample, SoundReceiver, decode_with_budget, trigger_ring,
+    Bus, DecodeBudget, DecodeError, Mixer, MixerConfig, Sample, SoundReceiver, decode_with_budget,
+    trigger_ring,
 };
 use pin_audio::ssf::{CHANNELS, SsfConfig, SsfMixer};
 use pin_audio::telemetry::{
@@ -50,14 +51,23 @@ pub const AUDIO_BLOCK_FRAMES: usize = 256;
 pub type RegisteredSound = (SoundId, Arc<Sample>, Bus);
 
 /// Decodes every `[[sounds]]` entry of `checked` from its bundle snapshot
-/// at `sample_rate` (one [`DecodeBudget::DEFAULT_BYTES`] budget for the
-/// table). Returns the sounds in id order and one message per sound that
-/// could not be read or decoded (that sound stays silent).
+/// at `sample_rate`, in manifest order, against one
+/// [`DecodeBudget::new`]`(decoded_budget_bytes)` for the whole table (the
+/// player's `audio.decoded_budget_mib` setting, SPEC §4 4.4; D25).
+///
+/// Returns the sounds in id order and exactly one message per sound that
+/// could not be read or decoded; that sound stays silent and the load goes
+/// on. Sounds that fit keep their charge, so once the budget is spent every
+/// later sound that does not fit fails with
+/// `sound <id> (<file>): decoded-audio budget of <N> MiB exhausted; raise
+/// audio.decoded_budget_mib` (`N = decoded_budget_bytes >> 20`); a failed
+/// decode leaves nothing charged.
 pub fn table_samples(
     checked: &ValidatedTable,
     sample_rate: u32,
+    decoded_budget_bytes: u64,
 ) -> (Vec<RegisteredSound>, Vec<String>) {
-    let budget = DecodeBudget::new(DecodeBudget::DEFAULT_BYTES);
+    let budget = DecodeBudget::new(decoded_budget_bytes);
     let mut out = Vec::new();
     let mut errors = Vec::new();
     for def in &checked.table.manifest.sounds {
@@ -77,7 +87,13 @@ pub fn table_samples(
             .read(&def.file)
             .map_err(|e| e.to_string())
             .and_then(|b| {
-                decode_with_budget(&b, sample_rate, &budget).map_err(|e| format!("{e:?}"))
+                decode_with_budget(&b, sample_rate, &budget).map_err(|e| match e {
+                    DecodeError::BudgetExhausted => format!(
+                        "decoded-audio budget of {} MiB exhausted; raise audio.decoded_budget_mib",
+                        decoded_budget_bytes >> 20
+                    ),
+                    other => format!("{other:?}"),
+                })
             });
         match sample {
             Ok(s) => out.push((id, Arc::new(s), Bus::from(def.bus))),
@@ -759,6 +775,164 @@ pub fn open_telemetry(endpoint: &str) -> Result<(TelemetryTx, TelemetryLink), St
 mod tests {
     use super::*;
     use pin_audio::mixer::SoundTrigger;
+
+    /// Builds the grey-box bundle (as `tests/support` and
+    /// `tables/greybox/build.sh` do) into a fresh temporary directory.
+    fn greybox_bundle(tag: &str) -> std::path::PathBuf {
+        use pin_assetgen::{TableMeta, generate_kit};
+        use pin_tablegen::layout::parse_layout;
+        use pin_tablegen::{generate, write_bundle};
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tables/greybox");
+        let out =
+            std::env::temp_dir().join(format!("pin_app_audio_unit_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let layout_text = std::fs::read_to_string(src.join("layout.toml")).unwrap();
+        let table_text = std::fs::read_to_string(src.join("table.toml")).unwrap();
+        let layout = parse_layout(&layout_text).unwrap();
+        let base = TableManifest::from_toml_str(&table_text).unwrap();
+        write_bundle(&generate(&layout, &base).unwrap(), &out).unwrap();
+        for f in [
+            "rules.lua",
+            "backglass.toml",
+            "layout.toml",
+            "glass.toml",
+            "display/scene_attract.toml",
+            "display/scene_score.toml",
+            "display/scene_game_over.toml",
+            "display/scene_powerball_mania.toml",
+        ] {
+            let to = out.join(f);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(src.join(f), &to).unwrap();
+        }
+        let hex = |c: &str| {
+            let h = c.trim_start_matches('#');
+            let b = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap();
+            [b(0), b(2), b(4)]
+        };
+        let meta = TableMeta {
+            title: base.meta.name.clone(),
+            palette: base.meta.palette.iter().map(|c| hex(c)).collect(),
+            seed: 0,
+        };
+        generate_kit(&meta, &out).unwrap();
+        out
+    }
+
+    /// SPEC §4 4.4, D25: the I/O worker's loads use the budget last set
+    /// with `IoWorker::set_decoded_budget_bytes` (default
+    /// `DecodeBudget::DEFAULT_BYTES`), read when each load starts; and
+    /// `load_app_table_with_budget` applies its budget directly.
+    #[test]
+    fn io_worker_loads_use_the_set_budget() {
+        use super::super::table::{
+            IoReply, IoRequest, IoWorker, load_app_table, load_app_table_with_budget,
+        };
+        let dir = greybox_bundle("worker");
+        let mixer = MixerConfig::default();
+        let w = IoWorker::spawn(mixer);
+        assert_eq!(w.decoded_budget_bytes(), DecodeBudget::DEFAULT_BYTES);
+        let sounds = |w: &IoWorker, id: u64| match w.recv() {
+            Some(IoReply::Loaded { id: got, app, .. }) => {
+                assert_eq!(got, id);
+                app.samples.len()
+            }
+            other => panic!("{other:?}"),
+        };
+        w.request(IoRequest::Load {
+            id: 1,
+            path: dir.clone(),
+        });
+        let all = sounds(&w, 1);
+        assert!(all >= 2);
+        w.set_decoded_budget_bytes(0);
+        assert_eq!(w.decoded_budget_bytes(), 0);
+        w.request(IoRequest::Load {
+            id: 2,
+            path: dir.clone(),
+        });
+        assert_eq!(sounds(&w, 2), 0, "a zero budget leaves every sound silent");
+        w.set_decoded_budget_bytes(DecodeBudget::DEFAULT_BYTES);
+        w.request(IoRequest::Load {
+            id: 3,
+            path: dir.clone(),
+        });
+        assert_eq!(sounds(&w, 3), all);
+        drop(w);
+        assert_eq!(
+            load_app_table_with_budget(&dir, mixer, 0)
+                .unwrap()
+                .samples
+                .len(),
+            0
+        );
+        assert_eq!(load_app_table(&dir, mixer).unwrap().samples.len(), all);
+    }
+
+    /// SPEC §4 3.3 / 4.4, D25: `table_samples` with the default budget
+    /// (`DecodeBudget::DEFAULT_BYTES`, 512 MiB) loads every grey-box sound
+    /// with no errors; with a budget below the bundle's decoded size, every
+    /// sound that no longer fits fails with exactly one budget message
+    /// naming the budget in MiB and the setting, stays silent, and the load
+    /// goes on (earlier sounds keep their charge).
+    #[test]
+    fn table_samples_uses_the_given_budget() {
+        let dir = greybox_bundle("budget");
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || {
+                let checked = super::super::table::validate_table(&dir).unwrap();
+                let rate = MixerConfig::default().sample_rate;
+                let manifest_len = checked.table.manifest.sounds.len();
+                let (all, errors) = table_samples(&checked, rate, DecodeBudget::DEFAULT_BYTES);
+                assert!(errors.is_empty(), "{errors:?}");
+                assert_eq!(all.len(), manifest_len);
+                assert!(manifest_len >= 2);
+                // A zero budget: every sound fails with the budget message.
+                let (none, errors) = table_samples(&checked, rate, 0);
+                assert!(none.is_empty());
+                assert_eq!(errors.len(), manifest_len);
+                for (e, def) in errors.iter().zip(&checked.table.manifest.sounds) {
+                    assert_eq!(
+                        e,
+                        &format!(
+                            "sound {} ({}): decoded-audio budget of 0 MiB exhausted; \
+                             raise audio.decoded_budget_mib",
+                            def.id, def.file
+                        )
+                    );
+                }
+                // Room for exactly the first manifest sound: it loads, the
+                // rest fail with "1 MiB" when the budget prints as 1 MiB.
+                let first = checked.table.ids.sound(&checked.table.manifest.sounds[0].id);
+                let first_bytes = all
+                    .iter()
+                    .find(|(id, _, _)| Some(*id) == first)
+                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .unwrap();
+                let budget = (1 << 20).max(first_bytes);
+                let (some, errors) = table_samples(&checked, rate, budget);
+                let fit: u64 = some
+                    .iter()
+                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .sum();
+                assert!(fit <= budget);
+                assert_eq!(some.len() + errors.len(), manifest_len);
+                for e in &errors {
+                    assert!(
+                        e.ends_with(&format!(
+                            "decoded-audio budget of {} MiB exhausted; raise audio.decoded_budget_mib",
+                            budget >> 20
+                        )),
+                        "{e}"
+                    );
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn null_and_offline_sinks() {
