@@ -1,6 +1,7 @@
 //! A minimal, deterministic binary glTF 2.0 writer for `cabinet.glb`: one
 //! scene of nodes (one triangle primitive each with `POSITION`, `NORMAL` and
-//! `TEXCOORD_0`), an optional node `translation` and string `extras`, named
+//! `TEXCOORD_0`, or no mesh at all: a node kept in the stable node list
+//! with nothing to draw), an optional node `translation` and string `extras`, named
 //! flat-colour metallic-roughness materials (optionally alpha-blended) and
 //! one buffer in the GLB `BIN` chunk. The JSON is written by hand in a fixed
 //! key order and every float goes through one printer (no `-0`), so the same
@@ -43,8 +44,9 @@ pub(crate) struct Material {
 pub(crate) struct Node {
     /// Node and mesh name.
     pub name: &'static str,
-    /// Geometry, metres, in the node's frame.
-    pub mesh: Mesh,
+    /// Geometry, metres, in the node's frame (`None`: a node without a
+    /// mesh, written with no `mesh` property).
+    pub mesh: Option<Mesh>,
     /// Index into the material list.
     pub material: usize,
     /// Node translation, metres (`None`: identity transform).
@@ -56,13 +58,13 @@ pub(crate) struct Node {
 impl Node {
     /// Every float of the node (positions, normals, UVs, translation).
     pub(crate) fn all_finite(&self) -> bool {
-        let m = &self.mesh;
-        m.positions.iter().flatten().all(|v| v.is_finite())
-            && m.normals.iter().flatten().all(|v| v.is_finite())
-            && m.uvs.iter().flatten().all(|v| v.is_finite())
-            && self
-                .translation
-                .is_none_or(|t| t.iter().all(|v| v.is_finite()))
+        self.mesh.as_ref().is_none_or(|m| {
+            m.positions.iter().flatten().all(|v| v.is_finite())
+                && m.normals.iter().flatten().all(|v| v.is_finite())
+                && m.uvs.iter().flatten().all(|v| v.is_finite())
+        }) && self
+            .translation
+            .is_none_or(|t| t.iter().all(|v| v.is_finite()))
     }
 }
 
@@ -120,8 +122,8 @@ fn le_f32s<'a>(values: impl Iterator<Item = &'a f32>) -> Vec<u8> {
     values.flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// Serialises `nodes` (each with at least one triangle and finite floats)
-/// and `materials` as one scene named `scene` to GLB bytes.
+/// Serialises `nodes` (each with no mesh, or a mesh with at least one
+/// triangle and finite floats) and `materials` as one scene named `scene` to GLB bytes.
 pub(crate) fn write(scene: &str, nodes: &[Node], materials: &[Material]) -> Vec<u8> {
     let mut bin: Vec<u8> = Vec::new();
     let mut views = String::new();
@@ -144,52 +146,58 @@ pub(crate) fn write(scene: &str, nodes: &[Node], materials: &[Material]) -> Vec<
         view_count += 1;
         view_count - 1
     };
+    let mut mesh_count = 0usize;
     for (i, node) in nodes.iter().enumerate() {
-        let m = &node.mesh;
-        let pos = le_f32s(m.positions.iter().flatten());
-        let nrm = le_f32s(m.normals.iter().flatten());
-        let uv = le_f32s(m.uvs.iter().flatten());
-        let idx: Vec<u8> = m.indices.iter().flat_map(|k| k.to_le_bytes()).collect();
-        let vp = add_view(&mut bin, &pos, 34962, &mut views);
-        let vn = add_view(&mut bin, &nrm, 34962, &mut views);
-        let vt = add_view(&mut bin, &uv, 34962, &mut views);
-        let vi = add_view(&mut bin, &idx, 34963, &mut views);
-        let (lo, hi) = bounds(&m.positions);
         if i > 0 {
-            accessors.push(',');
-            meshes.push(',');
             json_nodes.push(',');
         }
-        let count = m.positions.len();
-        let _ = write!(
-            accessors,
-            "{{\"bufferView\":{vp},\"componentType\":5126,\"count\":{count},\"type\":\"VEC3\",\"min\":"
-        );
-        json_f32s(&mut accessors, &lo);
-        accessors.push_str(",\"max\":");
-        json_f32s(&mut accessors, &hi);
-        let _ = write!(
-            accessors,
-            "}},{{\"bufferView\":{vn},\"componentType\":5126,\"count\":{count},\"type\":\"VEC3\"}},\
-             {{\"bufferView\":{vt},\"componentType\":5126,\"count\":{count},\"type\":\"VEC2\"}},\
-             {{\"bufferView\":{vi},\"componentType\":5125,\"count\":{},\"type\":\"SCALAR\"}}",
-            m.indices.len()
-        );
-        meshes.push_str("{\"name\":");
-        json_str(&mut meshes, node.name);
-        let _ = write!(
-            meshes,
-            ",\"primitives\":[{{\"attributes\":{{\"POSITION\":{},\"NORMAL\":{},\"TEXCOORD_0\":{}}},\
-             \"indices\":{},\"material\":{},\"mode\":4}}]}}",
-            4 * i,
-            4 * i + 1,
-            4 * i + 2,
-            4 * i + 3,
-            node.material
-        );
         json_nodes.push_str("{\"name\":");
         json_str(&mut json_nodes, node.name);
-        let _ = write!(json_nodes, ",\"mesh\":{i}");
+        if let Some(m) = &node.mesh {
+            let mi = mesh_count;
+            mesh_count += 1;
+            let pos = le_f32s(m.positions.iter().flatten());
+            let nrm = le_f32s(m.normals.iter().flatten());
+            let uv = le_f32s(m.uvs.iter().flatten());
+            let idx: Vec<u8> = m.indices.iter().flat_map(|k| k.to_le_bytes()).collect();
+            let vp = add_view(&mut bin, &pos, 34962, &mut views);
+            let vn = add_view(&mut bin, &nrm, 34962, &mut views);
+            let vt = add_view(&mut bin, &uv, 34962, &mut views);
+            let vi = add_view(&mut bin, &idx, 34963, &mut views);
+            let (lo, hi) = bounds(&m.positions);
+            if mi > 0 {
+                accessors.push(',');
+                meshes.push(',');
+            }
+            let count = m.positions.len();
+            let _ = write!(
+                accessors,
+                "{{\"bufferView\":{vp},\"componentType\":5126,\"count\":{count},\"type\":\"VEC3\",\"min\":"
+            );
+            json_f32s(&mut accessors, &lo);
+            accessors.push_str(",\"max\":");
+            json_f32s(&mut accessors, &hi);
+            let _ = write!(
+                accessors,
+                "}},{{\"bufferView\":{vn},\"componentType\":5126,\"count\":{count},\"type\":\"VEC3\"}},\
+                 {{\"bufferView\":{vt},\"componentType\":5126,\"count\":{count},\"type\":\"VEC2\"}},\
+                 {{\"bufferView\":{vi},\"componentType\":5125,\"count\":{},\"type\":\"SCALAR\"}}",
+                m.indices.len()
+            );
+            meshes.push_str("{\"name\":");
+            json_str(&mut meshes, node.name);
+            let _ = write!(
+                meshes,
+                ",\"primitives\":[{{\"attributes\":{{\"POSITION\":{},\"NORMAL\":{},\"TEXCOORD_0\":{}}},\
+                 \"indices\":{},\"material\":{},\"mode\":4}}]}}",
+                4 * mi,
+                4 * mi + 1,
+                4 * mi + 2,
+                4 * mi + 3,
+                node.material
+            );
+            let _ = write!(json_nodes, ",\"mesh\":{mi}");
+        }
         if let Some(t) = node.translation {
             json_nodes.push_str(",\"translation\":");
             json_f32s(&mut json_nodes, &t);
@@ -283,7 +291,7 @@ mod tests {
         };
         let node = Node {
             name: "n\"x",
-            mesh,
+            mesh: Some(mesh),
             material: 0,
             translation: Some([0.5, -0.0, 2.0]),
             extras: vec![("moving", "true".into()), ("travel_axis", "+x".into())],

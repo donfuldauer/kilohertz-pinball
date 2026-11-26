@@ -115,7 +115,7 @@ proptest! {
             && let Ok(g) = m.resolve()
         {
             match generate_cabinet(&g) {
-                Ok(out) => prop_assert_eq!(out.nodes.len(), 28),
+                Ok(out) => prop_assert_eq!(out.nodes, NODE_NAMES.map(String::from).to_vec()),
                 Err(e) => prop_assert!(!e.element.is_empty()),
             }
         }

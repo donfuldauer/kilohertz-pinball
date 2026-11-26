@@ -157,6 +157,9 @@ pub(crate) struct MeshMm {
     pub normals: Vec<P3>,
     /// Triangle list, counter-clockwise front faces.
     pub indices: Vec<u32>,
+    /// Explicit UVs, one per position (empty: the box projection of
+    /// [`MeshMm::to_glb`]). Set by [`MeshMm::set_uvs`].
+    pub uvs: Vec<[f64; 2]>,
 }
 
 impl MeshMm {
@@ -286,7 +289,24 @@ impl MeshMm {
         self.loft(&[ring(x0), ring(x1)]);
     }
 
-    /// Converts to metres (`f32`) with UVs: each vertex is projected on the
+    /// Replaces the UVs of every vertex with `f(position)`, clamped to
+    /// `[0, 1]` (a texture-mapped quad, such as the translite or the score
+    /// display, maps its image exactly instead of by the box projection).
+    pub(crate) fn set_uvs(&mut self, f: impl Fn(P3) -> [f64; 2]) {
+        self.uvs = self
+            .positions
+            .iter()
+            .map(|&p| f(p).map(|c| max_f64(0.0, min_f64(1.0, c))))
+            .collect();
+    }
+
+    /// `true` when the mesh has no triangle.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    /// Converts to metres (`f32`) with UVs: the explicit UVs when set
+    /// ([`MeshMm::set_uvs`]), otherwise each vertex is projected on the
     /// node's bounding box along its face normal's dominant axis, so every
     /// face maps into `[0, 1]` and a box face covers it whole; `u` runs to
     /// the viewer's right seen from outside the face, `v` runs down (glTF
@@ -300,6 +320,26 @@ impl MeshMm {
                 hi[k] = max_f64(hi[k], p[k]);
             }
         }
+        let explicit = self.uvs.len() == self.positions.len() && !self.uvs.is_empty();
+        let uvs = if explicit {
+            self.uvs.iter().map(|uv| uv.map(|c| c as f32)).collect()
+        } else {
+            self.box_uvs(lo, hi)
+        };
+        Mesh {
+            positions: self
+                .positions
+                .iter()
+                .map(|p| p.map(|c| (c / 1000.0) as f32))
+                .collect(),
+            normals: self.normals.iter().map(|n| n.map(|c| c as f32)).collect(),
+            uvs,
+            indices: self.indices.clone(),
+        }
+    }
+
+    /// The box-projected UVs on the bounds `lo..hi` (see [`MeshMm::to_glb`]).
+    fn box_uvs(&self, lo: P3, hi: P3) -> Vec<[f32; 2]> {
         let frac = |p: &P3, k: usize| -> f64 {
             let ext = hi[k] - lo[k];
             if ext > 1e-9 {
@@ -308,8 +348,7 @@ impl MeshMm {
                 0.5
             }
         };
-        let uvs = self
-            .positions
+        self.positions
             .iter()
             .zip(&self.normals)
             .map(|(p, n)| {
@@ -326,17 +365,7 @@ impl MeshMm {
                 };
                 [u as f32, v as f32]
             })
-            .collect();
-        Mesh {
-            positions: self
-                .positions
-                .iter()
-                .map(|p| p.map(|c| (c / 1000.0) as f32))
-                .collect(),
-            normals: self.normals.iter().map(|n| n.map(|c| c as f32)).collect(),
-            uvs,
-            indices: self.indices.clone(),
-        }
+            .collect()
     }
 
     /// Signed enclosed volume, mm^3 (positive when every closed piece faces

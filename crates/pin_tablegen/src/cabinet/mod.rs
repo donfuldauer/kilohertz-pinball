@@ -1,17 +1,22 @@
 //! Cabinet model generator: `cabinet.glb` from a resolved `cabinet.toml`
 //! geometry (SPEC §7, REQ-CAB-001, REQ-CAB-003, REQ-CAB-007).
 //!
-//! Owner: KP-029 (#110).
+//! Owners: KP-029 (#110, body, legs, trim and controls) and KP-030 (#111,
+//! backbox and art blades).
 //!
 //! [`generate_cabinet`] turns a [`CabinetGeometry`] (from
 //! `CabinetManifest::from_toml_str(..)?.resolve()` or
 //! `CabinetGeometry::preset(..)`) into the bytes of [`CABINET_GLB_FILE`]: the
 //! cabinet body, the four legs with their brackets and levelers, the side
 //! rails, lockdown bar, playfield glass, coin door, the four buttons and the
-//! plunger. Every dimension comes from the geometry; nothing about the
-//! cabinet is hard-coded (REQ-CAB-003). The same geometry always gives the
-//! same bytes; an invalid one is a [`GenError`] naming its `cabinet.toml`
-//! key, never a panic.
+//! plunger; the backbox (its shell, the speaker panel with the
+//! score-display window and the round grilles, the translite frame with the
+//! translite opening, the backglass sheet behind it, the score-display quad
+//! and the hinge brackets); and the two inside art blades on the side walls
+//! above the playfield. Every dimension comes from the geometry; nothing
+//! about the cabinet is hard-coded (REQ-CAB-003). The same geometry always
+//! gives the same bytes; an invalid one is a [`GenError`] naming its
+//! `cabinet.toml` key, never a panic.
 //!
 //! # Frame and units
 //!
@@ -25,12 +30,52 @@
 //!
 //! # Nodes
 //!
-//! The node list is stable: [`NODE_NAMES`], the same 28 names in the same
-//! order for every geometry. Each node has one triangle primitive with
+//! The node list is stable: [`NODE_NAMES`], the same 37 names in the same
+//! order for every geometry: the 28 body, leg, trim and control nodes, then
+//! `cabinet.backbox.shell`, `.speaker_panel`, `.translite_frame`,
+//! `.translite`, `.display`, `.grilles`, `.hinge`, `cabinet.blade.left` and
+//! `cabinet.blade.right`. Each node has one triangle primitive with
 //! `POSITION`, `NORMAL` and `TEXCOORD_0` (UVs in `[0, 1]`: each face is
 //! projected on the node's bounding box along its dominant normal axis, so
 //! the outer face of a body side covers `0..1` whole), `u32` indices,
-//! counter-clockwise front faces and finite floats.
+//! counter-clockwise front faces and finite floats. The one exception: a
+//! backbox with no grilles writes `cabinet.backbox.grilles` with no mesh
+//! (the node stays in the list; `pin_assets::load_gltf` loads it and lists
+//! no mesh for it).
+//!
+//! # Backbox
+//!
+//! From `[backbox]` alone. The front ("face") is the plane `y = front_y`
+//! (flat) or leans back 10 degrees about its bottom edge (angled); face
+//! coordinates `(u, v)` run across from the backbox centreline and up the
+//! face from its bottom edge, as in `cabinet.toml`. The top is flat, slopes
+//! down 10 degrees toward the rear (angled) or is a parabolic crown across
+//! `x` that sags `0.06 * width` at the sides (arched, 32 segments). The
+//! bottom is level at `zb = floor_height_mm(front_y, bottom_z)`.
+//!
+//! * `shell`: bottom, side, rear and top panels, each `body.wall_thickness`
+//!   (`T`) thick, behind the front plates.
+//! * `speaker_panel` (`v` from 0 to `speaker_panel_height`) and
+//!   `translite_frame` (from there up to the top): front plates `T` thick
+//!   whose through holes are exactly the score-display window and the
+//!   translite opening.
+//! * `translite`: the backglass sheet, centred on the opening, its front on
+//!   the frame's rear face; `display`: one quad of the window's size 5 mm
+//!   behind the face. Both are UV-mapped to their image: `(0, 0)` at the
+//!   upper-left corner seen from the front, `(1, 1)` at the lower-right.
+//! * `grilles`: one disc (32 segments) per grille, 2 mm proud of the face.
+//! * `hinge`: two 50 mm bracket plates, mirrored about `x = 0`, at the
+//!   backbox rear, from the lower of the backbox bottom and the body's rear
+//!   wall top up to 80 mm above the backbox bottom.
+//!
+//! # Art blades
+//!
+//! `cabinet.blade.left` / `.right`: 3 mm panels on the side walls' inner
+//! faces from `y = mount.inset` to the rear wall's inner face, their bottom
+//! edge on the playfield plane (`mount.height` at the inset, rising at
+//! `mount.pitch_deg`; roll ignored), their top two glass-channel widths
+//! below the side wall top (under the glass-channel notch). The inner face
+//! is box-projected, so its UVs cover `0..1`.
 //!
 //! # Moving nodes
 //!
@@ -44,15 +89,20 @@
 //!
 //! # Materials
 //!
-//! Seventeen named materials, in this order: `cabinet.body` (bottom, rear),
+//! Twenty-four named materials, in this order: `cabinet.body` (bottom, rear),
 //! `cabinet.side_left`, `cabinet.side_right`, `cabinet.front` (the art
 //! surfaces, swapped by asset ID, D32), `cabinet.trim_metal` (rails and
 //! lockdown bar: `trim.rail_colour` tint, `trim.metal_finish`),
 //! `cabinet.glass` (alpha-blended), `cabinet.coin_door`, `cabinet.leveler`,
 //! `cabinet.leg.<leg>` for each leg (shaft and bracket: `leg.colour`
 //! converted from sRGB to linear, metallic and roughness from `finish`, wood
-//! never metallic), `cabinet.button.<button>` and `cabinet.plunger` (housing
-//! and rod).
+//! never metallic), `cabinet.button.<button>`, `cabinet.plunger` (housing
+//! and rod), `cabinet.backbox` (the shell, a white art surface),
+//! `cabinet.backbox.speaker_panel` (near-black), `cabinet.backbox.grille`
+//! (dark metal, `trim.metal_finish`), `cabinet.backbox.translite` and
+//! `cabinet.backbox.display` (white texture slots), `cabinet.blade_left` and
+//! `cabinet.blade_right` (white art surfaces). The translite frame and the
+//! hinge use `cabinet.trim_metal`.
 //!
 //! # Dimension guarantees (within 1 mm)
 //!
@@ -68,7 +118,26 @@
 //!   `leveler.extension + length` at the `corner_inset` centreline; each
 //!   leveler's lowest point is on the floor `z = 0`, so the whole file's
 //!   lowest point is `z = 0`.
+//! * The backbox shell, speaker panel and translite frame together span
+//!   `x` in `±backbox.width / 2`, `y` in `[front_y, front_y + depth]` and
+//!   `z` from `zb` to `zb + height = backbox_top_height_mm()` (the apex:
+//!   the front top edge, or the crown of an arched top).
+//! * The plates' holes are the translite opening and the score-display
+//!   window, at their `(u, v)` and sizes; the display quad has the window's
+//!   size, so its aspect is `width / height` from the data.
+//!
+//! # Errors
+//!
+//! After the body, leg, control and trim checks: the `[backbox]` values
+//! (finite, positive, within [`MAX_DIMENSION_MM`]; at most 8 grilles), their
+//! fit (the opening, window, grilles and backglass inside the face, the
+//! window inside the speaker panel, the speaker panel under the backbox
+//! height), the profiles (`backbox.front_profile`: an angled front's lean
+//! must fit the depth; `backbox.top_profile`: an arched top must clear the
+//! opening and the speaker panel, an angled one must leave room at the
+//! rear) and the blades (`mount.inset`, `mount.height`, `mount.pitch_deg`).
 
+mod backbox;
 mod glb;
 mod mesh;
 mod parts;
@@ -89,7 +158,7 @@ pub const CABINET_GLB_FILE: &str = "cabinet.glb";
 pub const MAX_DIMENSION_MM: f32 = 100_000.0;
 
 /// The stable node list of `cabinet.glb`, in file order.
-pub const NODE_NAMES: [&str; 28] = [
+pub const NODE_NAMES: [&str; 37] = [
     "cabinet.body.bottom",
     "cabinet.body.side_left",
     "cabinet.body.side_right",
@@ -118,10 +187,19 @@ pub const NODE_NAMES: [&str; 28] = [
     "cabinet.button.action",
     "cabinet.plunger.housing",
     "cabinet.plunger.rod",
+    "cabinet.backbox.shell",
+    "cabinet.backbox.speaker_panel",
+    "cabinet.backbox.translite_frame",
+    "cabinet.backbox.translite",
+    "cabinet.backbox.display",
+    "cabinet.backbox.grilles",
+    "cabinet.backbox.hinge",
+    "cabinet.blade.left",
+    "cabinet.blade.right",
 ];
 
 /// The material names of `cabinet.glb`, in file order.
-pub const MATERIAL_NAMES: [&str; 17] = [
+pub const MATERIAL_NAMES: [&str; 24] = [
     "cabinet.body",
     "cabinet.side_left",
     "cabinet.side_right",
@@ -139,6 +217,13 @@ pub const MATERIAL_NAMES: [&str; 17] = [
     "cabinet.button.start",
     "cabinet.button.action",
     "cabinet.plunger",
+    "cabinet.backbox",
+    "cabinet.backbox.speaker_panel",
+    "cabinet.backbox.grille",
+    "cabinet.backbox.translite",
+    "cabinet.backbox.display",
+    "cabinet.blade_left",
+    "cabinet.blade_right",
 ];
 
 // Material indices into MATERIAL_NAMES.
@@ -153,6 +238,16 @@ const M_LEVELER: usize = 7;
 const M_LEG0: usize = 8;
 const M_BUTTON0: usize = 12;
 const M_PLUNGER: usize = 16;
+const M_BACKBOX: usize = 17;
+const M_SPEAKER_PANEL: usize = 18;
+const M_GRILLE: usize = 19;
+const M_TRANSLITE: usize = 20;
+const M_DISPLAY: usize = 21;
+const M_BLADE_LEFT: usize = 22;
+const M_BLADE_RIGHT: usize = 23;
+/// Index of `cabinet.backbox.grilles` in [`NODE_NAMES`] (the one node that
+/// may have no mesh: a backbox with no grilles).
+const N_GRILLES: usize = 33;
 
 /// A generated cabinet model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,7 +388,7 @@ fn check(g: &CabinetGeometry) -> Result<(), GenError> {
     positive("controls.coin_door.width", c.coin_door.width)?;
     positive("controls.coin_door.height", c.coin_door.height)?;
     srgb_to_linear("trim.rail_colour", &g.trim.rail_colour)?;
-    Ok(())
+    backbox::check(g)
 }
 
 fn materials(g: &CabinetGeometry) -> Result<Vec<glb::Material>, GenError> {
@@ -363,6 +458,24 @@ fn materials(g: &CabinetGeometry) -> Result<Vec<glb::Material>, GenError> {
         [0.8, 0.8, 0.8, 1.0],
         (1.0, 0.15),
     ));
+    // Backbox and blades: art surfaces and texture slots are white.
+    out.extend([
+        flat(MATERIAL_NAMES[M_BACKBOX], white, art),
+        flat(
+            MATERIAL_NAMES[M_SPEAKER_PANEL],
+            [0.02, 0.02, 0.02, 1.0],
+            (0.0, 0.7),
+        ),
+        flat(
+            MATERIAL_NAMES[M_GRILLE],
+            [0.05, 0.05, 0.05, 1.0],
+            finish_factors(g.trim.metal_finish),
+        ),
+        flat(MATERIAL_NAMES[M_TRANSLITE], white, art),
+        flat(MATERIAL_NAMES[M_DISPLAY], white, art),
+        flat(MATERIAL_NAMES[M_BLADE_LEFT], white, art),
+        flat(MATERIAL_NAMES[M_BLADE_RIGHT], white, art),
+    ]);
     Ok(out)
 }
 
@@ -386,19 +499,20 @@ fn node(name: &'static str, part: Part, material: usize) -> glb::Node {
     };
     glb::Node {
         name,
-        mesh: part.mesh.to_glb(),
+        mesh: Some(part.mesh.to_glb()),
         material,
         translation: part.translation.map(|t| t.map(|c| (c / 1000.0) as f32)),
         extras,
     }
 }
 
-/// Every node finite and non-empty (a guard: the checked inputs keep every
-/// derived float finite).
+/// Every node finite and every mesh non-empty (a guard: the checked inputs
+/// keep every derived float finite). A node may have no mesh at all (the
+/// grilles of a backbox without grilles).
 fn check_nodes(nodes: &[glb::Node]) -> Result<(), GenError> {
     match nodes
         .iter()
-        .find(|n| !n.all_finite() || n.mesh.indices.is_empty())
+        .find(|n| !n.all_finite() || n.mesh.as_ref().is_some_and(|m| m.indices.is_empty()))
     {
         Some(bad) => Err(err(
             "cabinet",
@@ -418,8 +532,21 @@ fn check_nodes(nodes: &[glb::Node]) -> Result<(), GenError> {
 /// Errors: a non-finite, non-positive (or beyond ±[`MAX_DIMENSION_MM`]) size
 /// or position, or a malformed colour, is a [`GenError`] whose `element` is
 /// the dotted `cabinet.toml` key (`body.width`, `legs.rear_left.length`,
-/// `controls.plunger`, ...). Never panics.
+/// `controls.plunger`, `backbox.grilles[1].u`, `mount.inset`, ...); so is a
+/// backbox part that does not fit (`backbox.translite_opening.bottom`,
+/// `backbox.top_profile`, ...). See the module docs' "Errors". Never
+/// panics.
 pub fn generate_cabinet(geom: &CabinetGeometry) -> Result<GeneratedCabinet, GenError> {
+    let (nodes, mats) = build(geom)?;
+    Ok(GeneratedCabinet {
+        glb: glb::write("cabinet", &nodes, &mats),
+        nodes: NODE_NAMES.iter().map(|s| (*s).to_owned()).collect(),
+    })
+}
+
+/// Checks `geom` and builds the nodes (in [`NODE_NAMES`] order) and the
+/// materials (in [`MATERIAL_NAMES`] order).
+fn build(geom: &CabinetGeometry) -> Result<(Vec<glb::Node>, Vec<glb::Material>), GenError> {
     check(geom)?;
     let g = geom;
     let mut parts: Vec<(Part, usize)> = Vec::with_capacity(NODE_NAMES.len());
@@ -463,15 +590,41 @@ pub fn generate_cabinet(geom: &CabinetGeometry) -> Result<GeneratedCabinet, GenE
     }
     parts.push((parts::plunger_housing(g), M_PLUNGER));
     parts.push((parts::plunger_rod(g), M_PLUNGER));
-    let nodes: Vec<glb::Node> = parts
+    let speaker_panel = backbox::speaker_panel(g);
+    if speaker_panel.mesh.is_empty() {
+        return Err(err(
+            "backbox.score_display.width",
+            "the score-display window covers the whole speaker panel",
+        ));
+    }
+    let frame = backbox::translite_frame(g);
+    if frame.mesh.is_empty() {
+        return Err(err(
+            "backbox.translite_opening.width",
+            "the translite opening covers the whole translite frame",
+        ));
+    }
+    let [blade_left, blade_right] = backbox::blades(g);
+    parts.extend([
+        (backbox::shell(g), M_BACKBOX),
+        (speaker_panel, M_SPEAKER_PANEL),
+        (frame, M_TRIM),
+        (backbox::translite(g), M_TRANSLITE),
+        (backbox::display(g), M_DISPLAY),
+        (backbox::grilles(g), M_GRILLE),
+        (backbox::hinge(g), M_TRIM),
+        (blade_left, M_BLADE_LEFT),
+        (blade_right, M_BLADE_RIGHT),
+    ]);
+    let mut nodes: Vec<glb::Node> = parts
         .into_iter()
         .zip(NODE_NAMES)
         .map(|((part, material), name)| node(name, part, material))
         .collect();
+    if g.backbox.grilles.is_empty() {
+        nodes[N_GRILLES].mesh = None;
+    }
     check_nodes(&nodes)?;
     let mats = materials(g)?;
-    Ok(GeneratedCabinet {
-        glb: glb::write("cabinet", &nodes, &mats),
-        nodes: NODE_NAMES.iter().map(|s| (*s).to_owned()).collect(),
-    })
+    Ok((nodes, mats))
 }
