@@ -132,7 +132,8 @@
 //! (finite, positive, within [`MAX_DIMENSION_MM`]; at most 8 grilles), their
 //! fit (the opening, window, grilles and backglass inside the face, the
 //! window inside the speaker panel, the speaker panel under the backbox
-//! height), the profiles (`backbox.front_profile`: an angled front's lean
+//! height), room for the panels (each of `backbox.width`, `backbox.height`
+//! and `backbox.depth` at least twice `body.wall_thickness`), the profiles (`backbox.front_profile`: an angled front's lean
 //! must fit the depth; `backbox.top_profile`: an arched top must clear the
 //! opening and the speaker panel, an angled one must leave room at the
 //! rear) and the blades (`mount.inset`, `mount.height`, `mount.pitch_deg`).
