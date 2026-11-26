@@ -8722,3 +8722,27 @@ frame and an ordering hazard with the present).
 **Decision:** The Newton test asserts exact identity at load (tick 0), a swing below 1e-3 rad over the first 20 ticks, and, after a strike, a maximum swing more than 1e-4 rad above the same table's idle run (not just above 1e-4).
 **Rationale:** The captive ball settles under the playfield pitch: the idle table publishes a swing of 1.4e-5 rad at tick 1 growing to a steady 6.2e-4 rad by tick 80. A literal "identity at rest" check would reject that physically correct equilibrium, and a bare "> 1e-4 after a strike" check would be satisfied by the settle alone, so the strike is compared to the idle baseline.
 **Alternatives:** Asserting exact identity on every rest tick (fails on the settle); asserting only `> 1e-4` after the strike (cannot tell a strike from the settle).
+
+## #98 — Previous camera kept inside PostChain
+
+**Decision:** `PostChain` keeps a copy of the previous presented frame's camera (set by the public `encode` after the frame's uniform is built; cleared by `resize` and the new `reset_camera_history`). Per ball, blur uses the additive `screen_motion_between(prev, camera, ...)`; `screen_motion` is the same-camera wrapper. `PostFrame` is untouched. Readback paths (`render_to_ldr`, `render_to_hdr`) call `encode_impl` directly and do not advance history. The shutter approximation: the shutter spans one frame of camera motion, so a ball whose world velocity equals the camera's world velocity gives start == end on screen only when the camera moved by velocity·shutter between frames, the case the tests construct.
+
+**Rationale:** `view.rs` is owned by #91, and `PostFrame` is built by struct literal in `view.rs` and in many tests, so a new field would break them. A chain-internal history needs no caller change.
+
+**Alternatives:** A new `PostFrame.prev_camera` field: rejected, breaks every literal caller. Editing pin_app `view.rs` to pass the previous camera: rejected, collides with #91. A builder-style `PostFrame::with_prev`: avoids literal breakage but still needs a `view.rs` change, so rejected.
+
+## #98 — Spec tests: "behind the near plane" is tested with points behind the eye
+
+**Decision:** The KP-018 spec tests for the `None` cases of `screen_motion_between` use points behind the camera's eye (depth below zero), not points between the eye and the near plane.
+
+**Rationale:** The brief says "behind its camera's near plane", but black-box probing showed the existing `screen_motion` and `screen_motion_between` accept a ball 0.05 m in front of a camera with near = 0.1 and reject one 0.01 m in front, so the threshold is not the near plane. The two readings agree for points behind the eye, so that is the assertion the brief and the documented behaviour of `screen_motion` ("behind the camera") both require. The mismatch is reported to the Orchestrator.
+
+**Alternatives:** Asserting `None` for depths between the eye and the near plane: contradicts the unchanged `screen_motion` behaviour that the brief says to preserve.
+
+## #98 — Non-finite radius or shutter gives None
+
+**Decision:** `screen_motion_between` (and so `screen_motion`) returns `None` when the ball radius or the shutter is not finite, as it already did for non-finite position or velocity. Before, those two were silently clamped to 0.
+
+**Rationale:** The brief says "any non-finite input" gives `None`; the chain already skips a non-finite shutter and a ball with a non-finite radius has no meaningful disc. Finite inputs are bit-identical to before.
+
+**Alternatives:** Keep clamping to 0 in `screen_motion` and return `None` only in the new function: rejected, the two would differ and the wrapper must equal the old behaviour for the same cameras.
