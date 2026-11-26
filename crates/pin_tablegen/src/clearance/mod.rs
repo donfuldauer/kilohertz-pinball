@@ -53,6 +53,13 @@
 //! * **Deck headroom**: wherever a ball may rest on a walkable collider
 //!   surface, a non-steep collider of another layer above it (an upper
 //!   deck) must leave at least `d + 1 mm`.
+//! * **Layer exits** ([`Feature::LayerExit`], a warning, ball-independent):
+//!   the generator's layer-exit lint (`layout/entry.rs`, one shared
+//!   implementation, the same message text): a layer `N > 0` that a
+//!   transition leads to must have an exit zone (a transition from `N`)
+//!   over area without layer-`N` collider support (playfield and backbox
+//!   colliders); otherwise every transition leading to `N` gets one warning
+//!   at `table.toml` `layer_transitions[i]`, whatever the ball profiles.
 //!
 //! # Backbox
 //!
@@ -148,6 +155,10 @@ pub enum Feature {
     Restriction,
     /// A node of `backbox_colliders.glb` the engine would refuse.
     BackboxCollider,
+    /// A layer transition leading to a layer that has no exit zone over
+    /// unsupported area (the generator's layer-exit lint): always a
+    /// warning, about no particular ball.
+    LayerExit,
 }
 
 impl Feature {
@@ -163,6 +174,7 @@ impl Feature {
             Feature::DeckHeadroom => "deck headroom",
             Feature::Restriction => "restriction",
             Feature::BackboxCollider => "backbox collider",
+            Feature::LayerExit => "layer exit",
         }
     }
 }
@@ -174,10 +186,12 @@ pub struct ClearanceError {
     pub feature: Feature,
     /// The offending feature: spline id, `"<flipper a> / <flipper b>"`
     /// (`[[flippers]]` ids), mech id, glTF node name, or
-    /// `"balls.restrict[i]"`.
+    /// `"balls.restrict[i]"`, or a layer transition id
+    /// ([`Feature::LayerExit`]).
     pub name: String,
     /// Ball profile name (empty for a finding about no particular ball:
-    /// a [`Feature::BackboxCollider`] error).
+    /// a [`Feature::BackboxCollider`] error or a [`Feature::LayerExit`]
+    /// warning).
     pub profile: String,
     /// Bundle file: `table.toml`, the playfield glTF (`meta.playfield_mesh`)
     /// or `backbox_colliders.glb`.
@@ -187,8 +201,8 @@ pub struct ClearanceError {
     /// `layer_transitions[0]`).
     pub path: String,
     /// What the profile needs, mm (0 where no length applies: restriction
-    /// shape findings, backbox collider findings and the flipper-build
-    /// warning).
+    /// shape findings, backbox collider findings, layer-exit warnings and
+    /// the flipper-build warning).
     pub required_mm: f32,
     /// What the geometry offers, mm (0 where no length applies).
     pub actual_mm: f32,
@@ -710,6 +724,7 @@ fn validate_clearance_indexed_for(
     checks::vuks(&world, &balls, &mut sink);
     checks::transitions(&world, &balls, &mut sink);
     headroom::decks(&world, &balls, &mut sink);
+    checks::layer_exits(&world, &mut sink);
     let key = |e: &ClearanceError| {
         (
             e.file.clone(),
@@ -773,6 +788,16 @@ mod index_tests {
     /// The shipped table `name` (`tables/<name>`), generated and loaded as
     /// its `build.sh` does, without the placeholder media kit.
     fn shipped(name: &str) -> (LoadedTable, GltfScene) {
+        let (table, scene, _) = shipped_with(name, |_| {});
+        (table, scene)
+    }
+
+    /// [`shipped`] with the base `table.toml` edited by `edit` first; also
+    /// gives the generator's warnings.
+    fn shipped_with(
+        name: &str,
+        edit: impl FnOnce(&mut pin_core::schema::TableManifest),
+    ) -> (LoadedTable, GltfScene, Vec<ValidationError>) {
         let src = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tables")
             .join(name);
@@ -794,6 +819,7 @@ mod index_tests {
         // Media the validator never reads: the apex fixture's backglass
         // (with a placeholder backbox scene) and no sounds.
         base.sounds.clear();
+        edit(&mut base);
         let apex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pin_assets/tests/fixtures/apex");
         copy_dir(&apex.join("backglass"), &dir.join("backglass"));
         std::fs::copy(apex.join("backglass.toml"), dir.join("backglass.toml")).unwrap();
@@ -804,7 +830,7 @@ mod index_tests {
         let table = load_table(&vfs).unwrap_or_else(|e| panic!("{name}: {e}"));
         let scene = load_gltf(&vfs, &table.manifest.meta.playfield_mesh).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        (table, scene)
+        (table, scene, generated.warnings)
     }
 
     /// A flat collider sheet of `nx × ny` quads (two triangles each) over
@@ -962,5 +988,148 @@ mod index_tests {
                 text(&validate_clearance_diameters(&table, &scene, &ds))
             );
         }
+    }
+
+    /// The layer-exit warnings of a report.
+    fn layer_exits(r: &ClearanceReport) -> Vec<&ClearanceError> {
+        r.warnings
+            .iter()
+            .filter(|w| w.feature == Feature::LayerExit)
+            .collect()
+    }
+
+    /// A transition `from -> to` over the plan box `lo..hi` (mm), 0..60 mm
+    /// high.
+    fn transition(id: &str, from: u8, to: u8, lo: [f32; 2], hi: [f32; 2]) -> LayerTransitionDef {
+        LayerTransitionDef {
+            id: id.to_owned(),
+            from_layer: from,
+            to_layer: to,
+            zone: pin_core::schema::table::AabbDef {
+                min: [lo[0], lo[1], 0.0],
+                max: [hi[0], hi[1], 60.0],
+            },
+        }
+    }
+
+    use pin_core::schema::table::LayerTransitionDef;
+
+    /// SPEC §4 4.1, 4.3 (#137): the four shipped tables draw no layer-exit
+    /// warning from `validate` (nor from the generator).
+    #[test]
+    fn shipped_tables_have_no_layer_exit_warning() {
+        assert_eq!(Feature::LayerExit.label(), "layer exit");
+        for name in ["greybox", "apex_circuit", "sky_deck", "feature_lab"] {
+            let (table, scene, generated) = shipped_with(name, |_| {});
+            let r = validate_clearance(&table, &scene);
+            assert!(layer_exits(&r).is_empty(), "{name}: {:?}", r.warnings);
+            assert!(generated.is_empty(), "{name}: {generated:?}");
+        }
+    }
+
+    /// SPEC §4 4.1, 4.3 (#137): a base `table.toml` with transitions into
+    /// layer 3, which has no exit zone: the generator and `validate` give
+    /// the same warnings (path and message, byte for byte), one per
+    /// transition leading to layer 3, whatever the ball sizes; the report
+    /// stays ok.
+    #[test]
+    fn validate_and_generator_agree_on_a_missing_exit() {
+        let (table, scene, generated) = shipped_with("greybox", |base| {
+            base.layer_transitions
+                .push(transition("into_3", 0, 3, [100.0, 100.0], [140.0, 140.0]));
+            base.layer_transitions
+                .push(transition("loop_3", 3, 3, [100.0, 200.0], [140.0, 240.0]));
+            base.layer_transitions.push(transition(
+                "also_into_3",
+                1,
+                3,
+                [200.0, 100.0],
+                [240.0, 140.0],
+            ));
+        });
+        assert_eq!(generated.len(), 2, "{generated:?}");
+        let r = validate_clearance(&table, &scene);
+        let found = layer_exits(&r);
+        assert_eq!(found.len(), 2, "{:?}", r.warnings);
+        for (w, g) in found.iter().zip(&generated) {
+            assert_eq!(w.to_validation_error(), *g);
+            assert_eq!(w.file, TABLE);
+            assert_eq!(
+                (w.profile.as_str(), w.required_mm, w.actual_mm),
+                ("", 0.0, 0.0)
+            );
+            let i: usize = w.path["layer_transitions[".len()..w.path.len() - 1]
+                .parse()
+                .unwrap();
+            assert_eq!(w.name, table.manifest.layer_transitions[i].id);
+            assert_eq!(table.manifest.layer_transitions[i].to_layer, 3);
+            assert!(
+                w.message.contains("which has no exit zone"),
+                "{}",
+                w.message
+            );
+        }
+        assert!(r.is_ok() || r.errors.iter().all(|e| e.feature != Feature::LayerExit));
+        // Ball-independent: once per transition for any diameter sweep.
+        for ds in [&[][..], &[0.027f32][..], &[0.01588, 0.027, 0.0794][..]] {
+            let r = validate_clearance_diameters(&table, &scene, ds);
+            assert_eq!(layer_exits(&r).len(), 2, "{ds:?}");
+        }
+    }
+
+    /// The test table with only `transitions`.
+    fn with_transitions(table: &LoadedTable, transitions: Vec<LayerTransitionDef>) -> LoadedTable {
+        let mut t = table.clone();
+        t.manifest.layer_transitions = transitions;
+        t
+    }
+
+    /// SPEC §4 4.1 (#137): support decides: an exit zone wholly over a
+    /// layer-3 sheet (at or below the zone's top) does not count, one that
+    /// leaves any sample point unsupported does; a sheet above the zone's
+    /// top or on another layer supports nothing; backbox colliders support
+    /// their layer.
+    #[test]
+    fn exit_zone_support_from_scene_and_backbox() {
+        let (greybox, _) = shipped("greybox");
+        let sheet3 = |layer: u8, z: f32| sheet("deck", layer, [0.1, 0.1, 0.2, 0.2, z], 4, 4);
+        let table = with_transitions(
+            &greybox,
+            vec![
+                transition("in", 0, 3, [50.0, 50.0], [80.0, 80.0]),
+                transition("out", 3, 0, [150.0, 150.0], [250.0, 250.0]),
+            ],
+        );
+        let count = |scene: &GltfScene| layer_exits(&validate_clearance(&table, scene)).len();
+        let scene = |m: Vec<MeshData>| GltfScene {
+            meshes: m,
+            ..Default::default()
+        };
+        // Exit zone (150..250 mm) inside the sheet (100..300 mm), at 50 mm.
+        assert_eq!(count(&scene(vec![sheet3(3, 0.05)])), 1);
+        // At the zone's top (60 mm) it still supports; above it, not.
+        assert_eq!(count(&scene(vec![sheet3(3, 0.06)])), 1);
+        assert_eq!(count(&scene(vec![sheet3(3, 0.061)])), 0);
+        // Another layer's sheet, or none at all: unsupported.
+        assert_eq!(count(&scene(vec![sheet3(2, 0.05)])), 0);
+        assert_eq!(count(&scene(vec![])), 0);
+        // A sheet covering only part of the zone leaves a sample point bare.
+        let part = sheet("deck", 3, [0.1, 0.1, 0.1, 0.2, 0.05], 4, 4);
+        assert_eq!(count(&scene(vec![part])), 0);
+        // Backbox colliders support their own layer (5).
+        let table = with_transitions(
+            &greybox,
+            vec![
+                transition("in", 0, 5, [50.0, 50.0], [80.0, 80.0]),
+                transition("out", 5, 0, [150.0, 150.0], [250.0, 250.0]),
+            ],
+        );
+        let bb = scene(vec![sheet3(5, 0.05)]);
+        let r = validate_clearance_with_backbox(&table, &scene(vec![]), Some(&bb));
+        assert_eq!(layer_exits(&r).len(), 1, "{:?}", r.warnings);
+        assert_eq!(layer_exits(&r)[0].name, "in");
+        assert_eq!(layer_exits(&r)[0].path, "layer_transitions[0]");
+        let r = validate_clearance_with_backbox(&table, &scene(vec![]), None);
+        assert!(layer_exits(&r).is_empty());
     }
 }

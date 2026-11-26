@@ -32,12 +32,24 @@
 //! must have an *exit zone over unsupported area*: a transition from layer
 //! `N` (to another layer) whose plan footprint has at least one sample
 //! point (the 3 × 3 grid of its corners, edge midpoints and centre) with no
-//! layer-`N` support under it. Support is a generated collider triangle on
+//! layer-`N` support under it. Support is a collider triangle on
 //! layer `N` (a deck; walls and posts have no plan area) whose plan
 //! projection contains the point and whose lowest vertex is not above the
-//! zone's top. Otherwise a ball that leaves layer `N`'s support falls
-//! through the playfield: every transition leading to `N` gets a warning
-//! at its `layer_transitions[i]` path. Warnings never fail generation.
+//! zone's top. Triangles under 1 mm² of plan area are ignored. Otherwise a
+//! ball that leaves layer `N`'s support falls through the playfield: every
+//! transition leading to `N` gets a warning at its `layer_transitions[i]`
+//! path. Loops (`from == to`) and transitions to layer 0 never warn.
+//! Warnings never fail generation or validation.
+//!
+//! The rule has one implementation, [`layer_exit_findings`], which takes
+//! the support triangles from its caller. It runs in two places with the
+//! same message text: the generator ([`layer_exit_warnings`], over the
+//! generated collider nodes at their glb positions), and
+//! `pin_tablegen validate <bundle>` (`clearance::checks::layer_exits`, a
+//! `Feature::LayerExit` warning, over the bundle's node-transformed
+//! collider triangles, backbox colliders included), so hand-edited and
+//! older bundles are covered too (#137). Generated nodes have identity
+//! transforms, so both give the same verdict on a generated bundle.
 
 use super::glb::Node;
 use glam::{DVec2, DVec3, Vec3};
@@ -101,13 +113,28 @@ pub(super) fn overlaps(a: &AabbDef, b: &AabbDef) -> bool {
     (0..3).all(|k| a.min[k] <= b.max[k] && b.min[k] <= a.max[k])
 }
 
-/// One plan triangle of a collider, m, with its lowest vertex height.
-struct Support {
+/// One plan triangle of a collider, m, with its lowest vertex height: the
+/// unit of support the layer-exit lint reads (see the [module docs](self)).
+pub(crate) struct Support {
     tri: [DVec2; 3],
     z_min: f64,
 }
 
 impl Support {
+    /// The support a collider triangle with vertices `v` (m, `[x, y, z]`)
+    /// gives, or `None` when its plan area is below 1 mm² (a vertical wall,
+    /// a post side or a sliver supports nothing).
+    pub(crate) fn new(v: [[f64; 3]; 3]) -> Option<Support> {
+        let tri = v.map(|q| DVec2::new(q[0], q[1]));
+        let area2 = (tri[1] - tri[0]).perp_dot(tri[2] - tri[0]).abs();
+        // A NaN area (a non-finite vertex) supports nothing either.
+        if area2.is_nan() || area2 < MIN_SUPPORT_AREA2_M2 {
+            return None;
+        }
+        let z_min = v.iter().map(|q| q[2]).fold(f64::INFINITY, min_f64);
+        Some(Support { tri, z_min })
+    }
+
     /// Whether the triangle's plan projection contains `q` (edges
     /// included).
     fn covers(&self, q: DVec2) -> bool {
@@ -123,7 +150,9 @@ impl Support {
 /// nothing (a vertical wall or a sliver): 1 mm².
 const MIN_SUPPORT_AREA2_M2: f64 = 2.0e-6;
 
-/// Layer-`layer` collider triangles with a plan area.
+/// Layer-`layer` collider triangles of the generated `nodes` with a plan
+/// area, read at their glb positions (generated nodes have identity
+/// transforms).
 fn supports(nodes: &[Node], layer: u8) -> Vec<Support> {
     let mut out = Vec::new();
     for n in nodes
@@ -133,15 +162,9 @@ fn supports(nodes: &[Node], layer: u8) -> Vec<Support> {
         let p = &n.mesh.positions;
         for t in n.mesh.indices.chunks_exact(3) {
             let v = [p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]];
-            let tri = v.map(|q| DVec2::new(f64::from(q[0]), f64::from(q[1])));
-            if (tri[1] - tri[0]).perp_dot(tri[2] - tri[0]).abs() < MIN_SUPPORT_AREA2_M2 {
-                continue;
+            if let Some(s) = Support::new(v.map(|q| q.map(f64::from))) {
+                out.push(s);
             }
-            let z_min = v
-                .iter()
-                .map(|q| f64::from(q[2]))
-                .fold(f64::INFINITY, min_f64);
-            out.push(Support { tri, z_min });
         }
     }
     out
@@ -164,6 +187,53 @@ fn over_unsupported(zone: &AabbDef, sup: &[Support]) -> bool {
     })
 }
 
+/// The layer-exit lint's message for transition `t` leading to layer `n`
+/// (`t.to_layer`), the same text from the generator and from
+/// `pin_tablegen validate`.
+fn layer_exit_message(t: &LayerTransitionDef) -> String {
+    let n = t.to_layer;
+    format!(
+        "layer transition {:?} ({} -> {n}) leads to layer {n}, which has no exit zone \
+         (a transition from layer {n}) over unsupported area: a ball that leaves \
+         layer {n}'s decks or rails is never returned to another layer and falls \
+         through the playfield; add a {n} -> 0 zone where layer {n} has no floor",
+        t.id, t.from_layer
+    )
+}
+
+/// The layer-exit lint's core (see the [module docs](self)), shared by
+/// the generator ([`layer_exit_warnings`]) and `pin_tablegen validate`
+/// (`clearance::checks::layer_exits`): `(i, message)` per transition `i`
+/// of `transitions` leading to a layer without an exit zone over
+/// unsupported area, in transition order. `supports_of(n)` gives layer
+/// `n`'s support triangles ([`Support::new`]); it is called at most once
+/// per layer, and only for layers some transition leads to.
+pub(crate) fn layer_exit_findings(
+    transitions: &[LayerTransitionDef],
+    mut supports_of: impl FnMut(u8) -> Vec<Support>,
+) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    // Each layer's verdict is computed once.
+    let mut verdict: [Option<bool>; 256] = [None; 256];
+    for (i, t) in transitions.iter().enumerate() {
+        let n = t.to_layer;
+        if n == 0 || t.from_layer == n {
+            continue;
+        }
+        let has_exit = *verdict[usize::from(n)].get_or_insert_with(|| {
+            let sup = supports_of(n);
+            transitions
+                .iter()
+                .filter(|x| x.from_layer == n && x.to_layer != n)
+                .any(|x| over_unsupported(&x.zone, &sup))
+        });
+        if !has_exit {
+            out.push((i, layer_exit_message(t)));
+        }
+    }
+    out
+}
+
 /// The layer-exit lint over the table's `transitions` and the generated
 /// collider `nodes` (see the [module docs](self)): one warning at
 /// `layer_transitions[i]` per transition `i` leading to a layer without an
@@ -172,34 +242,78 @@ pub(super) fn layer_exit_warnings(
     transitions: &[LayerTransitionDef],
     nodes: &[Node],
 ) -> Vec<ValidationError> {
-    let mut out = Vec::new();
-    // Layers 1..=7 in order; each one's verdict is computed once.
-    let mut verdict: [Option<bool>; 256] = [None; 256];
-    for (i, t) in transitions.iter().enumerate() {
-        let n = t.to_layer;
-        if n == 0 || t.from_layer == n {
-            continue;
-        }
-        let has_exit = *verdict[usize::from(n)].get_or_insert_with(|| {
-            let sup = supports(nodes, n);
-            transitions
-                .iter()
-                .filter(|x| x.from_layer == n && x.to_layer != n)
-                .any(|x| over_unsupported(&x.zone, &sup))
-        });
-        if !has_exit {
-            out.push(ValidationError::new(
-                TABLE_FILE,
-                format!("layer_transitions[{i}]"),
-                format!(
-                    "layer transition {:?} ({} -> {n}) leads to layer {n}, which has no exit zone \
-                     (a transition from layer {n}) over unsupported area: a ball that leaves \
-                     layer {n}'s decks or rails is never returned to another layer and falls \
-                     through the playfield; add a {n} -> 0 zone where layer {n} has no floor",
-                    t.id, t.from_layer
-                ),
-            ));
+    layer_exit_findings(transitions, |n| supports(nodes, n))
+        .into_iter()
+        .map(|(i, message)| {
+            ValidationError::new(TABLE_FILE, format!("layer_transitions[{i}]"), message)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC §4 4.3 (#137): triangles under 1 mm² of plan area (doubled
+    /// area below 2e-6 m²), vertical ones and non-finite ones support
+    /// nothing; the lowest vertex is the support height.
+    #[test]
+    fn support_needs_one_square_millimetre_of_plan() {
+        let tri = |w: f64, h: f64| [[0.0, 0.0, 0.3], [w, 0.0, 0.1], [0.0, h, 0.2]];
+        // 1.0 mm² exactly (2e-6 doubled) supports; just below does not.
+        let s = Support::new(tri(2.0e-3, 1.0e-3)).unwrap();
+        assert_eq!(s.z_min, 0.1);
+        assert!(s.covers(DVec2::new(1.0e-4, 1.0e-4)));
+        assert!(s.covers(DVec2::ZERO), "edges included");
+        assert!(!s.covers(DVec2::new(2.0e-3, 1.0e-3)));
+        assert!(Support::new(tri(1.99e-3, 1.0e-3)).is_none());
+        // A vertical wall triangle has no plan area.
+        assert!(Support::new([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 1.0]]).is_none());
+        assert!(Support::new(tri(f64::NAN, 1.0)).is_none());
+    }
+
+    fn t(id: &str, from: u8, to: u8, lo: f32, hi: f32) -> LayerTransitionDef {
+        LayerTransitionDef {
+            id: id.to_owned(),
+            from_layer: from,
+            to_layer: to,
+            zone: AabbDef {
+                min: [lo, lo, 0.0],
+                max: [hi, hi, 50.0],
+            },
         }
     }
-    out
+
+    /// SPEC §4 4.3 (#137): the shared core asks for each target layer's
+    /// support once, never for layer 0 or a loop's layer alone, and
+    /// reports in transition order.
+    #[test]
+    fn core_reads_each_layer_once() {
+        let ts = [
+            t("a", 0, 2, 0.0, 10.0),
+            t("loop", 4, 4, 0.0, 10.0),
+            t("b", 1, 2, 20.0, 30.0),
+            t("down", 3, 0, 0.0, 10.0),
+            t("c", 0, 3, 40.0, 50.0),
+        ];
+        let mut asked = Vec::new();
+        let found = layer_exit_findings(&ts, |n| {
+            asked.push(n);
+            Vec::new()
+        });
+        assert_eq!(asked, [2, 3]);
+        // Layer 2 has no exit; layer 3's exit is over nothing (no support).
+        let paths: Vec<usize> = found.iter().map(|(i, _)| *i).collect();
+        assert_eq!(paths, [0, 2]);
+        assert!(
+            found[1]
+                .1
+                .starts_with("layer transition \"b\" (1 -> 2) leads to layer 2")
+        );
+        assert!(
+            found[1]
+                .1
+                .ends_with("add a 2 -> 0 zone where layer 2 has no floor")
+        );
+    }
 }
