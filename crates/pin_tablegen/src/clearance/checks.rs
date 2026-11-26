@@ -1,10 +1,11 @@
 //! Lane, flipper-gap, wireform, scoop / VUK and restriction checks.
 
-use super::geom::{self, Tri, TriGrid, WALKABLE_NZ};
+use super::geom::{self, Filter, LayerSel, Slope, Tri, TriIndex, WALKABLE_NZ};
 use super::{
     Ball, Feature, Finding, Sink, TABLE, VUK_EXIT_TOLERANCE_MM, WIREFORM_MAX_CONTACT_DEG,
     WIREFORM_MIN_CONTACT_DEG, mm,
 };
+use core::cell::Cell;
 use glam::{DVec2, DVec3, Vec3};
 use pin_assets::{GltfScene, LoadedTable};
 use pin_core::PhysicsDefaults;
@@ -37,7 +38,9 @@ pub(super) struct World<'a> {
     pub table: &'a LoadedTable,
     pub scene: &'a GltfScene,
     pub tris: &'a [Tri],
-    pub grid: &'a TriGrid,
+    pub index: &'a TriIndex,
+    /// Narrow-phase candidates examined so far (`IndexStats::pairs_examined`).
+    pub pairs: Cell<u64>,
     /// The playfield glTF's file name (findings on meshes).
     pub glb: &'a str,
     /// The bundle's backbox colliders (`pin_assets::BACKBOX_COLLIDERS_FILE`),
@@ -47,6 +50,11 @@ pub(super) struct World<'a> {
 }
 
 impl World<'_> {
+    /// Counts `n` narrow-phase candidates examined.
+    pub fn count(&self, n: usize) {
+        self.pairs.set(self.pairs.get().saturating_add(n as u64));
+    }
+
     /// The file, the mesh index within that file and the node name of
     /// [`Tri::mesh`] `mesh` (`"?"` when out of range).
     pub fn mesh_ref(&self, mesh: usize) -> (&str, usize, &str) {
@@ -102,16 +110,24 @@ impl World<'_> {
         let q = e.truncate();
         let below = |t: &Tri, p: DVec2| t.z_at(p) <= e.z - r + 1.0e-3;
         let mut idx = Vec::new();
-        self.grid.query(self.tris, q, q, &mut idx);
+        let walkable = Filter {
+            layer: LayerSel::Only(layer),
+            slopes: Slope::Walkable.bit(),
+            ..Filter::ANY
+        };
+        self.index.query(self.tris, q, q, &walkable, &mut idx);
         let floor = idx.iter().any(|&i| {
+            self.count(1);
             let t = &self.tris[i as usize];
             t.layer == layer && t.nz() >= WALKABLE_NZ && t.contains_plan(q) && below(t, q)
         });
         let reach = DVec2::splat(EXIT_SPLINE_REACH_M);
         let backbox_floor = self.backbox.is_some() && {
             let own = self.scene.meshes.len();
-            self.grid.query(self.tris, q - reach, q + reach, &mut idx);
+            self.index
+                .query(self.tris, q - reach, q + reach, &walkable, &mut idx);
             idx.iter().any(|&i| {
+                self.count(1);
                 let t = &self.tris[i as usize];
                 if t.mesh < own || t.layer != layer || t.nz() < WALKABLE_NZ {
                     return false;
@@ -143,8 +159,20 @@ impl World<'_> {
         let mut best = reach;
         let mut idx = Vec::new();
         let r = DVec2::splat(reach);
-        self.grid
-            .query(self.tris, c.truncate() - r, c.truncate() + r, &mut idx);
+        let near = Filter {
+            layer: LayerSel::Only(layer),
+            z_lo: c.z - reach,
+            z_hi: c.z + reach,
+            ..Filter::ANY
+        };
+        self.index.query(
+            self.tris,
+            c.truncate() - r,
+            c.truncate() + r,
+            &near,
+            &mut idx,
+        );
+        self.count(idx.len());
         for &i in &idx {
             let t = &self.tris[i as usize];
             if t.layer != layer || t.min.z > c.z + reach || t.max.z < c.z - reach {
