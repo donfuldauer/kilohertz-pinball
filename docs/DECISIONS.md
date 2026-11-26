@@ -9108,3 +9108,23 @@ verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the ap
 **Decision:** `open_stream` takes the file's compressed bytes as a `Vec<u8>` that the track owns; the loader decodes from memory and never touches the filesystem.
 **Rationale:** The bundle snapshot already hands out whole compressed files, and the I/O worker is the only thread that reads files (R4). Compressed music is about a tenth of its decoded size, and the decoded-audio budget bounds decoded PCM only, as the human ruling on the 512 MiB budget says.
 **Alternatives:** Reading the file in chunks on the loader thread (rejected: a second thread touching the filesystem, and the snapshot is an in-memory view). Charging the compressed bytes to the budget (rejected: the budget is defined as decoded audio).
+
+## Process — Gate reviews have a round limit
+
+**Decision:** At the owner's direction (2026-11-26), PROCESS.md P6 gets a round limit for gate
+reviews. Rounds 1 to 5 run as before. From round 6 on, only blocking findings are fixed (R11
+security, verified correctness defects, R3/R4 violations, contract mismatches, failing required
+checks); every other finding is deferred without a fix attempt into one new `work-unit` issue per
+round, and its thread is resolved. After round 8, a gate whose threads are all resolved, with no
+blocking finding open, merges as `capped` (recorded in `docs/RUN_LOG.md`) even if CodeRabbit still
+withholds approval. `main` is no longer merged into an open gate branch unless the gate issue's PR
+conflicts with it or a required check needs it. The limit applies to gate reviews already open
+when it merges, counting their earlier rounds.
+**Rationale:** Gate reviews run one at a time, and the 30-web-prereq review (PR #197) reached
+round 13 in about 33 hours with finding counts rising (3, 6, 7, 20), while the 11-contracts gate
+(#90, PR #214) waited behind it. Each fix and each merge of `main` added new code for CodeRabbit to
+review, so the loop did not converge. Blocking defects are still never deferred.
+**Alternatives:** No limit (rejected: one gate can stall every later gate indefinitely). Running
+gate reviews in parallel (rejected: the next gate's base is the previous gate's reviewed commit).
+A smaller limit such as 3 rounds (rejected: early rounds still find real defects worth fixing in
+place).
