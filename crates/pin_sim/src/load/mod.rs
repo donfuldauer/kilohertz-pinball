@@ -71,7 +71,7 @@ use pin_core::input::CabinetInput;
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
 use pin_core::schema::table::{MechKind, SplineKind, SwitchKind};
 use pin_core::schema::{GLASS_FILE, GlassManifest, LayoutManifest};
-use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS};
+use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS, MAX_DYNAMIC_MESHES};
 use pin_core::{
     BallProfile, HostCommandQueue, HostCtx, HostView, Material, Pcg32, PhysicsDefaults,
     ScriptError, SeedableRng,
@@ -95,7 +95,7 @@ use std::path::Path;
 use crate::hash::Fnv64;
 use crate::sim::{
     DiverterBinding, FlipperDrive, GateBinding, NewtonBinding, Script, SimConfig, SimError,
-    Simulation, TroughZone,
+    Simulation, SlotPlan, SlotSource, TroughZone,
 };
 
 /// Guide wall height when the bundle has no `layout.toml`, mm (the
@@ -796,6 +796,10 @@ impl Simulation {
         let mut diverters = Vec::new();
         let mut gates = Vec::new();
         let mut newtons = Vec::new();
+        // Dynamic mesh slots (SPEC Appendix A): one per mech, in manifest
+        // order, at most MAX_DYNAMIC_MESHES.
+        let mut slots: Vec<SlotPlan> =
+            Vec::with_capacity(table.mechs.len().min(MAX_DYNAMIC_MESHES));
         let standard = crate::sim::profile_id("standard_steel").unwrap_or(ProfileId(0));
         for mech in &table.mechs {
             let def = table
@@ -806,12 +810,15 @@ impl Simulation {
                 .ok_or_else(|| build_err(format!("mech {} missing from table.toml", mech.name)))?;
             let spec = MechSpec::from_def(def, mech.coil, mech.switch);
             bounds.add(spec.position);
+            let mut slot = slot_plan(mech.kind, &spec);
+            let p = spec.position;
             specs.push(spec);
             match mech.kind {
                 MechKind::Diverter => {
                     let (on, off) = bound_colliders(&named, &mech.name);
                     if let Some(id) = mech.diverter {
                         disabled_at_load.extend_from_slice(&on);
+                        slot.source = SlotSource::Diverter(diverters.len());
                         diverters.push(DiverterBinding {
                             id,
                             on,
@@ -822,6 +829,7 @@ impl Simulation {
                 }
                 MechKind::Gate => {
                     let (colliders, _) = bound_colliders(&named, &mech.name);
+                    slot.source = SlotSource::Gate(gates.len());
                     gates.push(GateBinding {
                         coil: mech.coil,
                         switch: mech.switch,
@@ -843,6 +851,9 @@ impl Simulation {
                         .map_err(|e| build_err(format!("newton_ball {}: {e}", mech.name)))?;
                     chain.set_layer_mask(layers::layer_bit(def.layer.unwrap_or(0)));
                     let index = solver.add_newton_chain(chain);
+                    slot.source = SlotSource::Newton(newtons.len());
+                    slot.path_start = start;
+                    slot.path_length = len;
                     newtons.push(NewtonBinding {
                         chain: index,
                         switch: mech.switch,
@@ -850,8 +861,28 @@ impl Simulation {
                 }
                 _ => {}
             }
+            if slots.len() < MAX_DYNAMIC_MESHES {
+                slot.position = match slot.source {
+                    SlotSource::Gate(_) | SlotSource::Diverter(_) | SlotSource::Newton(_) => p,
+                    SlotSource::Fixed if mech.kind == MechKind::Diverter => p,
+                    _ => Vec3::ZERO,
+                };
+                slots.push(slot);
+            }
         }
         let mut mechs = MechSet::new(&specs, &defaults).map_err(|e| build_err(format!("{e:?}")))?;
+        // Spinner pivots and axes come from the mech set (its own defaults).
+        for (i, slot) in slots.iter_mut().enumerate() {
+            if slot.source == SlotSource::Spinner {
+                match mechs.spinner_pivot_axis(i) {
+                    Some((pivot, axis)) => {
+                        slot.position = pivot;
+                        slot.axis = axis;
+                    }
+                    None => slot.source = SlotSource::Fixed,
+                }
+            }
+        }
         // Eject scatter: one Pcg32 per mech derived from the sim seed (only
         // VUKs draw; the sim's own generator is untouched).
         mechs.set_scatter_seed(cfg.seed);
@@ -930,6 +961,7 @@ impl Simulation {
             diverters,
             gates,
             newtons,
+            slots,
             troughs,
             bounds: escape_bounds,
             ingest: InputIngest::new(IngestConfig::default()),
@@ -985,6 +1017,30 @@ impl Simulation {
         sim.publish_snapshot();
         sim.haptics.clear();
         Ok(sim)
+    }
+}
+
+/// The dynamic mesh slot plan of a mech of `kind` built from `spec`
+/// (direction from `angle_deg` as `MechSet` computes it); bindings, the
+/// absolute position and the spinner pivot are filled in by the caller.
+fn slot_plan(kind: MechKind, spec: &MechSpec) -> SlotPlan {
+    let a = spec.params.angle_deg.unwrap_or(90.0).to_radians();
+    let dir = Vec3::new(libm::cosf(a), libm::sinf(a), 0.0);
+    let source = match kind {
+        MechKind::DropTarget => SlotSource::Drop,
+        MechKind::Sling | MechKind::Kickback | MechKind::Plunger => SlotSource::Slider,
+        MechKind::Spinner => SlotSource::Spinner,
+        // Gate, diverter and newton_ball get their binding from the caller;
+        // bumper (ring kick not modelled) and VUK are fixed.
+        _ => SlotSource::Fixed,
+    };
+    SlotPlan {
+        source,
+        position: Vec3::ZERO,
+        dir,
+        axis: Vec3::new(dir.y, -dir.x, 0.0),
+        path_start: Vec3::ZERO,
+        path_length: 0.0,
     }
 }
 
