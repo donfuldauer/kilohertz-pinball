@@ -14,11 +14,14 @@ pub trait RayCapability {
     /// `true` when the device enabled [`RAY_QUERY_FEATURE`].
     fn supports_ray_query(&self) -> bool;
 
-    /// `true` when the device is known to be lost. wgpu 30 reports a loss
-    /// only through `wgpu::Device::set_device_lost_callback` (there is no
-    /// query), and [`GpuContext`] does not track it, so its implementation
-    /// reports `false`. [`RayQueryReflections`] registers that callback
-    /// itself: after a loss its
+    /// `true` when the device is known to be lost (default: `false`).
+    /// wgpu 30 reports a loss only through
+    /// `wgpu::Device::set_device_lost_callback` (there is no query); every
+    /// [`GpuContext`] registers that callback when it is created, and its
+    /// implementation reports the real flag ([`GpuContext::device_lost`]),
+    /// so [`select_reflection_source`] picks the probes on a lost device
+    /// (SPEC §4 Subphase 5.4 item 4). A [`RayQueryReflections`] built on
+    /// the context shares the same flag: after a loss its
     /// [`prepare`](crate::reflections::ReflectionSource::prepare) falls
     /// back for good and returns the loss to the caller
     /// ([`RayQueryReflections::device_lost`]).
@@ -30,6 +33,10 @@ pub trait RayCapability {
 impl RayCapability for GpuContext {
     fn supports_ray_query(&self) -> bool {
         self.device().features().contains(RAY_QUERY_FEATURE)
+    }
+
+    fn device_lost(&self) -> bool {
+        GpuContext::device_lost(self)
     }
 }
 
