@@ -8746,6 +8746,7 @@ frame and an ordering hazard with the present).
 **Rationale:** The brief says "any non-finite input" gives `None`; the chain already skips a non-finite shutter and a ball with a non-finite radius has no meaningful disc. Finite inputs are bit-identical to before.
 
 **Alternatives:** Keep clamping to 0 in `screen_motion` and return `None` only in the new function: rejected, the two would differ and the wrapper must equal the old behaviour for the same cameras.
+
 ## #90 KP-010 — layout.toml element structs stay unchanged; styles bind from table.toml
 
 **Decision:** `LayoutManifest`, `Playfield`, `Wall`, `Post`, `Lane`, `Ramp`, `Deck`, `Insert` and `LampDef` gain no fields. Every new key lives in `table.toml` (`[theme]`, `[[materials]]`, `[[part_styles]]`, `[[parts]]`); a `layout.toml` element gets a style, a look (`material`) and a rotation through a `[[parts]]` entry with `bind = "<section>[<n>]"` (`walls`, `posts`, `lanes`, `ramps`, `decks`, `inserts`). Layout elements without a bound part resolve as parts too (kind `wall`, `post`, `lane_guide`, `wireform` or `lane_guide` by spline kind, `deck`, `insert`), named by their array path. The brief's `surface` key on walls and decks is replaced by the bound part's `material` under the same agreement rule (entry "Looks and plays agree for layout elements").
@@ -8787,3 +8788,105 @@ frame and an ordering hazard with the present).
 **Decision:** `[theme]` has `title` (default `meta.name`), `palette` (1 to 16 `#rrggbb`, each validated, errors name `theme.palette[i]`; when present it replaces `meta.palette` for the art generators), `motif` (an id up to 32 characters, default `geometric`) and `fonts` (role id → font name, at most 8, names of letters, digits, space, `-`, `_`, `.` only, so no paths). `TableManifest::effective_theme()` returns the resolved `Theme`; without `theme.palette` it parses `meta.palette` and skips entries that are not colours, because `meta.palette` stays unvalidated so today's tables behave identically. An empty `[theme]` is allowed and equals no theme.
 **Rationale:** one place for the art generators to read; no change to how existing tables parse.
 **Alternatives:** validating `meta.palette` (could reject a table that parses today); merging the two palettes (ambiguous order).
+
+## #86 — Telemetry is encoded on the sim thread
+
+**Decision:** The app encodes UDP telemetry on the sim thread: `TableSim::step_1ms` fills a `TelemetryState` through a `TelemetryFeed` (`pin_app::orchestrator`) after the sim step and pushes the encoded datagrams through `pin_audio::telemetry`'s wait-free ring to the `pin-telemetry` sender thread (1 ms poll), opened per engine by `open_telemetry` before the sim thread starts and stopped after it was joined. A failed `push_batch` calls `force_full_state` (protocol §4 rule 6) and is counted.
+**Rationale:** The protocol's tick is the sim tick and its state (switches, coils, lamps, magnets) lives on the sim thread; encoding there sees every tick exactly once, in order, with no extra copy or ring, and the encoder and ring are allocation-free (R4, covered by `cabinet_feedback.rs`'s allocation test). The back-pressure rule is written for the sim loop.
+**Alternatives:** encoding on the audio thread from the haptics ring (it sees impulses only, not the cabinet state, and runs at block rate, not per tick); a separate telemetry thread reading the snapshot triple buffer (skips ticks, so deltas and impulses would be lost).
+
+## #86 — GI telemetry comes from `kind = "gi"` lamps
+
+**Decision:** GI strings on the wire (kind 3, ids 0..=31) are the table's lamps with `kind = "gi"`, id = the lamp's `number`, value = that lamp's `FrameStateSnapshot::lamps` intensity; these lamps are not also sent as kind-2 lamps (as `pin_app::dof::ResolvedDofMap::resolve` already maps them). The snapshot's GI tint (`FrameStateSnapshot::gi`, `[r, g, b, intensity]`) is not sent. A GI lamp numbered above 31 is not sent at all.
+**Rationale:** The DOF map and the bridge already address GI as "lamp with kind gi, id = number", so the wire must agree; the tint is a render colour with no element id.
+**Alternatives:** sending the tint intensity as GI string 0 (conflicts with a table's own GI numbering).
+
+## #86 — Coil and magnet telemetry sources
+
+**Decision:** A coil (kind 1) reads energised when any of these holds: its flipper is energised (`FlipperSet::is_energised`, flipper → coil pairs given to `TableSim::set_flipper_coils` at load from the table's flipper configs); a host `coil_holds` on is in force (until a hold off, which also ends a pulse); a host `coil_pulses (coil, d ms)` issued at tick `t` covers ticks `t..t + d`; or a mech driven by it reports `MechSet::coil_on` (the existing public accessor; checked for mapped coils only). A magnet (kind 4) is the latest host `set_magnet` power for its `MagnetId` (0 until set). Switches are `Simulation::switch_bits`. Not observable without a new `pin_sim` accessor, so not sent beyond the above: a coil fired by the simulation itself outside the host queue and outside any mech (none exists today), the physical magnet field strength (remanence, `Simulation::magnetisation` is per ball, not per magnet), and the on_init commands of a feed attached after tick 0.
+**Rationale:** The brief forbids adding `pin_sim` accessors; these sources are the observable ones, are deterministic and read only references (no allocation).
+**Alternatives:** a new `Simulation::coil_states()` / `magnet_powers()` accessor (requested as a follow-up in the report; outside this issue's paths).
+
+## #86 — config.toml keys for telemetry and DOF
+
+**Decision:** `[telemetry] enabled = true`, `[telemetry] endpoint = "127.0.0.1:35120"` and `[dof] enabled = true` (`pin_app::ui::config::{TelemetryConfig, DofConfig}`), documented in `docs/TELEMETRY_PROTOCOL.md` §8. A wrong type drops that key to its default with a `ConfigWarning::InvalidValue` (the existing per-key fallback); an empty or over-255-byte endpoint is reset the same way; an endpoint that does not resolve disables telemetry for the run with one stderr line. The keys are read at start-up and apply to every table the run loads; they are not menu settings (`changed_settings` is unchanged). Telemetry is opened only for table engines (the idle path without a table sends nothing).
+**Rationale:** Defaults follow the protocol's loopback default (nothing leaves the machine unless configured); the names mirror the protocol's own terms; the fallback rule is the one every other `config.toml` key follows.
+**Alternatives:** a single `telemetry_endpoint` top-level key (no room for `enabled`); off by default (would make the cabinet feedback opt-in, against SPEC §4 3.4's "the app drives telemetry").
+
+## #86 — DOF requires telemetry
+
+**Decision:** The DOF bridge is started on table load only when `[dof] enabled`, the table has `[dof]`, telemetry is enabled with an endpoint that resolved, the OS is supported (`platform_supported`, Windows) and `DofLaunchConfig::for_app(<endpoint port>)` finds the installed bridge; otherwise one stderr line says why and the table runs. Errors from the start never fail the run. The main thread stops the old bridge and waits for it before a swapped-in table starts, and at exit after the engine threads were joined, on every exit path (`Cabinet::finish` runs before the stuck-presenter `process::exit`; `Drop` covers early error returns).
+**Rationale:** The bridge only reads the telemetry stream on the endpoint's port; starting it without telemetry would show a cabinet that never reacts.
+**Alternatives:** starting the bridge regardless and letting it idle (misleading; wastes a process).
+
+## #86 — The audio thread's placeholder telemetry encoder stays
+
+**Decision:** The audio thread's existing placeholder encoder in `orchestrator/threads.rs` (behind `AudioStats.telemetry_datagrams`) is left unchanged (it is outside this issue's paths and its counter is asserted by existing tests); the app's real telemetry is the sim thread's `TelemetryFeed`. A cleanup issue should remove the placeholder (or turn its counter into a reading of the sender's report).
+**Rationale:** R1 (owned paths) and no regression in the existing suites.
+**Alternatives:** removing it here (outside the owned paths).
+
+## #86 — Rumble restarts from silence on every load, swap and session
+
+**Decision:** Each table engine gets a new `RumbleDriver` on a fresh `haptics_ring::<HapticEvent>` whose producer `TableSim::set_rumble` feeds; the main loop calls `RumbleDriver::service(live.sim_ticks, &mut platform)` every iteration. `RumbleDriver::reset` (drain the ring, reset the mapper, clear the bookkeeping; returns OFF only when the motors were on) runs inside `service` when the tick goes backwards (a new session), and an unloaded table's driver is dropped with an OFF sent to the pads (at a swap, at the next loop iteration; at exit, right after the threads are joined). Impulses still queued at a backwards tick are discarded with the old session's.
+**Rationale:** `RumbleMapper` only restarts its timeline when the tick jumps back more than 1000 ticks, so a session restarted within one second replayed the old envelope (the issue's acceptance case); a reset on every boundary is simple and deterministic.
+**Alternatives:** keeping queued impulses whose tick is below the new tick (cannot tell sessions apart reliably).
+
+## #86 — Size guard: DOF delivered in the same change
+
+**Decision:** The non-test diff is about 900 added lines (roughly 40 % rustdoc and comments), slightly over the brief's "about 800" guard; the DOF part (deliverable 4) is about 80 of them (`DofBridge::start_for_table_on`, `DofLaunchConfig::for_app` and the main-thread lifecycle). It is delivered here rather than split into a follow-up issue.
+**Rationale:** The guard exists to keep the change reviewable; DOF is small, self-contained, already covered by unit and integration tests (stand-in bridge), and splitting it would leave the issue's acceptance criterion "DOF launcher with the fake bridge: started on load, stopped on exit" open for a near-empty follow-up.
+**Alternatives:** leaving DOF unimplemented with a follow-up `work-unit` issue (the guard's literal reading; rejected for the reasons above).
+
+## #110 KP-029 (tester) — Scope of the rear_left length independence check
+
+**Decision:** The test for a changed `legs.rear_left.length` asserts that the other three legs' nodes and every leg material other than `cabinet.leg.rear_left` are unchanged, and that the rear_left shaft grows by the difference. Body-fixed nodes (body, glass, buttons) are allowed to move, because the body bottom is defined from the mean effective length of the leg pair (SPEC A.4). The other attribute changes (section, finish, colour, bracket, bolt) assert that only `cabinet.leg.rear_left*` nodes and the rear_left material differ.
+**Rationale:** The brief says a length change touches only rear_left nodes, but A.4 makes the body bottom depend on the rear pair's mean length, so body-fixed parts necessarily shift.
+**Alternatives:** Requiring every non-rear_left node to be byte-identical after a length change; rejected as contradicting A.4.
+
+## #110 KP-029 — lib.rs module declaration outside owned paths
+
+**Decision:** Added exactly `pub mod cabinet;` and a one-line `//!` mention of the module to `crates/pin_tablegen/src/lib.rs`; nothing else in that file changed.
+**Rationale:** Nothing pre-stubbed the cabinet module, and the issue's owned directory `src/cabinet/` cannot compile into the crate otherwise; the classifier ruled the one line allowed.
+**Alternatives:** Including the module from tests with `#[path]` tricks (rejected: the public API would not exist for the binary or other crates).
+
+## #110 KP-029 — cabinet.glb frame, node list and material list
+
+**Decision:** `cabinet.glb` is in metres in the SPEC A.4 cabinet frame (x across, player's right positive; y from the body front face toward the rear; z up) with z the height above the floor plane (floor z = 0). A body-fixed point (y, z above the body bottom) is placed at `floor_height_mm(y, z) / 1000`. Static nodes have identity transforms. The 28 node names (`pin_tablegen::cabinet::NODE_NAMES`) and the 17 material names (`MATERIAL_NAMES`) are fixed, in the order of the brief, the same for every geometry. UVs are a per-face box projection on the node's bounding box along the face normal's dominant axis (u to the viewer's right seen from outside the face, v down the image), so every UV is in [0, 1] and a body side's outer face covers 0..1 whole (D32 art). Moving nodes (four buttons, plunger rod) carry `translation` = the control position above the floor and string extras `moving`, `travel_axis`, `travel_mm`; static nodes carry no extras. The art-surface materials (`cabinet.body`, `cabinet.side_left`, `cabinet.side_right`, `cabinet.front`) are white so an art texture shows its own colours.
+**Rationale:** The brief fixes the frame, names and order; a z-above-floor frame lets a renderer place the model without the leg arithmetic; box projection is deterministic, needs no unwrapping and meets the art-surface requirement.
+**Alternatives:** z above the body bottom (rejected: legs would need a negative z); per-face 0..1 quads (rejected: a notched side wall would split its outer face into several 0..1 patches).
+
+## #110 KP-029 — Glass plane
+
+**Decision:** The glass is a sheet parallel to the side wall tops (the body's wall-top line, linear from `front_height` to `rear_height`), its underside on the glass channel's floor. The channel is drawn as a notch `glass_channel.depth` deep into the inner face of each side wall, from two channel widths to one channel width below the wall top. The sheet runs from the front wall's inner face (y = wall_thickness) back `glass_panel.length` measured along the slope, `glass_panel.width` across and `glass_panel.thickness` thick (vertical). The lockdown bar's underside is one channel width below the front wall top, over the glass's front edge, so the glass passes under the bar at the front; its rear end rises with the wall tops above the bar top's height, as on a real cabinet.
+**Rationale:** "Seated in the glass channel" fixes the glass to the side walls, whose tops slope; the brief leaves the plane to the implementer. Reading "below the lockdown bar top" as "the whole sheet below the bar top's height" would need a level glass that leaves the channel within a few centimetres of the front.
+**Alternatives:** A level glass under the bar top (rejected: not seated in the sloping channel, not what a cabinet looks like); a glass parallel to the pitched playfield (rejected: the playfield mount is not part of this model, and the channel is in the walls).
+
+## #110 KP-029 — Leveler roll is not a body tilt
+
+**Decision:** Accept pin_core's pitch-only `floor_height_mm`: the body bottom is linear in y between the front and rear pairs' mean effective lengths, and left/right leveler differences do not tilt the body. Each leg stands on z = 0 with its own effective length, so a rolled cabinet shows the body slightly off its leg tops by the roll offset. Changing one leg's length moves every body-fixed node (through the pair mean) but no other leg's nodes or materials.
+**Rationale:** The body frame is pin_core's contract (#89); the model must agree with it within 1 mm, and the legs must touch the floor.
+**Alternatives:** Tilting the body by the roll in this generator (rejected: would disagree with `floor_height_mm` and the A.4 frame; a change belongs in pin_core through a contract change request).
+
+## #110 KP-029 — Trim metal colour
+
+**Decision:** The shared `cabinet.trim_metal` material (side rails and lockdown bar) takes its base colour from `trim.rail_colour` (sRGB to linear) and its metallic/roughness from `trim.metal_finish`.
+**Rationale:** One shared material cannot carry two colours; the rail colour is the only trim colour in the schema and the bar's finish is `metal_finish`, so both inputs are used.
+**Alternatives:** A separate bar material (rejected: the material list is fixed at 17 names).
+
+## #110 KP-029 — Tapered legs are square frusta
+
+**Decision:** `tapered` legs are square in section, from side `section.top` at the body end to side `section.bottom` at the foot; `round` legs are 16-segment prisms of diameter `top`. `ribbed` cuts lengthwise grooves (4 % of the section size deep, sloped walls) into each face (square/tapered: one groove per face; round: 32 points alternating radius), keeping the outer size.
+**Rationale:** SPEC A.4 and the pin_core schema define `tapered` as "square, tapering", `bottom` as "side at the foot"; the brief's "round and tapered are 16-segment prisms/frusta" conflicts with that, and the schema is the contract.
+**Alternatives:** A 16-segment round frustum for `tapered` (rejected: contradicts the schema's "side" semantics).
+
+## #110 KP-029 — Cabinet model design values
+
+**Decision:** Values the schema does not carry, as named constants in `src/cabinet/parts.rs`: buttons are a 40 mm x 4 mm bezel plus a 30 mm x 12 mm cap, press travel 4 mm, protruding against their travel axis (flipper buttons outward from the side walls, start and action toward the player per the brief, also for the action button whose preset position is on the lockdown bar); plunger housing 30 mm outer diameter with a 50 mm x 6 mm flange proud of the front, running 120 mm into the body; rod 9.5 mm diameter, 100 mm inside and 60 mm outside the front, knob 32 mm x 40 mm, pull travel 80 mm; coin door 4 mm proud of its centre's y; brackets 1.5 x the leg's top size high, corner plate 3 mm thick reaching 40 mm past the leg (two bolts), flush plate 4 mm thick overhanging 20 mm each side (four bolts); bolt heads hex 16 mm across x 6 mm (6 sides), carriage 20 mm domed 5.5 mm, button head 14 mm x 3.5 mm; feet flat 6 mm, domed 13 mm, swivel pad 5 mm plus a 14 mm ball joint; the thread runs from the floor to max(thread_length, extension); glass material white alpha 0.15 blended; button colours red (flippers, action) and yellow (start); coin door near-black in the trim finish; leveler and plunger bright steel/chrome. Every size and position must be finite and within ±100 m (`MAX_DIMENSION_MM`), so every derived float stays finite.
+**Rationale:** Typical cabinet hardware sizes; the colours are not in the schema (REQ-CAB-003 lists leg, rail and trim colours only), and the 100 m cap keeps the no-panic, finite-output guarantee without depending on pin_core's consistency check (which a hand-built geometry may skip).
+**Alternatives:** Adding these to `cabinet.toml` (a pin_core contract change, out of scope); calling `check_consistency` first (rejected: it also checks the backbox, mount and art, unrelated to this model, and names keys only inside a message).
+
+## #110 KP-029 — Glass assertion: passes under the bar at the front (Orchestrator ruling)
+
+**Decision:** The glass test checks that, over glass vertices whose y lies within the lockdown bar's y extent (or the glass's min-y vertices if none do), max glass z is at most the bar's max z + 1 mm, and that the glass's max z is at most the rear wall top + 1 mm. The old whole-glass "below the bar top" assertion is replaced.
+**Rationale:** The glass sits in the channel cut into the sloped side walls and rises toward the rear; only where it overlaps the bar must it pass under it.
+**Alternatives:** Keep the whole-glass bound; rejected, it contradicts the sloped seating (observed 1.053 m glass top against a 0.910 m bar).
