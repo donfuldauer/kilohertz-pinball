@@ -168,6 +168,42 @@ fn set_hook_count(lua: &Lua, count: u32) -> mlua::Result<()> {
     }
 }
 
+/// Sets the count-hook interval of `state` to `count` and restarts its
+/// countdown, keeping the hook function and mask (mlua's bookkeeping).
+///
+/// This is the per-callback re-arm of [`Vm::reset_budget`], called directly
+/// through the C API instead of [`set_hook_count`]'s `exec_raw` (a protected
+/// call: stack checks, a pushed C closure and a `lua_pcall` on every
+/// callback). Why it runs on every reset rather than only after a budget hit
+/// (DECISIONS.md "#128 — Lua hook re-arm: direct C call on every reset"):
+///
+/// * `lua_sethook` is the only API that restarts the countdown
+///   (`resethookcount`). Skipping it on a healthy state would start the next
+///   call with whatever countdown the previous call left, so the first hook
+///   (which spends a full `hook_interval`) would fire early and
+///   `BudgetExceeded` would move by up to `hook_interval - 1` instructions.
+/// * The interval is lowered in three places, two of them inside the patched
+///   Lua (`lua_khzcharge`, `luaE_khzdefer`) where no Rust marker can be set,
+///   and the `Bridge`'s `budget_hit` flag is shared across reloads and is not
+///   set on those C paths. The state's own `basehookcount` is the only exact
+///   record, and re-arming unconditionally needs no record at all.
+///
+/// The call only writes four fields of the state and marks the active call
+/// frames for tracing (`settraps`): no allocation, no error, no lock.
+///
+/// # Safety
+///
+/// `state` must be a live Lua state that is not running Lua code.
+unsafe fn rearm_hook(state: *mut mlua::ffi::lua_State, count: u32) {
+    let count = i32::try_from(count).unwrap_or(i32::MAX);
+    // SAFETY: per the contract above; the hook function and mask are kept.
+    unsafe {
+        let hook = mlua::ffi::lua_gethook(state);
+        let mask = mlua::ffi::lua_gethookmask(state);
+        mlua::ffi::lua_sethook(state, hook, mask, count);
+    }
+}
+
 /// Performs one fixed-budget incremental GC step (`LUA_GCSTEP`, `kbytes`).
 pub(crate) fn gc_step(lua: &Lua, kbytes: i32) -> mlua::Result<()> {
     // SAFETY: `lua_gc(LUA_GCSTEP, n)` is a plain API call on the running state.
@@ -271,13 +307,19 @@ impl Vm {
 
     /// Starts a fresh budget of `instructions` for the next call into Lua.
     ///
-    /// Also restores the hook interval: a budget hit lowers it to every
-    /// instruction (see the hook in [`Vm::build`]), and a state that is kept
-    /// after that (e.g. the old state after a failed reload whose save hook ran
-    /// out of budget) must not keep paying `hook_interval` per instruction.
+    /// Also re-arms the count hook: its interval goes back to
+    /// `bridge.hook_interval` if a budget hit lowered it to every instruction
+    /// (the hook in [`Vm::build`], or the patched Lua's `lua_khzcharge` /
+    /// `luaE_khzdefer`), so a state kept after a hit (e.g. the old state after
+    /// a failed reload whose save hook ran out of budget) does not keep paying
+    /// `hook_interval` per instruction; and its countdown restarts, so every
+    /// call starts `hook_interval` instructions away from the first hook,
+    /// whatever the previous call left over.
     pub(crate) fn reset_budget(&self, bridge: &Bridge, instructions: u32) {
-        // Cannot fail: no arguments are pushed and the closure does not raise.
-        let _ = set_hook_count(&self.lua, bridge.hook_interval);
+        // SAFETY: `raw` is the live main state of `self.lua`, on which mlua
+        // installed the count hook and on which every call into the script
+        // runs; no Lua code is running on it here.
+        unsafe { rearm_hook(self.raw, bridge.hook_interval) };
         bridge.reset_flags();
         // SAFETY: `raw` is the live main state of `self.lua`.
         unsafe { lua_khzsetbudget(self.raw, i64::from(instructions)) };
@@ -401,5 +443,98 @@ impl Vm {
             Value::Function(f) => Ok(Some(f)),
             _ => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lua::HOOK_INTERVAL;
+
+    const SCRIPT: &str = "n = 0 \
+        function spin() n = 0 while true do n = n + 1 end end \
+        function pre(k) for i = 1, k do end end \
+        function rep() return string.rep('x', 60000) end";
+
+    fn new_vm() -> (Vm, Rc<Bridge>) {
+        let bridge = Rc::new(Bridge::new(HOOK_INTERVAL));
+        let vm = Vm::build(
+            SCRIPT.as_bytes(),
+            &NameTables::default(),
+            &LuaConfig::default(),
+            &bridge,
+        )
+        .unwrap();
+        (vm, bridge)
+    }
+
+    /// Calls global `name(arg)` under a fresh `budget`, like a callback.
+    fn call(vm: &Vm, bridge: &Bridge, name: &str, arg: i64, budget: u32) -> Option<ScriptError> {
+        // Looked up first: mlua's lookup is itself a charged C call.
+        let f: Function = vm.globals.get(name).unwrap();
+        vm.reset_budget(bridge, budget);
+        let r = f.call::<()>(arg);
+        vm.check(bridge, r)
+    }
+
+    /// Loop iterations `spin` completes under `budget` before the abort.
+    fn spins(vm: &Vm, bridge: &Bridge, budget: u32) -> i64 {
+        let e = call(vm, bridge, "spin", 0, budget);
+        assert_eq!(e, Some(ScriptError::BudgetExceeded));
+        vm.globals.get("n").unwrap()
+    }
+
+    fn hook_count(vm: &Vm) -> i32 {
+        // SAFETY: reads one field of the live main state.
+        unsafe { mlua::ffi::lua_gethookcount(vm.raw) }
+    }
+
+    /// D9/D25 (KP-047, SPEC 4.2): the budget a callback gets does not depend
+    /// on what earlier callbacks did. Whatever count-hook countdown the
+    /// previous call left behind, `spin` gets exactly as far as on a fresh
+    /// state, so `reset_budget` must restart the countdown on every call,
+    /// not only after a budget hit.
+    #[test]
+    fn kp047_budget_is_independent_of_the_previous_call() {
+        let (fresh, fb) = new_vm();
+        let want = spins(&fresh, &fb, 20_000);
+        assert!(want > 0);
+        for k in [1, 37, 333, 999, 1000, 1001, 12_345] {
+            let (vm, bridge) = new_vm();
+            assert_eq!(call(&vm, &bridge, "pre", k, 1_000_000), None);
+            assert_eq!(hook_count(&vm), HOOK_INTERVAL as i32);
+            assert_eq!(spins(&vm, &bridge, 20_000), want, "after pre({k})");
+            assert_eq!(call(&vm, &bridge, "pre", k, 1_000_000), None);
+            assert_eq!(spins(&vm, &bridge, 20_000), want, "again after pre({k})");
+        }
+    }
+
+    /// D25 (KP-047): a budget hit lowers the hook interval to every
+    /// instruction, through the Rust hook or inside the patched Lua
+    /// (`lua_khzcharge` on a C-function call, with no hook call and no
+    /// `budget_hit` flag); the next `reset_budget` restores it either way
+    /// and the kept state gets its full budget back.
+    #[test]
+    fn kp047_reset_budget_restores_a_lowered_hook() {
+        let (fresh, fb) = new_vm();
+        let want = spins(&fresh, &fb, 20_000);
+
+        let (vm, bridge) = new_vm();
+        spins(&vm, &bridge, 5_000);
+        assert!(bridge.budget_hit(), "the Rust hook raised the abort");
+        assert_eq!(hook_count(&vm), 1);
+        assert_eq!(spins(&vm, &bridge, 20_000), want);
+
+        let (vm, bridge) = new_vm();
+        // Too small for the flat cost of calling string.rep (a C function).
+        assert_eq!(
+            call(&vm, &bridge, "rep", 0, 10),
+            Some(ScriptError::BudgetExceeded)
+        );
+        assert!(!bridge.budget_hit(), "aborted inside Lua, not by the hook");
+        assert_eq!(hook_count(&vm), 1);
+        vm.reset_budget(&bridge, 20_000);
+        assert_eq!(hook_count(&vm), HOOK_INTERVAL as i32);
+        assert_eq!(spins(&vm, &bridge, 20_000), want);
     }
 }
