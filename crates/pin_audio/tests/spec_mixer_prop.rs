@@ -53,7 +53,7 @@ proptest! {
         };
         bytes.extend_from_slice(&tail);
         if let Ok(s) = decode(&bytes, rate) {
-            prop_assert_eq!(s.data().len(), 2 * s.frames());
+            prop_assert_eq!(s.data().len(), s.channels() * s.frames());
         }
     }
 
@@ -66,7 +66,7 @@ proptest! {
         data in prop::collection::vec(any::<u8>(), 0..200),
     ) {
         if let Ok(s) = decode(&wav_bytes(tag, bits, channels, rate, &data), RATE) {
-            prop_assert_eq!(s.data().len(), 2 * s.frames());
+            prop_assert_eq!(s.data().len(), s.channels() * s.frames());
             prop_assert!(channels == 1 || channels == 2);
             prop_assert!(s.data().iter().all(|x| !x.is_nan()) || tag == 3);
         }
@@ -92,7 +92,7 @@ proptest! {
         }
         bytes.truncate(cut.index(bytes.len() + 1));
         if let Ok(s) = decode(&bytes, RATE) {
-            prop_assert_eq!(s.data().len(), 2 * s.frames());
+            prop_assert_eq!(s.data().len(), s.channels() * s.frames());
         }
     }
 
@@ -107,7 +107,9 @@ proptest! {
         prop_assume!(!samples.is_empty());
         let s = decoded(decode(&wav_i16(channels as u16, rate, samples), rate));
         prop_assert_eq!(s.frames(), samples.len() / channels);
-        for (i, f) in s.data().chunks_exact(2).enumerate() {
+        // Compared through the stereo view (mono is stored once, #227).
+        prop_assert_eq!(s.channels(), channels);
+        for (i, f) in s.to_stereo_vec().chunks_exact(2).enumerate() {
             let (l, r) = if stereo {
                 (samples[2 * i], samples[2 * i + 1])
             } else {

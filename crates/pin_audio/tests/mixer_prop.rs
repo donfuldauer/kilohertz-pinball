@@ -58,7 +58,7 @@ proptest! {
         let (bits, float) = [(8, false), (16, false), (24, false), (32, false), (32, true)][fmt];
         let full = wav_bytes(ch, rate, bits, float, n);
         let s = decode(&full, 48_000).unwrap();
-        prop_assert_eq!(s.data().len(), 2 * s.frames());
+        prop_assert_eq!(s.data().len(), s.channels() * s.frames());
         let _ = decode(&full[..cut.index(full.len())], 48_000);
         let mut bad = full.clone();
         let i = flip.index(bad.len());

@@ -43,6 +43,15 @@
 //!
 //! `render` never allocates, locks or blocks; all storage is sized in
 //! [`Mixer::new`] / [`Mixer::register`].
+//!
+//! # Memory
+//! A [`Sample`] stores mono sounds as one `f32` per frame and stereo sounds
+//! interleaved, so a mono sound takes half the memory of the same frames in
+//! stereo. The mixer pans mono to both channels at render time, choosing the
+//! mono or stereo inner loop once per voice per block; the result is bit for
+//! bit what a duplicated stereo copy would mix. A [`DecodeBudget`] charges
+//! [`BYTES_PER_MONO_FRAME`] (4) per mono frame and [`BYTES_PER_FRAME`] (8)
+//! per stereo frame, i.e. [`Sample::bytes`].
 
 mod decode;
 mod engine;
@@ -51,9 +60,9 @@ mod ring;
 mod sdl;
 
 pub use decode::{
-    BYTES_PER_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES, MAX_MIXER_RATE,
-    MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, OverRelease, Sample, decode, decode_with_budget,
-    resampled_len,
+    BYTES_PER_FRAME, BYTES_PER_MONO_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES,
+    MAX_MIXER_RATE, MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, OverRelease, Sample, decode,
+    decode_with_budget, resampled_len,
 };
 pub use engine::{Bus, Mixer, MixerConfig};
 pub use ring::{SoundReceiver, SoundSender, SoundTrigger, trigger_ring};

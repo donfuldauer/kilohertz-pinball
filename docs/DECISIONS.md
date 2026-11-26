@@ -8918,6 +8918,22 @@ frame and an ordering hazard with the present).
 **Rationale:** evaluating the same expressions in the same type with overflow detection is the only choice that is provably bit-identical on valid streams and an error exactly where upstream panicked (debug) or wrapped (release); widening to `i64` and continuing would silently produce values upstream never did.
 
 **Alternatives:** relying on `overflow-checks` plus `catch_unwind` (release would still wrap); clamping intermediate values (changes decoded output of edge streams).
+
+## #227 — Mono `Sample` equality and the roll-loop table
+
+**Decision:** `Sample` keeps its derived `PartialEq`, which now compares the channel count as well as the data, so a mono sample is not equal to its duplicated stereo copy (compare `to_stereo_vec()` for the stereo view). `SsfMixer::set_roll_loop` builds its table from the stereo view of every frame, `0.5 * (l + r)` with `(l, r) = sample.frame(i)`, for mono and stereo alike, rather than copying the mono data directly.
+
+**Rationale:** equality that ignores the layout would hide a storage regression (the half-memory requirement) from every `assert_eq!` on samples; the decode-budget tests already compare a budgeted decode with an unbudgeted one, which stay the same layout. For finite values `0.5 * (v + v) == v`, but for `|v| > f32::MAX / 2` the sum overflows to infinity; evaluating the same expression keeps the roll loop bit-identical to the old duplicated-stereo behaviour for every input (deliverable 5: "behaviour unchanged") at load-time cost only.
+
+**Alternatives:** layout-blind equality (weaker tests); copying the mono data as the table (differs from the old result only for values above `f32::MAX / 2`, but differs).
+
+## #227 — Existing budget tests keep their intent at 4 bytes per mono frame
+
+**Decision:** tests whose fixtures are mono WAVs and that encoded 8 bytes per frame now use `Sample::bytes()` or `BYTES_PER_MONO_FRAME`; in `crates/pin_app/tests/audio_budget_config.rs` the two 1 MiB cases whose comments state a property of the sizes ("~3 s alone > 1 MiB", "each fits, not together") use twice the frames (288 000; 160 000 + 160 000) so the property still holds at 4 bytes per frame.
+
+**Rationale:** deliverable 7 asks for mechanical swaps that preserve each assertion's intent; with the lengths unchanged those two cases would silently turn into "everything fits" cases and stop exercising the over-budget path.
+
+**Alternatives:** halving the budget for those cases (changes the `MIB` constant the comments and the smoke test share); leaving the lengths (loses the cases' intent).
 ## #111 KP-030 (tester) — Arched top on modern_standard
 
 **Decision:** The spec test for brief item (h) ("for `top_profile = Arched` on each preset: generation is Ok") lowers the translite opening's height on a preset only when contract B's crown rule would otherwise fail, so that the crown at ±opening width/2 is 2 mm above the opening's top edge. A separate test asserts that `modern_standard` with an arched top and its preset opening returns `backbox.top_profile`.
