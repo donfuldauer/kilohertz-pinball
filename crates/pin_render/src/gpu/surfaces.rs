@@ -53,12 +53,155 @@ pub unsafe fn create_surface<W: HasDisplayHandle + HasWindowHandle>(
     instance: &wgpu::Instance,
     window: &W,
 ) -> Result<wgpu::Surface<'static>, GpuError> {
-    // SAFETY: the caller keeps `window` alive for the surface's lifetime.
-    let target = unsafe { wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window) }
-        .map_err(|e| GpuError::Surface(format!("window handle: {e}")))?;
-    // SAFETY: as above.
-    unsafe { instance.create_surface_unsafe(target) }
-        .map_err(|e| GpuError::Surface(format!("create_surface: {e}")))
+    let handle_err = |e: wgpu::rwh::HandleError| GpuError::Surface(format!("window handle: {e}"));
+    // The same handles `SurfaceTargetUnsafe::from_display_and_window` takes,
+    // kept so a device-loss rebuild can recreate the surface (#239).
+    let handles = SurfaceHandles {
+        display: Some(window.display_handle().map_err(handle_err)?.as_raw()),
+        window: window.window_handle().map_err(handle_err)?.as_raw(),
+    };
+    // SAFETY: the caller keeps `window` (and its display) alive for the
+    // surface's lifetime.
+    let surface = unsafe { instance.create_surface_unsafe(handles.target()) }
+        .map_err(|e| GpuError::Surface(format!("create_surface: {e}")))?;
+    registry_insert(&SURFACE_HANDLES, surface_key(&surface), handles);
+    Ok(surface)
+}
+
+/// Replaces `old` with a new surface for the same window on `instance`
+/// (#239, KP-112): a device-loss rebuild on DX12 or Vulkan presents through
+/// a fresh surface, because wgpu reconfigures a surface's existing swap
+/// chain, which stays bound to the dead device (DECISIONS "#239 KP-112 —
+/// surfaces are recreated for a DX12 or Vulkan rebuild").
+///
+/// The window's raw handles are those [`create_surface`] (or an earlier
+/// `recreate_surface`) recorded for `old`. `old` is dropped first, which
+/// releases its swap chain, then the new surface is created from the same
+/// handles and recorded in turn. Not for Metal: a Metal surface may only be
+/// created on the main thread, and a Metal surface can be reused across
+/// devices.
+///
+/// The records are kept in a bounded process-wide registry (at most 32
+/// surfaces; the oldest record is evicted, since wgpu offers no hook to
+/// remove the record of a surface dropped in normal operation).
+///
+/// # Errors
+/// [`GpuError::Surface`] when no handles were recorded for `old` (it was not
+/// made by [`create_surface`], or its record was evicted) or the new surface
+/// cannot be created. `old` is dropped either way.
+///
+/// # Safety
+/// The window `old` was created for, and its display connection, must
+/// still be alive and must outlive the returned surface, exactly as for
+/// [`create_surface`]. The engine guarantees it with the window's
+/// [`WindowGuard`]: the caller holds the [`SurfaceSource::keep_alive`] clone
+/// that was paired with `old` while calling this and pairs the returned
+/// surface with that same clone, which (in the [`SurfaceSet`] slot or a
+/// presenter thread) is dropped only after the surface. The window cannot
+/// therefore be destroyed between `old`'s drop and the new surface's
+/// creation, nor under the new surface. The display connection (the SDL
+/// video subsystem) stays open as long as any window does. This may run on
+/// the render thread; on DX12 and Vulkan a surface only records the window
+/// handle there (the swap chain is made when the surface is configured).
+pub unsafe fn recreate_surface(
+    instance: &wgpu::Instance,
+    old: wgpu::Surface<'static>,
+) -> Result<wgpu::Surface<'static>, GpuError> {
+    recreate_in(&SURFACE_HANDLES, old, surface_key, |h: SurfaceHandles| {
+        // SAFETY: the caller keeps the window behind `h` alive (see above).
+        unsafe { instance.create_surface_unsafe(h.target()) }
+            .map_err(|e| GpuError::Surface(format!("recreate surface: {e}")))
+    })
+}
+
+/// The raw display and window handles a surface was created from.
+#[derive(Copy, Clone, Debug)]
+struct SurfaceHandles {
+    display: Option<wgpu::rwh::RawDisplayHandle>,
+    window: wgpu::rwh::RawWindowHandle,
+}
+
+// SAFETY: the raw handles are plain identifiers (pointers or ids) and are
+// `!Send` only by marker. They are used only by `recreate_surface`, whose
+// caller keeps the window alive through its `WindowGuard` (itself
+// `Send + Sync`, droppable on any thread), and only on DX12 and Vulkan,
+// whose surface creation accepts the handles on any thread.
+unsafe impl Send for SurfaceHandles {}
+
+impl SurfaceHandles {
+    /// The surface target for these handles.
+    fn target(self) -> wgpu::SurfaceTargetUnsafe {
+        wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: self.display,
+            raw_window_handle: self.window,
+        }
+    }
+}
+
+/// Most surfaces whose window handles are kept for [`recreate_surface`].
+/// A surface dropped in normal operation leaves its record behind (wgpu has
+/// no drop hook to remove it), so the oldest record is evicted beyond this:
+/// the registry stays bounded, and the at most three windows of an app are
+/// recorded far more recently.
+const SURFACE_HANDLE_CAP: usize = 32;
+
+/// Window handles by surface key ([`surface_key`]), oldest first. Locked
+/// only on the main thread (surface creation) and the render thread (a
+/// rebuild), never on the sim thread. Looked up by key only; its order
+/// decides nothing but eviction.
+static SURFACE_HANDLES: Mutex<Vec<(u64, SurfaceHandles)>> = Mutex::new(Vec::new());
+
+/// The registry key of `surface`: a hash of its identity (wgpu hashes a
+/// surface by its id, whose epoch differs for every created surface). The
+/// surface itself is not kept.
+fn surface_key(surface: &wgpu::Surface<'static>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    surface.hash(&mut h);
+    h.finish()
+}
+
+/// Locks a registry; a poisoned lock still holds plain data.
+fn lock_registry<H>(reg: &Mutex<Vec<(u64, H)>>) -> MutexGuard<'_, Vec<(u64, H)>> {
+    reg.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Records `value` under `key` (replacing an older record of the key),
+/// evicting the oldest record when [`SURFACE_HANDLE_CAP`] are kept.
+fn registry_insert<H>(reg: &Mutex<Vec<(u64, H)>>, key: u64, value: H) {
+    let mut r = lock_registry(reg);
+    r.retain(|(k, _)| *k != key);
+    if r.len() >= SURFACE_HANDLE_CAP {
+        r.remove(0);
+    }
+    r.push((key, value));
+}
+
+/// Removes and returns the record of `key`.
+fn registry_take<H>(reg: &Mutex<Vec<(u64, H)>>, key: u64) -> Option<H> {
+    let mut r = lock_registry(reg);
+    let i = r.iter().position(|(k, _)| *k == key)?;
+    Some(r.remove(i).1)
+}
+
+/// [`recreate_surface`]'s steps for any surface type: take `old`'s handles,
+/// drop `old`, `create` the new one from the handles, record it.
+fn recreate_in<S, H: Copy>(
+    reg: &Mutex<Vec<(u64, H)>>,
+    old: S,
+    key: impl Fn(&S) -> u64,
+    create: impl FnOnce(H) -> Result<S, GpuError>,
+) -> Result<S, GpuError> {
+    let handles = registry_take(reg, key(&old));
+    // The old surface goes first: its drop releases the swap chain.
+    drop(old);
+    let handles = handles.ok_or_else(|| {
+        GpuError::Surface("no window handles were recorded for the surface".to_owned())
+    })?;
+    let new = create(handles)?;
+    registry_insert(reg, key(&new), handles);
+    Ok(new)
 }
 
 /// A shared, type-erased handle that keeps a window alive (issue #9a).
@@ -1654,5 +1797,120 @@ mod layer_target_tests {
             q.desired_maximum_frame_latency = 2;
             assert_eq!(c, q);
         }
+    }
+}
+
+/// #239 (KP-112): the window-handle registry behind [`recreate_surface`],
+/// with stand-in surfaces and handles (GPU-free).
+#[cfg(test)]
+mod recreate_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A stand-in surface: its key, and a log of drops and creations.
+    struct FakeSurface {
+        key: u64,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Drop for FakeSurface {
+        fn drop(&mut self) {
+            self.log.borrow_mut().push(format!("drop {}", self.key));
+        }
+    }
+
+    fn fake(key: u64, log: &Rc<RefCell<Vec<String>>>) -> FakeSurface {
+        FakeSurface {
+            key,
+            log: Rc::clone(log),
+        }
+    }
+
+    /// #239 KP-112: insert / lookup / take by key; a re-recorded key is
+    /// replaced, and the registry is bounded by evicting the oldest record.
+    #[test]
+    fn registry_insert_take_and_eviction() {
+        let reg: Mutex<Vec<(u64, u32)>> = Mutex::new(Vec::new());
+        registry_insert(&reg, 1, 10);
+        registry_insert(&reg, 2, 20);
+        registry_insert(&reg, 1, 11);
+        assert_eq!(registry_take(&reg, 1), Some(11));
+        assert_eq!(registry_take(&reg, 1), None, "taken records are gone");
+        assert_eq!(registry_take(&reg, 3), None);
+        for k in 100..100 + SURFACE_HANDLE_CAP as u64 {
+            registry_insert(&reg, k, 0);
+        }
+        assert_eq!(lock_registry(&reg).len(), SURFACE_HANDLE_CAP);
+        assert_eq!(
+            registry_take(&reg, 2),
+            None,
+            "the oldest record was evicted"
+        );
+        assert_eq!(registry_take(&reg, 100), Some(0));
+    }
+
+    /// #239 KP-112: recreation drops the old surface before creating the
+    /// new one from the old surface's handles, and records the new surface
+    /// (so a later recreation finds it) under its own key.
+    #[test]
+    fn recreate_drops_the_old_surface_first_and_rerecords() {
+        let reg: Mutex<Vec<(u64, u32)>> = Mutex::new(Vec::new());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        registry_insert(&reg, 1, 7);
+        let made = recreate_in(
+            &reg,
+            fake(1, &log),
+            |s| s.key,
+            |h| {
+                log.borrow_mut().push(format!("create from {h}"));
+                Ok(fake(2, &log))
+            },
+        )
+        .expect("recreated");
+        assert_eq!(made.key, 2);
+        assert_eq!(*log.borrow(), ["drop 1", "create from 7"]);
+        assert_eq!(registry_take(&reg, 1), None, "the old record is gone");
+        let again = recreate_in(
+            &reg,
+            made,
+            |s| s.key,
+            |h| {
+                assert_eq!(h, 7, "the same window handles");
+                Ok(fake(3, &log))
+            },
+        )
+        .expect("recreated again");
+        assert_eq!(registry_take(&reg, 3), Some(7));
+        drop(again);
+    }
+
+    /// #239 KP-112: missing handles and a creation error are
+    /// `GpuError::Surface`, and the old surface is dropped either way.
+    #[test]
+    fn recreate_failures_drop_the_old_surface() {
+        let reg: Mutex<Vec<(u64, u32)>> = Mutex::new(Vec::new());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let e = recreate_in(
+            &reg,
+            fake(1, &log),
+            |s| s.key,
+            |_| -> Result<FakeSurface, _> { unreachable!("no handles, nothing to create") },
+        )
+        .err()
+        .expect("no handles");
+        assert!(matches!(e, GpuError::Surface(ref m) if m.contains("no window handles")));
+        registry_insert(&reg, 2, 5);
+        let e = recreate_in(
+            &reg,
+            fake(2, &log),
+            |s| s.key,
+            |_| Err(GpuError::Surface("refused".to_owned())),
+        )
+        .err()
+        .expect("creation refused");
+        assert!(matches!(e, GpuError::Surface(ref m) if m == "refused"));
+        assert_eq!(*log.borrow(), ["drop 1", "drop 2"]);
+        assert_eq!(registry_take(&reg, 2), None);
     }
 }
