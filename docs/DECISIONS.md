@@ -8640,6 +8640,47 @@ frame and an ordering hazard with the present).
 **Rationale:** with Appendix E's sizes (1315 mm body, 250 mm backbox, 1070 mm playfield at 6.5°) the backbox front face (1065 mm) is always in front of the playfield's rear edge (~1093 mm), as on real machines whose backbox overhangs the top of the playfield; the brief's literal "front face behind the rear edge" would reject every preset, so the vertical clearance is accepted too (R8). `6.55f32` is 6.5500002, so a strict 0.05 would reject a value the rule means to accept.
 **Alternatives:** only the horizontal rule (rejects all three presets); moving the backbox behind the body (contradicts Appendix E's body and backbox sizes); a strict 0.05° comparison.
 
+## #85 — Table swap by restarting the engine threads
+
+**Decision:** A table picked in the browser replaces the running one by restarting the engine threads on the same windows and menu: `Threads::shutdown_with_audio` joins sim, render, audio and I/O threads (the render thread drops the surfaces; the window guards keep the windows), the old `DeviceStream` is dropped once the audio thread (and with it its `DeviceSink`) is gone and a fresh one is opened, the forwarder is re-pointed at fresh input and window rings (`EventForwarder::replace_channels`; it keeps its menu, router, held inputs and gamepads), the surfaces are recreated from `platform.windows()` with the same `keep_alive` guards (one `render_gpu` function used at start-up and at the swap), and `ThreadsConfig` / `RenderConfig` are rebuilt exactly as the `--table` start-up does (one `engine_config` function), with the current `config.toml` wireframe setting. The new table runs from tick 0. A swap prints `pin_app: table swap: <bundle file name> (wireframe=<bool>)`. A join error of the old engine (or a surface / thread spawn error of the new one) ends the run with that failure, as at shutdown. `threads.rs` needed no hook. The profiler reader, the HUD and the `--latency-trace` collector follow the new engine (the trace file describes the last engine of the run), and `--run-frames` / `--run-ticks` count the current engine's frames and ticks.
+**Rationale:** The engine threads own the sim, the surfaces, the audio table and the render table, and no live-swap hook exists; a restart reuses the tested start-up and shutdown paths, keeps R4 untouched on the sim thread (nothing new runs there) and gives a swapped-in table exactly the state of a fresh `--table` start (R3).
+**Alternatives:** a live swap through new sim/render/audio hand-off slots (new cross-thread protocol in `threads.rs`, `present.rs` and the audio thread; far larger blast radius); restarting the process with `--table` (loses the windows and the menu).
+
+## #85 — The swap hitch is accepted
+
+**Decision:** The visible hitch of a swap (join, surface recreation, GPU and pipeline set-up for the new table) is accepted; the menu is open while it happens.
+**Rationale:** Table switching is a rare, player-initiated action from the menu; the 1 kHz loop and the frame pacing of a running table are not affected.
+**Alternatives:** a seamless swap (see the previous entry; not worth its blast radius now).
+
+## #85 — `last_table` is not loaded automatically
+
+**Decision:** At start-up without `--table` the browser lists the tables and the menu waits for a choice; `config.toml`'s `last_table` is recorded on every successful browser load (and saved) but never loaded automatically.
+**Rationale:** The brief asks for the browser at start; an automatic load would hide it and would make a broken or slow table block every start. The value stays available for a later "continue" option.
+**Alternatives:** auto-loading `last_table` when it is still listed and ready (rejected for the reasons above).
+
+## #85 — The menu opens on the Tables panel at start without `--table`
+
+**Decision:** A run without `--table` opens the menu once at start (the menu state machine's own toggle, stamped with `SDL_GetTicksNS`), on the Tables panel, over the idle path; closing it with `Esc` shows the idle debug view. A `--table` run starts with the menu closed as before.
+**Rationale:** Without a table the only useful thing to show is the list of tables; using the state machine's own toggle keeps the #84 release and publish rules.
+**Alternatives:** a separate start screen (a second UI to maintain).
+
+## #85 — Scan and load errors in the browser
+
+**Decision:** The scan and the load run on the I/O worker (`orchestrator::IoWorker`, one `io-worker` thread; a load runs `load_app_table` on its `table-load` big-stack thread). A missing or unreadable tables folder gives an empty list (no failure, one `pin_app: table browser: 0 table(s) in <dir> (0 ready)` line); a broken bundle is listed with its error and the menu refuses to load it (`LoadRefusal::Broken`, shown as the menu notice); a bundle that lists but fails the full validation or load (clearance, glTF, rules) leaves the running table untouched and the menu shows `Failed` with the error text; a panic inside a load is caught and becomes the same failure with the panic message. Dropping the worker lets the request in flight finish, skips queued ones and joins the thread.
+**Rationale:** R4 (the main thread only posts requests and applies replies), R11 (a picked table goes through exactly `validate_table` as `--table` does), and a failed table must never panic, hang or end the run.
+**Alternatives:** scanning on the main thread inside the menu executor (the #84 fallback, still used for `--table` runs with `tables_dir` set; blocks the event pump).
+
+## #97 — Display textures: mip filter, redraw semantics and size handling
+
+**Decision:** `BackglassTexture` / `ScoreTexture` (KP-017, REQ-VIEW-002) each own one `Rgba8Unorm` texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`, `mip_level_count(w, h)` levels, `mip_level_count` = 0 for a zero side, else `1 + floor(log2(max(w, h)))`).
+- Mip filter: a fullscreen-triangle render pass per level reads the level above with `textureLoad` (no sampler), converts each channel to its stored byte, sums the 2 × 2 block and writes `(sum + 2) / 4` (integer round-to-nearest, half up), in display-encoded space. For odd source sides the block's second row or column is clamped to the last texel (the odd last row or column of the source is not included). Pipeline, per-level views and per-level bind groups are created once in `new()`, so a redraw allocates only the transient uniform and instance buffers and bind groups that the existing renderers' `encode()` already creates.
+- Redraw: `update` returns `true` exactly when it redrew. One submit per redraw: clear level 0 to transparent black, the renderer's `encode()` over the whole texture, then every mip. Level 0 is cleared first so it equals `render_*_to_image` (which draws into a freshly cleared texture) even for content that does not cover every pixel. An unchanged update records nothing.
+- Sizes: a side of 0 or above `max_texture_dimension_2d` is `GpuError::InvalidArgument`, checked before the renderer is built. Every level is cleared to transparent black in `new()`.
+- `ScoreTexture` has no LCD image API: LCD `Image` items whose image was never set are skipped, as in `LcdRenderer` without `set_image`.
+
+**Rationale:** Integer averaging of the stored bytes is exact and identical on every backend (no dependence on the precision of hardware linear filtering or of float-to-unorm rounding), and meets the 2/255 region-mean bound for power-of-two sizes. Building everything except per-draw buffers in `new()` meets "no pipeline, texture or bind-group-layout per update" and keeps the GPU texture object stable for a bound material.
+
+**Alternatives:** Linear-filtered `textureSample` at the texel corner, which depends on filtering precision; a compute shader, which needs `STORAGE_BINDING` on the texture and is not supported for `Rgba8Unorm` storage on every downlevel backend; a 3 × 3 tent filter for odd sizes, which costs more and is not required (the brief accepts clamped edges); exposing `set_image` on `ScoreTexture`, which is outside the brief's fixed API and can be added when the backbox consumer needs LCD images.
 ## #90 KP-010 — layout.toml element structs stay unchanged; styles bind from table.toml
 
 **Decision:** `LayoutManifest`, `Playfield`, `Wall`, `Post`, `Lane`, `Ramp`, `Deck`, `Insert` and `LampDef` gain no fields. Every new key lives in `table.toml` (`[theme]`, `[[materials]]`, `[[part_styles]]`, `[[parts]]`); a `layout.toml` element gets a style, a look (`material`) and a rotation through a `[[parts]]` entry with `bind = "<section>[<n>]"` (`walls`, `posts`, `lanes`, `ramps`, `decks`, `inserts`). Layout elements without a bound part resolve as parts too (kind `wall`, `post`, `lane_guide`, `wireform` or `lane_guide` by spline kind, `deck`, `insert`), named by their array path. The brief's `surface` key on walls and decks is replaced by the bound part's `material` under the same agreement rule (entry "Looks and plays agree for layout elements").

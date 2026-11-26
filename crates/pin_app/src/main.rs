@@ -13,8 +13,16 @@
 //!   the sim/render/audio/I/O threads and pumps SDL events on the main thread
 //!   until quit. `--table <path>` (a bundle folder or `.zip`) runs that
 //!   table — drawn with the PBR renderer and its backglass / score display,
-//!   its sounds mixed into the default audio device — else the idle stub sim
-//!   (debug view). `--headless` uses SDL's dummy drivers (no surfaces are
+//!   its sounds mixed into the default audio device. Without `--table` the
+//!   table browser (issue #85, REQ-VIEW-006) starts: the idle stub sim
+//!   (debug view) runs under the in-game menu, opened on its Tables panel,
+//!   which lists the bundles in `<exe dir>/tables` (or `config.toml`'s
+//!   `tables_dir`), scanned on the I/O worker (`orchestrator::IoWorker`) at
+//!   start and on every rescan; a table picked there is validated and
+//!   loaded on the worker and swapped in by restarting the engine threads
+//!   on the same windows and menu (`pin_app: table swap: <name>
+//!   (wireframe=<bool>)`), and a failed load leaves the running table and
+//!   shows the error in the menu. `--headless` uses SDL's dummy drivers (no surfaces are
 //!   created then, audio goes to the null sink), `--vrr` requests
 //!   `FifoRelaxed` for the playfield, `--debug-overlay` draws the debug
 //!   lines over the PBR table.
@@ -72,31 +80,32 @@
 //! thread, wait (bounded) for a detached presenter to release its window,
 //! and if one never does, exit without destroying it.
 
-use pin_app::orchestrator::trace::{FlipperBindings, latency_trace, summary_line};
+use pin_app::orchestrator::trace::{FlipperBindings, TraceCollector, latency_trace, summary_line};
 use pin_app::orchestrator::{
-    AudioConfig, AudioSink, ClosePolicy, DISPLAY_RING_CAPACITY, DeviceStream, DropMonitor,
-    FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, RunExit, RunLimits,
-    SOUND_RING_CAPACITY, TableRenderOptions, TableSim, TableVisuals, ThreadsConfig, load_checked,
-    on_sim_stack, run_headless, run_headless_table, spawn_threads, ssf_playfield_mm, table_lines,
-    table_samples, table_source_positions, validate_table,
+    AudioConfig, AudioSink, ClosePolicy, DeviceStream, DropMonitor, IoReply, IoRequest, IoWorker,
+    LoadedApp, NullSink, RenderConfig, RenderGpu, RunExit, RunLimits, TableRenderOptions, Threads,
+    ThreadsConfig, load_app_table, run_headless, run_headless_table, spawn_threads,
+    ssf_playfield_mm,
 };
 use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
 };
-use pin_app::profiler::{Profiler, hud_lines};
+use pin_app::profiler::{Profiler, ProfilerReader, hud_lines};
 use pin_app::ui::{
-    AppConfig, AppSetting, MenuController, MenuShare, changed_settings, keyboard_router,
+    AppConfig, AppSetting, MenuController, MenuShare, browser_dir, changed_settings,
+    keyboard_router,
 };
-use pin_audio::mixer::{MixerConfig, trigger_ring};
+use pin_audio::mixer::MixerConfig;
 use pin_audio::ssf::SsfConfig;
-use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, haptics_ring};
+use pin_core::input::InputEvent;
+use pin_core::spsc::SpscConsumer;
 use pin_render::gpu::{
     GpuOptions, PRESENTER_JOIN_TIMEOUT, SurfaceOptions, SurfaceSource, create_instance,
     create_surface,
 };
+use pin_render::topology::WindowEvent;
 use pin_render::topology::{DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, TopologyMode};
-use pin_sim::SimConfig;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -106,9 +115,6 @@ use std::time::{Duration, Instant};
 /// How long shutdown waits for a detached presenter thread to release its
 /// window before exiting without destroying it.
 const WINDOW_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Most table lines drawn in the debug view.
-const MAX_TABLE_LINES: usize = 8192;
 
 /// SDL video drivers whose raw window handles wgpu can consume (DECISIONS
 /// 0.1 Q4: sdl3's raw-window-handle impl panics on `dummy`/`offscreen`).
@@ -171,69 +177,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// The table to run: validated and loaded from one snapshot, with what the
-/// render and audio threads need.
-struct LoadedApp {
-    sim: Box<TableSim>,
-    visuals: TableVisuals,
-    samples: Vec<RegisteredSound>,
-    table_lines: Vec<pin_render::debug::DebugLine>,
-    flippers: Vec<FlipperOutline>,
-    source_positions: Vec<(u16, [f32; 2])>,
-    haptics: pin_input::haptics::HapticsConsumer<pin_core::input::HapticsTelemetryEvent>,
-    sounds: pin_audio::mixer::SoundReceiver,
-    displays: pin_input::haptics::HapticsConsumer<pin_app::orchestrator::DisplayCommand>,
-    bindings: FlipperBindings,
-}
-
-/// Validates and loads the table on a big-stack thread (the simulation is
-/// built, wrapped and boxed there; only the box reaches this thread).
-fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> {
-    let path = path.to_path_buf();
-    on_sim_stack("table-load", move || -> Result<LoadedApp, String> {
-        let checked = validate_table(&path)?;
-        for w in &checked.warnings {
-            eprintln!("pin_app: table warning: {w}");
-        }
-        let sim = load_checked(&checked, SimConfig::default())?;
-        let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
-        let (stx, srx) = trigger_ring(SOUND_RING_CAPACITY);
-        let (dtx, drx) = haptics_ring(DISPLAY_RING_CAPACITY);
-        let sim = Box::new(
-            TableSim::new(sim, Some(htx))
-                .with_sounds(stx)
-                .with_displays(dtx),
-        );
-        let visuals = TableVisuals::of(&checked);
-        for w in &visuals.warnings {
-            eprintln!("pin_app: table display warning: {w}");
-        }
-        let (samples, errors) = table_samples(&checked, mixer.sample_rate);
-        for e in &errors {
-            eprintln!("pin_app: table sound warning: {e}");
-        }
-        eprintln!(
-            "pin_app: table {:?} loaded ({} switches, {} mechs, {} sounds)",
-            checked.table.manifest.meta.name,
-            checked.table.switches.len(),
-            checked.table.mechs.len(),
-            samples.len()
-        );
-        Ok(LoadedApp {
-            sim,
-            table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
-            flippers: FlipperOutline::of(&checked.table),
-            bindings: FlipperBindings::of_flippers(&checked.table.flippers),
-            source_positions: table_source_positions(&checked.table),
-            visuals,
-            samples,
-            haptics: hrx,
-            sounds: srx,
-            displays: drx,
-        })
-    })?
 }
 
 /// The audio sink: the default playback device (its owner stays on this
@@ -590,6 +533,214 @@ fn apply_config_change(
     *applied = new;
 }
 
+/// What shapes every engine the run starts (at start-up and at each table
+/// swap of the table browser, issue #85).
+struct EngineOptions {
+    /// `--vrr`.
+    vrr: bool,
+    /// `--debug-overlay`.
+    debug_overlay: bool,
+    /// `--profiler-hud`.
+    profiler_hud: bool,
+    /// The mixer configuration.
+    mixer: MixerConfig,
+    /// `--latency-trace` was given.
+    tracing: bool,
+}
+
+/// The main thread's readers of one engine.
+struct Engine {
+    /// The profiler's reader (table runs only; the idle path is not
+    /// profiled).
+    profiler: Option<ProfilerReader>,
+    /// The latency trace's collector (`--latency-trace`).
+    trace: Option<TraceCollector>,
+    /// Whether the render thread has a GPU and surfaces.
+    rendering: bool,
+}
+
+/// The render thread's GPU: one surface per platform window, created here
+/// on the main thread and moved to the render thread, which owns the device
+/// (PLAN §2.2). `None` (with one stderr line) when SDL's video driver has no
+/// native windows.
+fn render_gpu(
+    platform: &Platform,
+    guards: &[WindowGuard],
+    vrr: bool,
+) -> Result<Option<RenderGpu>, String> {
+    let driver = platform.video().current_video_driver();
+    if !NATIVE_DRIVERS.contains(&driver) {
+        eprintln!("pin_app: SDL video driver {driver:?} has no native windows; not rendering");
+        return Ok(None);
+    }
+    let options = GpuOptions::for_app();
+    let instance = create_instance(options.backends);
+    let mut surfaces = Vec::with_capacity(guards.len());
+    for (w, guard) in platform.windows().windows().zip(guards) {
+        // SAFETY: each surface carries a clone of its window's guard
+        // (`keep_alive`); the keeper destroys the window only after the
+        // last clone is gone, on this thread (DECISIONS "6.0 — window
+        // lifetime").
+        let surface = unsafe { create_surface(&instance, &w.window) }.map_err(|e| e.to_string())?;
+        let (pw, ph) = w.window.size_in_pixels();
+        surfaces.push(SurfaceSource {
+            window: w.plan_index,
+            viewports: w.plan.viewports.clone(),
+            surface,
+            logical_size: (w.plan.bounds.w, w.plan.bounds.h),
+            pixel_size: (pw, ph),
+            keep_alive: Some(guard.clone()),
+        });
+    }
+    Ok(Some(RenderGpu {
+        instance,
+        options,
+        surfaces,
+        surface_options: SurfaceOptions {
+            vrr,
+            force_presenter_thread: false,
+        },
+    }))
+}
+
+/// The thread configuration for `table` (the profiled table simulation with
+/// its audio, render table and displays) or, without one, the idle path.
+/// `wireframe` is the current `config.toml` setting (ORed with
+/// `--debug-overlay`).
+#[allow(clippy::too_many_arguments)]
+fn engine_config(
+    table: Option<LoadedApp>,
+    input: SpscConsumer<InputEvent>,
+    window: SpscConsumer<WindowEvent>,
+    gpu: Option<RenderGpu>,
+    sink: Box<dyn AudioSink>,
+    menu: MenuShare,
+    wireframe: bool,
+    o: &EngineOptions,
+) -> (ThreadsConfig, Engine) {
+    let mut render = RenderConfig {
+        gpu,
+        window_events: Some(window),
+        close_policy: ClosePolicy::PlayfieldOnly,
+        table_render: TableRenderOptions {
+            debug_overlay: o.debug_overlay || wireframe,
+            ..TableRenderOptions::default()
+        },
+        menu: Some(menu),
+        ..RenderConfig::default()
+    };
+    let mut profiler = None;
+    let bindings = table
+        .as_ref()
+        .map_or_else(FlipperBindings::new, |t| t.bindings);
+    let mut cfg = match table {
+        Some(t) => {
+            // The ProfiledSim's clock is the sim loop's: SDL's event
+            // timestamp clock, which the input latencies are measured on.
+            let (mut cfg, reader) =
+                ThreadsConfig::with_profiled_sim(t.sim, input, sdl_now_ns, Profiler::new());
+            render.present_profiler = cfg.render.present_profiler.take();
+            render.hud = o.profiler_hud.then(|| reader.clone());
+            profiler = Some(reader);
+            cfg.audio = AudioConfig {
+                haptics: Some(t.haptics),
+                ssf: SsfConfig {
+                    playfield_mm: ssf_playfield_mm(t.visuals.bounds),
+                    ..SsfConfig::default()
+                },
+                sounds: Some(t.sounds),
+                mixer: o.mixer,
+                samples: t.samples,
+                sink: Some(sink),
+                source_positions: t.source_positions,
+                ..AudioConfig::default()
+            };
+            render.table_lines = t.table_lines;
+            render.flippers = t.flippers;
+            render.table = Some(Arc::new(t.visuals));
+            render.displays = Some(t.displays);
+            cfg
+        }
+        None => {
+            let mut cfg = ThreadsConfig::idle(input);
+            cfg.audio.sink = Some(sink);
+            cfg
+        }
+    };
+    cfg.now_ns = sdl_now_ns;
+    let mut trace = None;
+    if o.tracing {
+        // Every trace buffer is allocated here, before the threads start.
+        let (collector, sim_writer, frame_writer) = latency_trace(bindings, sdl_now_ns);
+        cfg.latency_trace = Some(sim_writer);
+        render.latency_trace = Some(frame_writer);
+        trace = Some(collector);
+    }
+    let rendering = render.gpu.is_some();
+    cfg.render = render;
+    (
+        cfg,
+        Engine {
+            profiler,
+            trace,
+            rendering,
+        },
+    )
+}
+
+/// What a table swap needs from the run (issue #85).
+struct SwapContext<'a> {
+    platform: &'a Platform,
+    guards: &'a [WindowGuard],
+    menu_share: &'a MenuShare,
+    headless: bool,
+    options: &'a EngineOptions,
+}
+
+/// The table browser's swap (issue #85, DECISIONS "#85 — Table swap by
+/// restarting the engine threads"): stops the running engine (`old`: the
+/// threads are joined, the render thread drops the surfaces, the window
+/// guards keep the windows), closes the old audio device stream once its
+/// sink is gone with the audio thread, re-points the forwarder at fresh
+/// input and window rings, recreates the surfaces on the same windows and
+/// a fresh device stream, and starts the engine for `app` from tick 0 with
+/// the current `wireframe` setting. The menu (in the forwarder) and the
+/// windows persist.
+///
+/// # Errors
+/// A thread join error of the old engine (the run then ends with it, as at
+/// shutdown; the old threads are gone either way), or a surface or thread
+/// spawn error for the new one.
+fn swap_table(
+    old: Threads,
+    app: LoadedApp,
+    wireframe: bool,
+    forwarder: &mut EventForwarder,
+    audio_device: &mut Option<DeviceStream>,
+    cx: &SwapContext<'_>,
+) -> Result<(Threads, Engine), String> {
+    old.shutdown_with_audio()?;
+    // The audio thread was joined (its sink is gone): the stream can close.
+    drop(audio_device.take());
+    let (input_tx, input_rx) = pin_core::spsc::channel(INPUT_RING_CAPACITY);
+    let (window_tx, window_rx) = pin_core::spsc::channel(WINDOW_RING_CAPACITY);
+    forwarder.replace_channels(input_tx, window_tx);
+    let gpu = render_gpu(cx.platform, cx.guards, cx.options.vrr)?;
+    let (device, sink) = audio_output(cx.platform, cx.headless, cx.options.mixer);
+    *audio_device = device;
+    let (cfg, engine) = engine_config(
+        Some(app),
+        input_rx,
+        window_rx,
+        gpu,
+        sink,
+        cx.menu_share.clone(),
+        wireframe,
+        cx.options,
+    );
+    Ok((spawn_threads(cfg)?, engine))
+}
+
 fn run_app(args: &[String]) -> Result<(), String> {
     // config.toml first (REQ-VIEW-006): its settings shape the windows.
     let (mut menu, config_lines) = MenuController::for_app(args)?;
@@ -600,15 +751,27 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
     let mut trace_file = open_latency_trace(args)?;
-    let vrr = args.iter().any(|a| a == "--vrr");
-    let debug_overlay = args.iter().any(|a| a == "--debug-overlay");
-    let profiler_hud = args.iter().any(|a| a == "--profiler-hud");
-    let mixer = MixerConfig::default();
+    let options = EngineOptions {
+        vrr: args.iter().any(|a| a == "--vrr"),
+        debug_overlay: args.iter().any(|a| a == "--debug-overlay"),
+        profiler_hud: args.iter().any(|a| a == "--profiler-hud"),
+        mixer: MixerConfig::default(),
+        tracing: trace_file.is_some(),
+    };
     // Load the table before opening windows: a bad table fails fast.
     let table = path_of(args, "--table")
         .transpose()?
-        .map(|p| load_app_table(&p, mixer))
+        .map(|p| load_app_table(&p, options.mixer))
         .transpose()?;
+    // Without `--table`: the table browser (issue #85) scans `<exe
+    // dir>/tables` (or config.toml's `tables_dir`) on the I/O worker.
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pin_app"));
+    let browser = browser_dir(args, menu.config().tables_dir.as_deref(), &exe).map(|dir| {
+        let worker = IoWorker::spawn(options.mixer);
+        eprintln!("pin_app: table browser: scanning {}", dir.display());
+        worker.request(IoRequest::Scan(dir.clone()));
+        (dir, worker)
+    });
 
     let mut platform = Platform::init(PlatformConfig { headless }).map_err(|e| e.to_string())?;
     let manager = DisplayTopologyManager::query(platform.video()).map_err(|e| e.to_string())?;
@@ -644,121 +807,46 @@ fn run_app(args: &[String]) -> Result<(), String> {
     }));
     let menu_share = MenuShare::new();
     menu.set_share(menu_share.clone());
+    if browser.is_some() {
+        // The table browser: menu loads and rescans go to the I/O worker,
+        // and the menu opens on its Tables panel (the idle path runs under
+        // it). Nothing is held yet, so opening releases nothing.
+        menu.set_browser_enabled(true);
+        menu.toggle(sdl_now_ns(), &mut |_| {});
+    }
     forwarder.set_menu(menu);
     for id in platform.open_gamepads() {
         forwarder.gamepad_added(id.raw(), platform.gamepad_guid(id));
     }
     forwarder.register_windows(&ids);
 
-    // Surfaces are created here on the main thread and moved to the render
-    // thread, which owns the device (PLAN §2.2).
-    let driver = platform.video().current_video_driver();
-    let gpu = if NATIVE_DRIVERS.contains(&driver) {
-        let options = GpuOptions::for_app();
-        let instance = create_instance(options.backends);
-        let mut surfaces = Vec::with_capacity(guards.len());
-        for (w, guard) in platform.windows().windows().zip(&guards) {
-            // SAFETY: each surface carries a clone of its window's guard
-            // (`keep_alive`); the keeper destroys the window only after the
-            // last clone is gone, on this thread (DECISIONS "6.0 — window
-            // lifetime").
-            let surface =
-                unsafe { create_surface(&instance, &w.window) }.map_err(|e| e.to_string())?;
-            let (pw, ph) = w.window.size_in_pixels();
-            surfaces.push(SurfaceSource {
-                window: w.plan_index,
-                viewports: w.plan.viewports.clone(),
-                surface,
-                logical_size: (w.plan.bounds.w, w.plan.bounds.h),
-                pixel_size: (pw, ph),
-                keep_alive: Some(guard.clone()),
-            });
-        }
-        Some(RenderGpu {
-            instance,
-            options,
-            surfaces,
-            surface_options: SurfaceOptions {
-                vrr,
-                force_presenter_thread: false,
-            },
-        })
-    } else {
-        eprintln!("pin_app: SDL video driver {driver:?} has no native windows; not rendering");
-        None
-    };
-
+    let gpu = render_gpu(&platform, &guards, options.vrr)?;
     // Declared before `threads`: dropped after the audio thread was joined.
-    let (audio_device, sink) = audio_output(&platform, headless, mixer);
-    let mut render = RenderConfig {
-        gpu,
-        window_events: Some(window_rx),
-        close_policy: ClosePolicy::PlayfieldOnly,
-        table_render: TableRenderOptions {
-            debug_overlay: debug_overlay || applied.wireframe,
-            ..TableRenderOptions::default()
+    let (mut audio_device, sink) = audio_output(&platform, headless, options.mixer);
+    let (
+        cfg,
+        Engine {
+            mut profiler,
+            mut trace,
+            mut rendering,
         },
-        menu: Some(menu_share),
-        ..RenderConfig::default()
-    };
-    // The profiler's reader (table runs only; the idle path is not
-    // profiled).
-    let mut profiler = None;
-    let bindings = table
-        .as_ref()
-        .map_or_else(FlipperBindings::new, |t| t.bindings);
-    let mut trace = None;
-    let mut cfg = match table {
-        Some(t) => {
-            // The ProfiledSim's clock is the sim loop's: SDL's event
-            // timestamp clock, which the input latencies are measured on.
-            let (mut cfg, reader) =
-                ThreadsConfig::with_profiled_sim(t.sim, input_rx, sdl_now_ns, Profiler::new());
-            render.present_profiler = cfg.render.present_profiler.take();
-            render.hud = profiler_hud.then(|| reader.clone());
-            profiler = Some(reader);
-            cfg.audio = AudioConfig {
-                haptics: Some(t.haptics),
-                ssf: SsfConfig {
-                    playfield_mm: ssf_playfield_mm(t.visuals.bounds),
-                    ..SsfConfig::default()
-                },
-                sounds: Some(t.sounds),
-                mixer,
-                samples: t.samples,
-                sink: Some(sink),
-                source_positions: t.source_positions,
-                ..AudioConfig::default()
-            };
-            render.table_lines = t.table_lines;
-            render.flippers = t.flippers;
-            render.table = Some(Arc::new(t.visuals));
-            render.displays = Some(t.displays);
-            cfg
-        }
-        None => {
-            let mut cfg = ThreadsConfig::idle(input_rx);
-            cfg.audio.sink = Some(sink);
-            cfg
-        }
-    };
-    cfg.now_ns = sdl_now_ns;
-    if trace_file.is_some() {
-        // Every trace buffer is allocated here, before the threads start.
-        let (collector, sim_writer, frame_writer) = latency_trace(bindings, sdl_now_ns);
-        cfg.latency_trace = Some(sim_writer);
-        render.latency_trace = Some(frame_writer);
-        trace = Some(collector);
-    }
-    let rendering = render.gpu.is_some();
-    cfg.render = render;
-    let threads = spawn_threads(cfg)?;
+    ) = engine_config(
+        table,
+        input_rx,
+        window_rx,
+        gpu,
+        sink,
+        menu_share.clone(),
+        applied.wireframe,
+        &options,
+    );
+    let mut threads = Some(spawn_threads(cfg)?);
 
     let started = Instant::now();
     let mut input_drops = DropMonitor::default();
     let mut failure = None;
     let mut first_frame_announced = false;
-    loop {
+    while let Some(running) = threads.as_ref() {
         let outcome = platform.pump(&mut forwarder, PUMP_TIMEOUT);
         if let Some(new) = forwarder
             .menu_mut()
@@ -772,10 +860,97 @@ fn run_app(args: &[String]) -> Result<(), String> {
                 input_drops.total()
             );
         }
-        if outcome.quit || threads.close_requested() {
+        if outcome.quit || running.close_requested() {
             break;
         }
-        let live = threads.stats();
+        if let Some((dir, worker)) = &browser {
+            // The main thread only posts requests and applies replies (R4).
+            if let Some(m) = forwarder.menu_mut() {
+                if m.take_rescan_request() {
+                    eprintln!("pin_app: table browser: scanning {}", dir.display());
+                    worker.request(IoRequest::Scan(dir.clone()));
+                }
+                if let Some((id, path)) = m.take_load_request() {
+                    eprintln!("pin_app: table browser: loading {}", path.display());
+                    worker.request(IoRequest::Load { id, path });
+                }
+            }
+            while let Some(reply) = worker.try_recv() {
+                match reply {
+                    IoReply::Scanned { root, tables } => {
+                        let ready = tables.iter().filter(|t| t.is_ready()).count();
+                        eprintln!(
+                            "pin_app: table browser: {} table(s) in {} ({ready} ready)",
+                            tables.len(),
+                            root.display()
+                        );
+                        if let Some(m) = forwarder.menu_mut() {
+                            m.set_tables(tables);
+                        }
+                    }
+                    IoReply::Loaded { id, path, app } => {
+                        let pending = forwarder.menu().and_then(|m| m.menu().pending_load_id());
+                        if pending != Some(id) {
+                            // A stale load (never the case today): dropped.
+                            continue;
+                        }
+                        let wireframe = forwarder.menu().is_some_and(|m| m.config().wireframe);
+                        let name = path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        eprintln!("pin_app: table swap: {name} (wireframe={wireframe})");
+                        let Some(old) = threads.take() else { break };
+                        let cx = SwapContext {
+                            platform: &platform,
+                            guards: &guards,
+                            menu_share: &menu_share,
+                            headless,
+                            options: &options,
+                        };
+                        match swap_table(
+                            old,
+                            *app,
+                            wireframe,
+                            &mut forwarder,
+                            &mut audio_device,
+                            &cx,
+                        ) {
+                            Ok((t, e)) => {
+                                threads = Some(t);
+                                profiler = e.profiler;
+                                trace = e.trace;
+                                rendering = e.rendering;
+                                if let Some(m) = forwarder.menu_mut() {
+                                    m.finish_load(id, Ok(()));
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("pin_app: table swap failed: {e}");
+                                if let Some(m) = forwarder.menu_mut() {
+                                    m.finish_load(id, Err(e.clone()));
+                                }
+                                failure = Some(format!("table swap: {e}"));
+                                break;
+                            }
+                        }
+                    }
+                    IoReply::LoadFailed { id, path, error } => {
+                        eprintln!(
+                            "pin_app: table browser: loading {} failed: {error}",
+                            path.display()
+                        );
+                        if let Some(m) = forwarder.menu_mut() {
+                            m.finish_load(id, Err(error));
+                        }
+                    }
+                }
+            }
+        }
+        let Some(running) = threads.as_ref() else {
+            break;
+        };
+        let live = running.stats();
         // Only a playfield present (the trace's own frame count) raises it.
         if !first_frame_announced && trace.as_ref().is_some_and(|t| t.frames_presented() > 0) {
             first_frame_announced = true;
@@ -804,6 +979,9 @@ fn run_app(args: &[String]) -> Result<(), String> {
             None => {}
         }
     }
+    // The I/O worker stops first (a load in flight completes; its result is
+    // dropped).
+    drop(browser);
     // The run's end on the trace clock (`# run_end_ns`), read once the loop
     // ended, before the threads are joined.
     let run_end_ns = sdl_now_ns();
@@ -813,12 +991,15 @@ fn run_app(args: &[String]) -> Result<(), String> {
     //    A join error (a panicked thread) is recorded, never returned early:
     //    a detached presenter may still hold a window guard, so the teardown
     //    below must still run in order before `platform` is dropped.
-    let (report, join_error) = match threads.shutdown_with_audio() {
-        Ok(done) => (Some(done), None),
-        Err(e) => {
+    //    (No threads: a failed table swap already joined them and recorded
+    //    the failure.)
+    let (report, join_error) = match threads.take().map(Threads::shutdown_with_audio) {
+        Some(Ok(done)) => (Some(done), None),
+        Some(Err(e)) => {
             eprintln!("pin_app: {e}");
             (None, Some(e))
         }
+        None => (None, None),
     };
     failure = merge_failure(failure, join_error);
     // Every thread is joined: drain the trace rings and write the file here,
@@ -846,7 +1027,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
             audio.haptic_events
         );
         eprintln!("{}", stats.render_diagnostics());
-        if let Some(reader) = profiler.as_ref().filter(|_| profiler_hud) {
+        if let Some(reader) = profiler.as_ref().filter(|_| options.profiler_hud) {
             for line in hud_lines(&reader.snapshot()) {
                 eprintln!("pin_app: profiler: {line}");
             }
