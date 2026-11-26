@@ -305,12 +305,41 @@ pub struct Usage {
     pub exports: u64,
     pub element_items: u64,
     /// Fuel wasmtime's synthesized start-up code charges to initialise the
-    /// instance before the module's own start function runs: one unit per
-    /// byte of every active data segment and per item of every active
-    /// element segment (wasmtime's `memory_init_per_byte` and
-    /// `table_init_per_element` costs). [`super::Live::new`] adds it to the
-    /// start budget, so instantiation costs the guest nothing on any
-    /// platform.
+    /// instance before the module's own start function runs (copy-on-write
+    /// memory images are off, so this code runs on every host).
+    /// [`super::Live::new`] adds it to the start budget, so instantiation
+    /// costs the guest nothing on any platform (D9).
+    ///
+    /// It is exact (measured against the engine: the start budget is left
+    /// untouched, never more and never less) and is the sum of:
+    ///
+    /// * every **active data segment**: 1 (its offset expression) plus 1 per
+    ///   byte, empty segments included; passive data segments cost nothing;
+    /// * every **active element segment**: 1 (its offset expression) plus 1
+    ///   per item written plus 1 per item expression, for both forms
+    ///   (function indices and expressions) and for empty segments, except
+    ///   the **leading precomputed run**: while every active segment so far
+    ///   is a function-index segment (never an expression-form one, not even
+    ///   an empty one) at a constant `i32.const` offset with
+    ///   `offset + items` inside the initial size of a funcref table,
+    ///   wasmtime fills the table at compile time and those segments cost
+    ///   nothing; the first segment that does not qualify ends the run for
+    ///   good;
+    /// * every **passive element segment**: 1 per item expression
+    ///   (function-index items cost nothing); declared segments cost nothing;
+    /// * every **global with a reference initialiser** (`ref.func` or
+    ///   `ref.null` of either reference type, mutable or not): 1; numeric
+    ///   constant initialisers (`i32.const`, `i64.const`, `f32.const`,
+    ///   `f64.const`) cost nothing and are not start-up work;
+    /// * **1 for the start-up code's exit** whenever any of the charged items
+    ///   above, a passive element segment or a start function is present.
+    ///
+    /// Not modelled, deliberately: `global.get` initialisers are not
+    /// measured (they may only read imported globals, and a module importing
+    /// anything but `pinball` functions never links, so it never
+    /// instantiates; the scan charges them like a reference initialiser),
+    /// and the module's own start function is not part of this charge (it
+    /// runs on the start budget itself).
     pub init_fuel: u64,
 }
 
@@ -479,6 +508,12 @@ impl Scan {
             }
             Payload::GlobalSection(r) => {
                 cap(module, "globals", r.count().into(), MAX_GLOBALS.into())?;
+                for g in r.clone() {
+                    // A malformed entry is left to the validator, which
+                    // rejects the section right after this.
+                    let Ok(g) = g else { break };
+                    self.global_init_fuel(g.init_expr.get_operators_reader().read().ok());
+                }
             }
             Payload::TableSection(r) => {
                 let mut total = 0u64;
@@ -521,9 +556,9 @@ impl Scan {
                 for e in r.clone() {
                     let e = e.map_err(parse_err)?;
                     let (n, exprs) = match e.items {
-                        ElementItems::Functions(f) => (u64::from(f.count()), 0),
+                        ElementItems::Functions(f) => (u64::from(f.count()), None),
                         ElementItems::Expressions(_, x) => {
-                            (u64::from(x.count()), u64::from(x.count()))
+                            (u64::from(x.count()), Some(u64::from(x.count())))
                         }
                     };
                     self.u.element_items += n;
@@ -554,19 +589,48 @@ impl Scan {
         Ok(())
     }
 
+    /// Adds what wasmtime's start-up code charges for one global whose
+    /// initialiser starts with `first` (`None`: unreadable, left to the
+    /// validator) to [`Usage::init_fuel`]: nothing for a numeric constant,
+    /// which wasmtime writes without running start-up code; 1 for anything
+    /// else (`ref.func`, `ref.null`; see [`Usage::init_fuel`] for
+    /// `global.get`), which the start-up code evaluates, and then that code
+    /// runs (its exit charge).
+    fn global_init_fuel(&mut self, first: Option<Operator<'_>>) {
+        match first {
+            None
+            | Some(
+                Operator::I32Const { .. }
+                | Operator::I64Const { .. }
+                | Operator::F32Const { .. }
+                | Operator::F64Const { .. },
+            ) => {}
+            Some(_) => {
+                self.u.init_fuel += 1;
+                self.startup = true;
+            }
+        }
+    }
+
     /// Adds what wasmtime's start-up code charges for one element segment
-    /// of `n` items (`exprs` of them expressions) to [`Usage::init_fuel`]:
-    /// one unit per item expression and, for an active segment, its offset
-    /// expression plus one unit per item written. Like wasmtime, a leading
-    /// run of active segments of plain function indices at constant
-    /// offsets inside a funcref table's initial size is precomputed at
-    /// compile time and costs nothing.
+    /// of `n` items to [`Usage::init_fuel`]. `exprs` is `None` for a segment
+    /// of function indices and `Some(n)` for an expression-form segment
+    /// (also when `n == 0`). Charged: one unit per item expression and, for
+    /// an active segment, its offset expression plus one unit per item
+    /// written; any passive segment, and any active one outside the
+    /// precomputed run, makes the start-up code run (its exit charge).
+    /// Like wasmtime, a leading run of active **function-index** segments at
+    /// constant offsets inside a funcref table's initial size is
+    /// precomputed at compile time and costs nothing; an expression-form
+    /// segment, even an empty one, is never precomputed and ends the run.
     fn element_init_fuel(
         &mut self,
         kind: &ElementKind<'_>,
         n: u64,
-        exprs: u64,
+        exprs: Option<u64>,
     ) -> Result<(), ScriptError> {
+        let indices = exprs.is_none();
+        let exprs = exprs.unwrap_or(0);
         match kind {
             ElementKind::Declared => return Ok(()),
             ElementKind::Passive => self.u.init_fuel += exprs,
@@ -582,7 +646,7 @@ impl Scan {
                     _ => None,
                 };
                 let table = self.tables.get(table_index.unwrap_or(0) as usize);
-                self.precomputed &= exprs == 0
+                self.precomputed &= indices
                     && matches!((offset, table), (Some(o), Some(&(min, true))) if o + n <= min);
                 if self.precomputed {
                     return Ok(());
