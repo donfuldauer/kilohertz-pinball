@@ -29,6 +29,8 @@ pub use surfaces::{
 };
 // 6.0 (issue #9a): window lifetime guard for surfaces and presenter threads.
 pub use surfaces::{PRESENTER_JOIN_TIMEOUT, WindowGuard, spawn_guarded};
+// #239 (KP-112): a device-loss rebuild on DX12 / Vulkan recreates surfaces.
+pub use surfaces::recreate_surface;
 // Issue #10: display layers composite in display-encoded space on `*Srgb`
 // (fallback) surfaces too.
 pub use surfaces::{LayerCompositor, LayerTarget};

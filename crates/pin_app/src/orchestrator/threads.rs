@@ -12,8 +12,9 @@
 //! ([`StatsSnapshot::device_losses`]), dissolves the dead presenter into
 //! its surfaces ([`AppSurfaces::into_sources`]), drops the dead context and
 //! builds a new one on the same `wgpu::Instance` with the same options and
-//! wanted features, then a new [`AppSurfaces`] on the same surfaces, with
-//! the display state restored. One attempt per render-loop iteration, at
+//! wanted features, then a new [`AppSurfaces`] on the same surfaces (on
+//! DX12 and Vulkan recreated once per loss from the same windows, #239),
+//! with the display state restored. One attempt per render-loop iteration, at
 //! most [`MAX_DEVICE_REBUILD_ATTEMPTS`] per loss, each logged; after the
 //! last failure the thread stops presenting and sets
 //! [`StatsSnapshot::gpu_error`]. The debug-view presenter is not rebuilt
@@ -23,7 +24,9 @@
 use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
 use super::gpu_timer::GpuFrameTimer;
 use super::hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
-use super::present::{AppSurfaces, SurfacePlan, SurfaceRecovery, table_set_accepted};
+use super::present::{
+    AppSurfaces, SurfacePlan, SurfaceRecovery, UnrecoveredSurface, table_set_accepted,
+};
 use super::table::{DisplayCommand, FlipperOutline};
 use super::trace::{FrameTraceWriter, SimTraceWriter};
 use super::view::{TableRenderOptions, TableVisuals};
@@ -42,7 +45,10 @@ use pin_core::spsc::SpscConsumer;
 use pin_core::{FrameStateSnapshot, InputEvent, ProfileId, SimStep, TripleBuffer, TripleReader};
 use pin_input::haptics::HapticsConsumer;
 use pin_render::debug::{Camera, DebugLine, DebugLines, snapshot_lines};
-use pin_render::gpu::{GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wgpu};
+use pin_render::gpu::{
+    GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, recreate_surface,
+    wait_for_device, wgpu,
+};
 use pin_render::topology::{SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1092,17 +1098,140 @@ struct GpuInputs {
 struct PendingRebuild {
     instance: wgpu::Instance,
     recovery: SurfaceRecovery,
+    /// Whether the surfaces are still to be recreated for this loss (#239).
+    recreation: SurfaceRecreation,
 }
 
-/// Non-blocking polls after a forced `Device::destroy` to let wgpu deliver
-/// the device-lost callback (it runs from the next device maintenance).
+/// Whether a rebuild after one device loss must recreate the surfaces
+/// first (#239, KP-112; DECISIONS "#239 KP-112 — surfaces are recreated for
+/// a DX12 or Vulkan rebuild"): on DX12 and Vulkan a reused surface keeps a
+/// swap chain bound to the dead device, so the surfaces are recreated, once
+/// per loss (a later attempt reuses the recreated ones). Metal and other
+/// backends reuse the surfaces.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct SurfaceRecreation {
+    /// The dead context's backend.
+    backend: wgpu::Backend,
+    /// The surfaces were recreated (or their recreation failed) for this
+    /// loss.
+    done: bool,
+}
+
+impl SurfaceRecreation {
+    /// No recreation yet for a loss on `backend`.
+    fn new(backend: wgpu::Backend) -> SurfaceRecreation {
+        SurfaceRecreation {
+            backend,
+            done: false,
+        }
+    }
+
+    /// `true` exactly once per loss on DX12 or Vulkan: the surfaces must be
+    /// recreated now.
+    fn due(&mut self) -> bool {
+        let due = !self.done && matches!(self.backend, wgpu::Backend::Dx12 | wgpu::Backend::Vulkan);
+        self.done = true;
+        due
+    }
+}
+
+/// Replaces every item through `recreate`, keeping the order; an item whose
+/// replacement fails becomes its failure value (the window that lost its
+/// surface). Returns the replaced items, the failures and one line naming
+/// every failure (`None` when nothing failed).
+fn recreate_each<T, U>(
+    items: Vec<T>,
+    mut recreate: impl FnMut(T) -> Result<T, (U, String)>,
+) -> (Vec<T>, Vec<U>, Option<String>) {
+    let mut kept = Vec::with_capacity(items.len());
+    let mut failed = Vec::new();
+    let mut notes = Vec::new();
+    for item in items {
+        match recreate(item) {
+            Ok(t) => kept.push(t),
+            Err((u, note)) => {
+                failed.push(u);
+                notes.push(note);
+            }
+        }
+    }
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
+    (kept, failed, note)
+}
+
+/// Recreates the surface of every source in `recovery` on `instance`
+/// (#239). A source whose surface cannot be recreated has lost it (the old
+/// one is dropped), so it moves to [`SurfaceRecovery::unrecovered`] with its
+/// window guard, and the error names its window.
+fn recreate_sources(
+    instance: &wgpu::Instance,
+    recovery: &mut SurfaceRecovery,
+) -> Result<(), String> {
+    let sources = std::mem::take(&mut recovery.sources);
+    let (sources, lost, note) = recreate_each(sources, |src| {
+        let role = src.role();
+        let SurfaceSource {
+            window,
+            viewports,
+            surface,
+            logical_size,
+            pixel_size,
+            keep_alive,
+        } = src;
+        // SAFETY: `keep_alive`, the guard paired with `surface`, is held
+        // across the call and paired with the new surface below, so the
+        // window outlives both (`recreate_surface`'s `# Safety`). Only on
+        // DX12 / Vulkan (`SurfaceRecreation::due`).
+        match unsafe { recreate_surface(instance, surface) } {
+            Ok(surface) => Ok(SurfaceSource {
+                window,
+                viewports,
+                surface,
+                logical_size,
+                pixel_size,
+                keep_alive,
+            }),
+            Err(e) => Err((
+                UnrecoveredSurface {
+                    window,
+                    role,
+                    keep_alive,
+                },
+                format!("window {window} ({role:?}): {e}"),
+            )),
+        }
+    });
+    recovery.sources = sources;
+    recovery.unrecovered.extend(lost);
+    match note {
+        Some(n) => Err(format!("surface recreation failed: {n}")),
+        None => Ok(()),
+    }
+}
+
+/// Longest blocking wait after a forced `Device::destroy` for the queue to
+/// drain. wgpu queues the device-lost callback from device maintenance only
+/// once the destroyed device's queue is empty, so the in-flight submissions
+/// must finish first (see DECISIONS "#239 KP-112 — forced loss waits for the
+/// queue").
+const FORCED_LOSS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fallback non-blocking polls after the [`FORCED_LOSS_WAIT`] wait, should
+/// the callback still be outstanding.
 const FORCED_LOSS_POLLS: u32 = 64;
 
-/// Destroys `ctx`'s device (the [`RenderConfig::force_device_loss`] hook)
-/// and polls it, without blocking, at most [`FORCED_LOSS_POLLS`] times
-/// until the device-lost callback was delivered.
+/// Destroys `ctx`'s device (the [`RenderConfig::force_device_loss`] hook),
+/// then waits, at most [`FORCED_LOSS_WAIT`], for its submitted work so wgpu
+/// delivers the device-lost callback, then polls it without blocking at
+/// most [`FORCED_LOSS_POLLS`] times while the callback is still missing.
+/// Runs on the render thread only (tests only). The loss itself is never
+/// flagged by hand: a forced loss and a real one take the same callback
+/// path.
 fn force_device_loss(ctx: &GpuContext) {
     ctx.device().destroy();
+    // A timeout is not fatal: the fallback polls below and the render
+    // loop's per-iteration poll still deliver a late callback.
+    let _ = wait_for_device(ctx.device(), FORCED_LOSS_WAIT);
     for _ in 0..FORCED_LOSS_POLLS {
         if ctx.device_lost() {
             break;
@@ -1114,8 +1243,10 @@ fn force_device_loss(ctx: &GpuContext) {
 /// One rebuild attempt: a new context on `pending.instance` (same options
 /// and features as the first build) and a new table presenter on the
 /// recovered surfaces, with the carried display and window state
-/// restored. On failure the surfaces stay in `pending` for the next
-/// attempt.
+/// restored. After a loss on DX12 or Vulkan the first attempt recreates
+/// every surface first ([`recreate_sources`], #239); a window whose surface
+/// cannot be recreated fails this and every later attempt. On failure the
+/// surfaces stay in `pending` for the next attempt.
 fn rebuild_table_presenter(
     pending: &mut PendingRebuild,
     inputs: &GpuInputs,
@@ -1124,6 +1255,13 @@ fn rebuild_table_presenter(
 ) -> Result<Presenter, String> {
     if let Some(note) = pending.recovery.unrecovered_note() {
         return Err(note);
+    }
+    if pending.recreation.due() {
+        recreate_sources(&pending.instance, &mut pending.recovery)?;
+        eprintln!(
+            "pin_app: surface recreated for the rebuild ({:?})",
+            pending.recreation.backend
+        );
     }
     let Some(first) = pending.recovery.sources.first() else {
         return Err("no surface left to present to".to_owned());
@@ -1487,12 +1625,25 @@ fn render_thread(
     // GPU frame timing was on (its profiler writer cannot be moved to a
     // rebuilt presenter; see DECISIONS "#133 KP-052 — device-loss rebuild").
     let timed = profiling && matches!(presenter, Some(Presenter::Table(..)));
+    // A forced loss whose device-lost callback is not yet delivered (#239).
+    let mut forced_loss_pending = false;
     while !shutdown.load(Ordering::Acquire) {
         // Test hook: destroy the current device (then handled as a loss).
         if let (Some(flag), Some(p)) = (force_loss.as_ref(), presenter.as_ref())
             && flag.swap(false, Ordering::AcqRel)
         {
             force_device_loss(p.ctx());
+            forced_loss_pending = true;
+        }
+        // Keep polling a force-destroyed device until wgpu delivers the
+        // callback; the loss is still detected only through it (#239).
+        if forced_loss_pending {
+            match presenter.as_ref() {
+                Some(p) if !p.ctx().device_lost() => {
+                    let _ = p.ctx().device().poll(wgpu::PollType::Poll);
+                }
+                _ => forced_loss_pending = false,
+            }
         }
         // Detection: a lost device is never drawn on.
         if let Some(p) = presenter.take_if(|p| p.ctx().device_lost()) {
@@ -1510,8 +1661,13 @@ fn render_thread(
                     // the surfaces it made stay.
                     let recovery = s.into_sources();
                     let instance = ctx.instance().clone();
+                    let recreation = SurfaceRecreation::new(ctx.adapter_info().backend);
                     drop(ctx);
-                    pending = Some(PendingRebuild { instance, recovery });
+                    pending = Some(PendingRebuild {
+                        instance,
+                        recovery,
+                        recreation,
+                    });
                 }
                 Presenter::Debug(ctx, set) => {
                     eprintln!(
@@ -2008,6 +2164,66 @@ mod tests {
         }
         assert_eq!(p.next_attempt(), Some(MAX_DEVICE_REBUILD_ATTEMPTS));
         assert_eq!(p.record(true), AttemptOutcome::Rebuilt);
+    }
+
+    /// #239 (KP-112): surfaces are recreated once per loss on DX12 and
+    /// Vulkan (a later attempt of the same loss reuses the recreated ones),
+    /// never on Metal or GL; a new loss starts a new recreation.
+    #[test]
+    fn surface_recreation_is_due_once_per_loss_on_dx12_and_vulkan() {
+        for backend in [wgpu::Backend::Dx12, wgpu::Backend::Vulkan] {
+            let mut r = SurfaceRecreation::new(backend);
+            assert!(r.due(), "{backend:?}: the first attempt recreates");
+            assert!(!r.due(), "{backend:?}: later attempts do not");
+            assert!(!r.due());
+            assert!(
+                SurfaceRecreation::new(backend).due(),
+                "a new loss recreates again"
+            );
+        }
+        for backend in [wgpu::Backend::Metal, wgpu::Backend::Gl, wgpu::Backend::Noop] {
+            let mut r = SurfaceRecreation::new(backend);
+            assert!(!r.due(), "{backend:?} reuses its surfaces");
+            assert!(!r.due());
+        }
+    }
+
+    /// #239 (KP-112): a source whose surface cannot be recreated moves to
+    /// the unrecovered windows with its guard (so every later attempt fails
+    /// cleanly on `unrecovered_note`); the others keep their order and the
+    /// error names each failed window.
+    #[test]
+    fn failed_surface_recreation_moves_the_window_to_unrecovered() {
+        let guard = pin_render::gpu::WindowGuard::new(());
+        let (kept, lost, note) = recreate_each(vec![0usize, 1, 2], |w| {
+            if w == 1 {
+                Err((
+                    UnrecoveredSurface {
+                        window: w,
+                        role: SurfaceRole::Backglass,
+                        keep_alive: Some(guard.clone()),
+                    },
+                    format!("window {w} (Backglass): refused"),
+                ))
+            } else {
+                Ok(w + 10)
+            }
+        });
+        assert_eq!(kept, [10, 12]);
+        assert_eq!(note.as_deref(), Some("window 1 (Backglass): refused"));
+        assert_eq!(guard.strong_count(), 2, "the failed window stays guarded");
+        let mut recovery = SurfaceRecovery {
+            sources: Vec::new(),
+            unrecovered: Vec::new(),
+            state: Default::default(),
+        };
+        recovery.unrecovered.extend(lost);
+        let n = recovery.unrecovered_note().expect("a window was lost");
+        assert!(n.contains("window 1 (Backglass)"), "{n}");
+        drop(recovery);
+        assert_eq!(guard.strong_count(), 1);
+        let (kept, lost, note) = recreate_each(vec![1u8, 2], Ok::<_, ((), String)>);
+        assert_eq!((kept, lost.len(), note), (vec![1, 2], 0, None));
     }
 
     proptest::proptest! {
