@@ -15,9 +15,9 @@ pub use calibration::{
 };
 pub use events::{CabinetFrame, IngestConfig, InputIngest};
 pub use profiles::{
-    AxisBinding, DeviceMatch, DeviceProfile, GamepadAxis, GamepadButton, NudgeDirection,
-    ProfileError, ProfileMapper, RawInput, SdlGuid, builtin_profiles, detect, detect_in,
-    parse_profile,
+    AXIS_BUTTON_THRESHOLD, AxisBinding, DeviceMatch, DeviceProfile, GamepadAxis, GamepadButton,
+    NudgeDirection, ProfileError, ProfileMapper, RawInput, SdlGuid, builtin_profiles, detect,
+    detect_in, parse_profile,
 };
 pub use staging::{
     DEFAULT_LOWER_THRESHOLD, DEFAULT_UPPER_THRESHOLD, FlipperStage, FlipperStagingRouter,
