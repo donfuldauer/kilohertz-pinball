@@ -18,6 +18,16 @@
 //!   given; a HUD-enabled renderer with no text draws the same bytes as a
 //!   HUD-less one (the default, pre-change frame); with text it changes
 //!   pixels only inside its backdrop rectangle.
+//!
+//! The four tests share one device and run one at a time ([`serial`]):
+//! #257 (KP-119) reproduced a WARP/DX12 fault (`STATUS_HEAP_CORRUPTION`, or
+//! a misaligned-pointer panic in `ID3DBlob::clone` inside
+//! `Device::load_shader`) only when several test threads created pipelines
+//! on the one shared device, the upstream defect gfx-rs/wgpu#10547 (FXC
+//! blobs shared across threads by the DX12 shader cache; fixed on trunk,
+//! not in any 30.0.x release). The lock changes no assertion; see
+//! DECISIONS.md "#257 KP-119" and follow-up #265, which revisits it once a
+//! wgpu release contains the fix.
 #![cfg(feature = "gpu-tests")]
 
 use pin_app::orchestrator::{
@@ -39,6 +49,20 @@ fn gpu() -> &'static GpuContext {
             "profiler_gpu needs a GPU adapter (PIN_REQUIRE_GPU=1 and a working \
              Vulkan/Metal/DX12 adapter, e.g. lavapipe); it never skips",
         )
+}
+
+/// Serialises every use of the shared device in this binary (#257,
+/// gfx-rs/wgpu#10547): each test holds the guard from its first statement to
+/// its end, because the fault state is shared by every call into the device
+/// and the queue, not only pipeline creation.
+static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Takes [`GPU_LOCK`] for one test. A poisoned lock (a test that failed while
+/// holding it) is taken anyway, so one failure does not mask the others.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    GPU_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// No meshes, no displays: the PBR environment through the post chain.
@@ -73,6 +97,7 @@ fn timestamp_features() -> wgpu::Features {
 
 #[test]
 fn app_device_enables_the_adapters_timestamp_features() {
+    let _serial = serial();
     let ctx = gpu();
     let offered = ctx.adapter().features() & timestamp_features();
     let enabled = ctx.device().features();
@@ -86,6 +111,7 @@ fn app_device_enables_the_adapters_timestamp_features() {
 
 #[test]
 fn gpu_frame_time_comes_from_timestamp_queries_or_not_at_all() {
+    let _serial = serial();
     let ctx = gpu();
     let p = Profiler::new();
     let supported = GpuFrameTimer::supported(ctx);
@@ -210,6 +236,7 @@ fn gpu_frame_time_comes_from_timestamp_queries_or_not_at_all() {
 /// Deterministic: a fresh timer's first frame always finds a free entry.
 #[test]
 fn submissions_beyond_the_cap_go_untimed() {
+    let _serial = serial();
     let ctx = gpu();
     let p = Profiler::new();
     let Some(mut timer) = GpuFrameTimer::new(ctx, p.present) else {
@@ -280,6 +307,7 @@ fn split(img: &RgbaImage, rect: [u32; 4]) -> (Vec<u8>, Vec<u8>) {
 
 #[test]
 fn hud_draws_hud_lines_only_when_enabled() {
+    let _serial = serial();
     let ctx = gpu();
     let size = (768, 160);
     let snap = FrameStateSnapshot::default();

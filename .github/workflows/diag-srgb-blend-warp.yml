@@ -1,22 +1,39 @@
-name: diag-srgb-blend-warp (KP-100 / #209)
+name: diag-gpu-warp (KP-100 / #209 srgb_blend_gpu, KP-119 / #257 profiler_gpu)
 
 # Issue #209 (KP-100), phase 1: diagnose the one unexplained WARP failure of the pin_render
 # `srgb_blend_gpu` test binary (two tests FAILED at the same instant, then exit 0xC0000374
-# STATUS_HEAP_CORRUPTION). Builds the unmodified test binary once, then runs it many times on
-# four separate windows-latest runners: as-is, with --test-threads=1, with the D3D12 debug layer
-# (WGPU_VALIDATION / WGPU_DEBUG) and under cdb with full page heap. A failing test is the datum,
-# so every diagnostic step finishes green and only infrastructure errors fail the run.
+# STATUS_HEAP_CORRUPTION). Issue #257 (KP-119), phase 1: reproduce the WARP crash of the pin_app
+# `profiler_gpu` test binary (misaligned pointer dereference in windows-core under wgpu-hal dx12
+# `Device::load_shader`, a non-unwinding panic, exit 0xC0000409 STATUS_STACK_BUFFER_OVERRUN).
+# A `setup` job picks the target, the modes and the run count; `build` compiles the unmodified
+# test binary of that target once; `diagnose` runs it many times, one windows-latest runner per
+# mode: as-is, serial (--test-threads=1), validation (WGPU_VALIDATION / WGPU_DEBUG and the D3D12
+# debug layer), pageheap (cdb with full page heap) and, only when named, contended (as-is with two
+# more copies of the exe running at the same time). A failing test is the datum, so every
+# diagnostic step finishes green and only infrastructure errors fail the run.
 # Not referenced from ci.yml and not a required check (DECISIONS.md "#209 KP-100 — diagnostic
-# workflow design"). The push trigger only matches issue/209-* branches and this file.
+# workflow design", "#257 KP-119 — diagnostic workflow parameterised for profiler_gpu"). The push
+# trigger only matches issue/209-* and issue/257-* branches and this file. A push has no inputs:
+# issue/209-* runs srgb_blend_gpu in as-is,serial,validation,pageheap and issue/257-* runs
+# profiler_gpu in as-is,serial, both with 200 runs per mode.
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Test binary to diagnose (srgb_blend_gpu in pin_render, profiler_gpu in pin_app)
+        type: choice
+        options: [profiler_gpu, srgb_blend_gpu]
+        default: profiler_gpu
       runs:
         description: Runs per mode (pageheap uses at most 20); a push run uses 200
         type: string
         default: "50"
+      modes:
+        description: Comma-separated modes, from as-is, serial, validation, pageheap, contended
+        type: string
+        default: "as-is,serial"
   push:
-    branches: ['issue/209-*']
+    branches: ['issue/209-*', 'issue/257-*']
     paths: ['.github/workflows/diag-srgb-blend-warp.yml']
 
 concurrency:
@@ -39,10 +56,81 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
+  setup:
+    name: setup (target, modes, runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      target: ${{ steps.pick.outputs.target }}
+      package: ${{ steps.pick.outputs.package }}
+      workdir: ${{ steps.pick.outputs.workdir }}
+      modes: ${{ steps.pick.outputs.modes }}
+      runs: ${{ steps.pick.outputs.runs }}
+    steps:
+      - name: Pick target, modes and runs
+        id: pick
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_TARGET: ${{ inputs.target }}
+          IN_MODES: ${{ inputs.modes }}
+          IN_RUNS: ${{ inputs.runs }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            # A push has no inputs: the branch decides (DECISIONS.md #257 KP-119).
+            case "$REF_NAME" in
+              issue/209-*) target=srgb_blend_gpu; modes="as-is,serial,validation,pageheap"; runs=200 ;;
+              issue/257-*) target=profiler_gpu; modes="as-is,serial"; runs=200 ;;
+              *) echo "::error::push to '$REF_NAME' has no default target"; exit 1 ;;
+            esac
+          else
+            target="${IN_TARGET:-profiler_gpu}"
+            modes="${IN_MODES:-as-is,serial}"
+            runs="${IN_RUNS:-50}"
+          fi
+          case "$target" in
+            srgb_blend_gpu) package=pin_render; workdir=crates/pin_render ;;
+            profiler_gpu) package=pin_app; workdir=crates/pin_app ;;
+            *) echo "::error::unknown target '$target' (srgb_blend_gpu or profiler_gpu)"; exit 1 ;;
+          esac
+          if ! [[ "$runs" =~ ^[0-9]+$ ]] || [ "$runs" -lt 1 ]; then
+            echo "::error::runs '$runs' is not a positive integer"; exit 1
+          fi
+          json=""; seen=","
+          IFS=',' read -r -a parts <<< "$modes"
+          for raw in "${parts[@]}"; do
+            m="$(echo "$raw" | tr -d '[:space:]')"
+            [ -z "$m" ] && continue
+            case "$m" in
+              as-is|serial|validation|pageheap|contended) ;;
+              *) echo "::error::unknown mode '$m' (allowed: as-is, serial, validation, pageheap, contended)"; exit 1 ;;
+            esac
+            case "$seen" in *",$m,"*) continue ;; esac
+            seen="$seen$m,"
+            json="${json:+$json,}\"$m\""
+          done
+          if [ -z "$json" ]; then echo "::error::no mode in '$modes'"; exit 1; fi
+          json="[$json]"
+          echo "target=$target package=$package workdir=$workdir modes=$json runs=$runs"
+          {
+            echo "target=$target"
+            echo "package=$package"
+            echo "workdir=$workdir"
+            echo "modes=$json"
+            echo "runs=$runs"
+          } >> "$GITHUB_OUTPUT"
+          echo "Diagnosing \`$target\` (\`$package\`), modes \`$json\`, $runs runs per mode." >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    name: build srgb_blend_gpu test binary
+    name: build ${{ needs.setup.outputs.target }} test binary
+    needs: setup
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      DIAG_TARGET: ${{ needs.setup.outputs.target }}
+      DIAG_PACKAGE: ${{ needs.setup.outputs.package }}
     steps:
       - uses: actions/checkout@v5
 
@@ -52,7 +140,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           add-rust-environment-hash-key: false
-          key: rustc-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-diag209
+          key: rustc-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-diag-${{ needs.setup.outputs.target }}
           cache-on-failure: true
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host x86_64-pc-windows-msvc)
@@ -73,13 +161,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path diag-bin | Out-Null
           $os = Get-CimInstance Win32_OperatingSystem
-          $wgpu = & cargo tree -i wgpu --features gpu-tests -p pin_render | Select-Object -First 1
+          $wgpu = & cargo tree -i wgpu --features gpu-tests -p $env:DIAG_PACKAGE | Select-Object -First 1
+          $hal = & cargo tree -i wgpu-hal --features gpu-tests -p $env:DIAG_PACKAGE | Select-Object -First 1
           $facts = @(
+            "target=$env:DIAG_TARGET package=$env:DIAG_PACKAGE"
             "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
             "OS: $($os.Caption) $($os.Version) build $($os.BuildNumber)"
             "Environment.OSVersion: $([Environment]::OSVersion.VersionString)"
             "rustc: $(& rustc --version)"
             "cargo tree -i wgpu (first line): $wgpu"
+            "cargo tree -i wgpu-hal (first line): $hal"
           )
           $facts | Set-Content -Path diag-bin/build-facts.txt
           $facts | ForEach-Object { Write-Host $_ }
@@ -88,25 +179,26 @@ jobs:
       - name: Build the test binary and collect exe + pdb
         shell: pwsh
         run: |
-          $lines = & cargo test -p pin_render --features gpu-tests --test srgb_blend_gpu --no-run --message-format=json
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::cargo test --no-run failed with exit $LASTEXITCODE"; exit 1 }
+          $test = $env:DIAG_TARGET
+          $lines = & cargo test -p $env:DIAG_PACKAGE --features gpu-tests --test $test --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::cargo test -p $env:DIAG_PACKAGE --test $test --no-run failed with exit $LASTEXITCODE"; exit 1 }
           $exe = $null; $files = @()
           foreach ($l in $lines) {
-            if (-not ($l.StartsWith('{') -and $l.Contains('"compiler-artifact"') -and $l.Contains('srgb_blend_gpu'))) { continue }
+            if (-not ($l.StartsWith('{') -and $l.Contains('"compiler-artifact"') -and $l.Contains($test))) { continue }
             $m = $l | ConvertFrom-Json
-            if ($m.target.name -eq 'srgb_blend_gpu' -and ($m.target.kind -contains 'test') -and $m.executable) {
+            if ($m.target.name -eq $test -and ($m.target.kind -contains 'test') -and $m.executable) {
               $exe = $m.executable; $files = @($m.filenames)
             }
           }
           if (-not $exe -or -not (Test-Path $exe)) {
-            Write-Host "::error::no executable for test target srgb_blend_gpu in cargo's JSON output (found: '$exe')"; exit 1
+            Write-Host "::error::no executable for test target $test of $env:DIAG_PACKAGE in cargo's JSON output (found: '$exe')"; exit 1
           }
           Write-Host "executable: $exe"
           Copy-Item $exe diag-bin/
           $pdb = [IO.Path]::ChangeExtension($exe, '.pdb')
           if (-not (Test-Path $pdb)) { $pdb = $files | Where-Object { $_ -like '*.pdb' } | Select-Object -First 1 }
           if ($pdb -and (Test-Path $pdb)) { Copy-Item $pdb diag-bin/; Write-Host "pdb: $pdb" }
-          else { Write-Host "::warning::no .pdb next to $exe; stacks will lack pin_render/wgpu symbols" }
+          else { Write-Host "::warning::no .pdb next to $exe; stacks will lack $env:DIAG_PACKAGE/wgpu symbols" }
           # cargo puts target/debug on PATH for test runs; carry any DLL there (normally none).
           $debugDir = Split-Path (Split-Path $exe)
           Get-ChildItem -Path $debugDir -Filter *.dll -File | ForEach-Object { Write-Host "dll: $($_.FullName)"; Copy-Item $_.FullName diag-bin/ }
@@ -115,23 +207,25 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: srgb-blend-bin
+          name: diag-bin-${{ needs.setup.outputs.target }}
           path: diag-bin/
           retention-days: 7
           if-no-files-found: error
 
   diagnose:
-    name: diagnose (${{ matrix.mode }})
-    needs: build
+    name: diagnose ${{ needs.setup.outputs.target }} (${{ matrix.mode }})
+    needs: [setup, build]
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        mode: [as-is, serial, validation, pageheap]
+        mode: ${{ fromJSON(needs.setup.outputs.modes) }}
     env:
       DIAG_MODE: ${{ matrix.mode }}
-      RUNS_INPUT: ${{ inputs.runs }}
+      DIAG_TARGET: ${{ needs.setup.outputs.target }}
+      DIAG_WORKDIR: ${{ needs.setup.outputs.workdir }}
+      RUNS_INPUT: ${{ needs.setup.outputs.runs }}
       EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Job start
@@ -143,7 +237,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: srgb-blend-bin
+          name: diag-bin-${{ needs.setup.outputs.target }}
           path: diag-bin
 
       - name: Runner facts
@@ -243,20 +337,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mode = $env:DIAG_MODE
+          $target = $env:DIAG_TARGET
           $ws = $env:GITHUB_WORKSPACE
-          $wd = Join-Path $ws 'crates\pin_render'
+          if (-not $target -or -not $env:DIAG_WORKDIR) { Write-Host "::error::DIAG_TARGET or DIAG_WORKDIR not set (setup job outputs)"; exit 1 }
+          $wd = Join-Path $ws ($env:DIAG_WORKDIR -replace '/', '\')
           $bin = Join-Path $ws 'diag-bin'
           $logDir = Join-Path $ws "logs\$mode"
           try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
           catch { Write-Host "::error::cannot create $logDir : $_"; exit 1 }
           $nameFile = Join-Path $bin 'exe-name.txt'
-          if (-not (Test-Path $nameFile)) { Write-Host "::error::$nameFile missing (artifact srgb-blend-bin incomplete)"; exit 1 }
+          if (-not (Test-Path $nameFile)) { Write-Host "::error::$nameFile missing (artifact diag-bin-$target incomplete)"; exit 1 }
           $exe = Join-Path $bin (Get-Content $nameFile -Raw).Trim()
           if (-not (Test-Path $exe)) { Write-Host "::error::test exe $exe missing"; exit 1 }
           if (-not (Test-Path $wd)) { Write-Host "::error::working directory $wd missing"; exit 1 }
           if ($mode -eq 'pageheap' -and -not $env:CDB_EXE) { Write-Host "::error::CDB_EXE not set"; exit 1 }
 
-          # workflow_dispatch defaults to 50 (input default); a push has an empty input and uses 200.
+          # The setup job gives the run count (dispatch input, default 50; a push uses 200).
           $n = if ($env:EVENT_NAME -eq 'push') { 200 } else { 50 }
           $parsed = 0
           if ([int]::TryParse("$env:RUNS_INPUT", [ref]$parsed) -and $parsed -gt 0) { $n = $parsed }
@@ -278,9 +374,11 @@ jobs:
           Set-Content -Path $cdbScript -Value $cdbCmd -Encoding ascii
           $symPath = "$bin;srv*C:\symbols*https://msdl.microsoft.com/download/symbols"
           $cdbArgs = @('-G', '-lines', '-y', $symPath, '-c', ('$$><' + $cdbScript), $exe) + $testArgs
-          $faultRx = '(?i)c0000374|Access violation|Heap block at|c0000409|VERIFIER STOP'
+          $faultRx = '(?i)c0000374|Access violation|Heap block at|c0000409|VERIFIER STOP|misaligned pointer dereference'
+          # Where a fault excerpt starts: a fault signal or the abort after a non-unwinding panic.
+          $excerptRx = "$faultRx|non-unwinding panic"
 
-          function Invoke-Once([string]$file, [string[]]$argv, [bool]$closeStdin) {
+          function New-Psi([string]$file, [string[]]$argv, [bool]$closeStdin) {
             $psi = [System.Diagnostics.ProcessStartInfo]::new($file)
             foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
             $psi.WorkingDirectory = $wd
@@ -289,29 +387,54 @@ jobs:
             $psi.RedirectStandardError = $true
             $psi.RedirectStandardInput = $closeStdin
             foreach ($k in $runEnv.Keys) { $psi.Environment[$k] = $runEnv[$k] }
+            $psi
+          }
+          # Starts a process and its output readers without waiting (contended companions).
+          function Start-Run([string]$file, [string[]]$argv, [bool]$closeStdin) {
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            $p = [System.Diagnostics.Process]::Start($psi)
+            $p = [System.Diagnostics.Process]::Start((New-Psi $file $argv $closeStdin))
             if ($closeStdin) { $p.StandardInput.Close() }
             $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
-            $timedOut = -not $p.WaitForExit($timeoutMs)
+            [pscustomobject]@{ P = $p; O = $o; E = $e; Sw = $sw }
+          }
+          # Waits for a started process (killed after the per-run timeout, counted from its start).
+          function Wait-Run($s) {
+            $left = [Math]::Max(1000, $timeoutMs - [int]$s.Sw.ElapsedMilliseconds)
+            $timedOut = -not $s.P.WaitForExit($left)
             if ($timedOut) {
-              try { $p.Kill($true) } catch { Write-Host "kill failed: $_" }
-              [void]$p.WaitForExit(30000)
-            } else { $p.WaitForExit() }
-            [void]$o.Wait(30000); [void]$e.Wait(30000)
-            $sw.Stop()
-            $code = if ($timedOut) { 'TIMEOUT' } else { '0x{0:X8}' -f $p.ExitCode }
+              try { $s.P.Kill($true) } catch { Write-Host "kill failed: $_" }
+              [void]$s.P.WaitForExit(30000)
+            } else { $s.P.WaitForExit() }
+            [void]$s.O.Wait(30000); [void]$s.E.Wait(30000)
+            $s.Sw.Stop()
+            $code = if ($timedOut) { 'TIMEOUT' } else { '0x{0:X8}' -f $s.P.ExitCode }
             [pscustomobject]@{
-              Exit = $code; TimedOut = $timedOut; Seconds = $sw.Elapsed.TotalSeconds
-              Out = $(if ($o.IsCompleted) { $o.Result } else { '<stdout not closed>' })
-              Err = $(if ($e.IsCompleted) { $e.Result } else { '<stderr not closed>' })
+              Exit = $code; TimedOut = $timedOut; Seconds = $s.Sw.Elapsed.TotalSeconds
+              Out = $(if ($s.O.IsCompleted) { $s.O.Result } else { '<stdout not closed>' })
+              Err = $(if ($s.E.IsCompleted) { $s.E.Result } else { '<stderr not closed>' })
             }
           }
+          function Invoke-Once([string]$file, [string[]]$argv, [bool]$closeStdin) { Wait-Run (Start-Run $file $argv $closeStdin) }
           function Get-Count([string]$text, [string]$rx) { ([regex]::Matches($text, "(?m)^.*($rx).*$")).Count }
           function Get-From([string]$text, [string]$rx, [int]$max) {
             $l = $text -split "`r?`n"
             for ($k = 0; $k -lt $l.Count; $k++) { if ($l[$k] -match $rx) { return $l[$k..([Math]::Min($l.Count - 1, $k + $max - 1))] -join "`n" } }
             return "(no line matched '$rx'; last lines)`n" + (($l | Select-Object -Last $max) -join "`n")
+          }
+          # The first fault: from the `panicked at` line just before the first fault signal (the message
+          # follows that line), 120 lines of the full backtrace; else the old first-panic excerpt.
+          function Get-Excerpt([string]$text) {
+            $l = $text -split "`r?`n"
+            for ($k = 0; $k -lt $l.Count; $k++) {
+              if ($l[$k] -match $excerptRx) {
+                $from = $k
+                for ($b = $k - 1; $b -ge [Math]::Max(0, $k - 3); $b--) { if ($l[$b] -match 'panicked at') { $from = $b; break } }
+                $part = $l[$from..([Math]::Min($l.Count - 1, $from + 119))] -join "`n"
+                $aborts = ($l | Where-Object { $_ -match 'panicked at|non-unwinding|aborting|misaligned pointer' } | Select-Object -First 20) -join "`n"
+                return "$part`n-- panic / abort lines in this stream (first 20) --`n$aborts"
+              }
+            }
+            Get-From $text 'panicked at|FAILED|D3D12 ERROR' 80
           }
           # Evidence that the tests really ran: the libtest result line and the adapter line.
           function Get-Evidence([string]$text) {
@@ -329,20 +452,22 @@ jobs:
           }
           function Get-Class([string]$exit) {
             switch ($exit) {
-              '0x00000000' { 'pass' } '0x00000065' { 'fail' } '0xC0000374' { 'heap_corruption' } 'TIMEOUT' { 'timeout' } default { 'other_exit' }
+              '0x00000000' { 'pass' } '0x00000065' { 'fail' } '0xC0000374' { 'heap_corruption' } '0xC0000409' { 'fail_fast' } 'TIMEOUT' { 'timeout' } default { 'other_exit' }
             }
           }
 
           $tsv = Join-Path $logDir 'summary.tsv'
-          "run`texit`tclass`tfailed_lines`tduration_s`td3d12_errors`tfault`ttests`tadapter" | Set-Content $tsv
+          "run`texit`tclass`tfailed_lines`tduration_s`td3d12_errors`tfault`ttests`tadapter`tcompanions" | Set-Content $tsv
           $q = '"'
           $adapters = [System.Collections.Generic.List[string]]::new(); $testsPassedTotal = 0
-          $count = @{ pass = 0; fail = 0; heap_corruption = 0; timeout = 0; other_exit = 0 }
+          $count = @{ pass = 0; fail = 0; heap_corruption = 0; fail_fast = 0; timeout = 0; other_exit = 0 }
           $hist = @{}; $excerpts = @(); $faultStack = $null
           $done = 0; $failedLineRuns = 0; $d3d12Err = 0; $d3d12Warn = 0; $validationLines = 0; $faults = 0; $stopped = ''
+          $secondsTotal = 0.0; $companionRuns = 0; $companionNonPass = 0; $companionFaults = 0
           for ($i = 1; $i -le $n; $i++) {
             if ([DateTimeOffset]::UtcNow.AddMilliseconds($timeoutMs) -gt $deadline) { $stopped = "time_budget_after_run_$done"; break }
             $tag = 'run-{0:D3}' -f $i
+            $companions = @(); $compExits = '-'
             if ($mode -eq 'pageheap') {
               $r = Invoke-Once $env:CDB_EXE $cdbArgs $true
               [IO.File]::WriteAllText((Join-Path $logDir "$tag.cdb.txt"), $r.Out)
@@ -353,20 +478,45 @@ jobs:
               if ($r.TimedOut) { $exit = 'TIMEOUT' }
               elseif ($m.Success) { $exit = '0x{0:X8}' -f [Convert]::ToUInt32($m.Groups[1].Value, 16) }
               elseif ($fault -and $text -match '(?i)c0000374') { $exit = '0xC0000374' }
+              elseif ($fault -and $text -match '(?i)c0000409') { $exit = '0xC0000409' }
               elseif (-not $fault -and $r.Out -match 'test result: ok\.' -and $r.Out -notmatch 'FAILED') { $exit = '0x00000000' }
               else { $exit = "unknown(cdb=$($r.Exit))" }
             } else {
+              # contended: two more copies of the same exe (each with its own device) run alongside this one.
+              if ($mode -eq 'contended') { $companions = @(1, 2 | ForEach-Object { Start-Run $exe $testArgs $false }) }
               $r = Invoke-Once $exe $testArgs $false
               [IO.File]::WriteAllText((Join-Path $logDir "$tag.out.txt"), $r.Out)
               [IO.File]::WriteAllText((Join-Path $logDir "$tag.err.txt"), $r.Err)
               $text = $r.Out + "`n" + $r.Err
-              $fault = $false; $exit = $r.Exit
+              $exit = $r.Exit
+              $fault = ($exit -eq '0xC0000374') -or ($exit -eq '0xC0000409') -or ($text -match $faultRx)
+            }
+            if ($companions.Count -gt 0) {
+              $ce = @()
+              for ($c = 0; $c -lt $companions.Count; $c++) {
+                $cr = Wait-Run $companions[$c]
+                $ctag = "$tag.c$($c + 1)"
+                [IO.File]::WriteAllText((Join-Path $logDir "$ctag.out.txt"), $cr.Out)
+                [IO.File]::WriteAllText((Join-Path $logDir "$ctag.err.txt"), $cr.Err)
+                $ce += $cr.Exit; $companionRuns++
+                $cev = Get-Evidence ($cr.Out + "`n" + $cr.Err)
+                if ($cr.Exit -ne '0x00000000' -or -not $cev.Ok) {
+                  $companionNonPass++
+                  if ($cr.Exit -eq '0xC0000374' -or $cr.Exit -eq '0xC0000409' -or (($cr.Out + "`n" + $cr.Err) -match $faultRx)) { $companionFaults++ }
+                  if ($excerpts.Count -lt 3) {
+                    $cex = "### $ctag (companion) exit=$($cr.Exit) tests=$($cev.Tests)`n-- stderr (from first fault, else first panic, else last lines) --`n$(Get-Excerpt $cr.Err)"
+                    $excerpts += $cex
+                    Write-Host "::group::$ctag companion failure excerpt"; Write-Host $cex; Write-Host '::endgroup::'
+                  }
+                }
+              }
+              $compExits = $ce -join ','
             }
             $ev = Get-Evidence $text
             $class = Get-Class $exit
             # Exit 0 without a libtest "test result: ok." line means the tests did not run.
             if ($class -eq 'pass' -and -not $ev.Ok) { $class = 'other_exit' }
-            $count[$class]++; $done = $i
+            $count[$class]++; $done = $i; $secondsTotal += $r.Seconds
             $hk = "$exit`t$class"
             $hist[$hk] = 1 + [int]$hist[$hk]
             if ($ev.Ok) { $testsPassedTotal += $ev.Passed }
@@ -376,20 +526,26 @@ jobs:
             $errs = Get-Count $text 'D3D12 ERROR'
             $d3d12Err += $errs; $d3d12Warn += Get-Count $text 'D3D12 WARNING'; $validationLines += Get-Count $text '(?i)validation'
             $dur = [Math]::Round($r.Seconds, 1).ToString($inv)
-            "$i`t$exit`t$class`t$failed`t$dur`t$errs`t$fault`t$($ev.Tests)`t$($ev.Adapter)" | Add-Content $tsv
-            Write-Host "$tag exit=$exit class=$class failed_lines=$failed d3d12_errors=$errs fault=$fault tests=$($ev.Tests) adapter=$q$($ev.Adapter)$q ${dur}s"
+            "$i`t$exit`t$class`t$failed`t$dur`t$errs`t$fault`t$($ev.Tests)`t$($ev.Adapter)`t$compExits" | Add-Content $tsv
+            $line = "$tag exit=$exit class=$class failed_lines=$failed d3d12_errors=$errs fault=$fault tests=$($ev.Tests) adapter=$q$($ev.Adapter)$q ${dur}s"
+            if ($mode -eq 'contended') { $line += " companions=$compExits" }
+            Write-Host $line
             if (($class -ne 'pass' -or $fault) -and $excerpts.Count -lt 3) {
               $adapter = ($text -split "`r?`n" | Where-Object { $_ -match '\] adapter:' } | Select-Object -First 1)
               $outLines = ($r.Out -split "`r?`n" | Where-Object { $_ -match 'FAILED|panicked at|^test |test result' } | Select-Object -First 80) -join "`n"
               $errText = if ($mode -eq 'pageheap') { $r.Out } else { $r.Err }
-              $errPart = Get-From $errText 'panicked at|FAILED|D3D12 ERROR' 80
-              $ex = "### $tag exit=$exit class=$class`nadapter: $adapter`n-- stdout (test lines) --`n$outLines`n-- stderr (from first panic, else last lines) --`n$errPart"
+              $errPart = Get-Excerpt $errText
+              $ex = "### $tag exit=$exit class=$class`nadapter: $adapter`n-- stdout (test lines) --`n$outLines`n-- stderr (from first fault, else first panic, else last lines) --`n$errPart"
               $excerpts += $ex
               Write-Host "::group::$tag failure excerpt"; Write-Host $ex; Write-Host '::endgroup::'
             }
             if ($fault) {
               $faults++
-              if (-not $faultStack) { $faultStack = "### $tag first fault`n" + (Get-From $r.Out $faultRx 120); Write-Host $faultStack }
+              if (-not $faultStack) {
+                $faultSrc = if ($mode -eq 'pageheap') { $r.Out } else { $text }
+                $faultStack = "### $tag first fault (exit=$exit)`n" + (Get-Excerpt $faultSrc)
+                Write-Host $faultStack
+              }
               if ($faults -ge 3) { $stopped = "three_faults_after_run_$i"; break }
             }
           }
@@ -411,11 +567,12 @@ jobs:
             }
           }
 
-          $result = "RESULT mode=$mode runs=$done pass=$($count.pass) fail=$($count.fail) heap_corruption=$($count.heap_corruption) timeout=$($count.timeout) other_exit=$($count.other_exit)"
-          $result += " runs_with_FAILED_or_panic_lines=$failedLineRuns requested=$n"
+          $meanRun = if ($done -gt 0) { [Math]::Round($secondsTotal / $done, 1).ToString($inv) } else { 'n/a' }
+          $result = "RESULT mode=$mode target=$target runs=$done pass=$($count.pass) fail=$($count.fail) heap_corruption=$($count.heap_corruption) fail_fast=$($count.fail_fast) timeout=$($count.timeout) other_exit=$($count.other_exit)"
+          $result += " runs_with_FAILED_or_panic_lines=$failedLineRuns requested=$n faults=$faults mean_run_s=$meanRun"
           $result += " adapters=$($adapters -join ';') tests_passed_total=$testsPassedTotal"
           if ($mode -eq 'validation') { $result += " d3d12_errors=$d3d12Err d3d12_warnings=$d3d12Warn validation_lines=$validationLines dbg_runs=$dbgRuns dbg_d3d12_errors=$dbgErr" }
-          if ($mode -eq 'pageheap') { $result += " faults=$faults" }
+          if ($mode -eq 'contended') { $result += " companion_runs=$companionRuns companion_nonpass=$companionNonPass companion_faults=$companionFaults" }
           if ($stopped) { $result += " stopped=$stopped" }
           Write-Host $result
           $result | Set-Content (Join-Path $logDir 'result.txt')
@@ -423,15 +580,18 @@ jobs:
           $fence = '```'
           $rows = ($hist.GetEnumerator() | Sort-Object Name | ForEach-Object { $kc = $_.Name -split "`t"; "| $($kc[0]) | $($kc[1]) | $($_.Value) |" }) -join "`n"
           $md = @"
-          ## srgb_blend_gpu diagnosis: $mode
+          ## $target diagnosis: $mode
 
           $fence
           $result
           $fence
 
           Classes: pass = exit 0 and a libtest "test result: ok." line, fail = exit 0x00000065 (libtest test failure), heap_corruption = 0xC0000374,
-          timeout = killed after 300 s, other_exit = anything else (including exit 0 without a result line). In pageheap the exit code is the debuggee's
-          (from cdb's exit-process event); a fault run ended in the debugger.
+          fail_fast = 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN, also a non-unwinding panic abort), timeout = killed after 300 s,
+          other_exit = anything else (including exit 0 without a result line). faults = runs with a fault exit or a fault line
+          (heap corruption, fail-fast, access violation, page-heap or verifier stop, misaligned pointer dereference); the loop stops after three.
+          In pageheap the exit code is the debuggee's (from cdb's exit-process event); a fault run ended in the debugger. In contended the classes
+          count the main process only; its two companions are counted in companion_*.
 
           | exit code | class | runs |
           |---|---|---|
@@ -465,7 +625,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: logs-${{ matrix.mode }}
+          name: logs-${{ needs.setup.outputs.target }}-${{ matrix.mode }}
           path: logs/${{ matrix.mode }}/**
           retention-days: 14
           if-no-files-found: warn
