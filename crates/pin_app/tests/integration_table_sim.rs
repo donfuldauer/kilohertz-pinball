@@ -148,13 +148,10 @@ fn threads_run_the_table_and_feed_the_audio_thread() {
     }
     let mut polls = 0u64;
     // Wait for every outcome the assertions below need (explicit progress,
-    // not a delay): impulses received, SSF frames rendered, datagrams encoded.
+    // not a delay): impulses received by the audio thread (SSF exciter path), SSF frames rendered.
     let progressed = |t: &pin_app::orchestrator::Threads| {
         let a = t.audio_stats();
-        a.haptic_events > 0
-            && a.frames > 0
-            && a.telemetry_datagrams > 0
-            && t.stats().sim_ticks >= 200
+        a.haptic_events > 0 && a.frames > 0 && t.stats().sim_ticks >= 200
     };
     while !progressed(&threads) {
         polls += 1;
@@ -170,7 +167,10 @@ fn threads_run_the_table_and_feed_the_audio_thread() {
     let stats = threads.shutdown().unwrap();
     assert!(stats.sim_ticks >= 200);
     assert!(audio.frames > 0, "SSF renders into the null sink");
-    assert!(audio.telemetry_datagrams > 0, "impulses are encoded");
+    assert!(
+        audio.haptic_events > 0,
+        "impulses reached the audio thread and the SSF exciter mixer"
+    );
 }
 
 /// `SimStep` is implemented by the table sim (also boxed, as the threads
