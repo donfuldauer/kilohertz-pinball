@@ -2132,6 +2132,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "libm",
+ "pin_assetgen",
  "pin_assets",
  "pin_core",
  "pin_input",

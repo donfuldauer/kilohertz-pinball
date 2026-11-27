@@ -38,6 +38,10 @@ pub struct CabinetFrame {
     pub axes: [f32; 5],
 }
 
+// `CabinetFrame::buttons`, `InputIngest::raw` and `applied` are `u8` bitmasks,
+// so every cabinet input must fit in 8 bits.
+const _: () = assert!(CabinetInput::COUNT <= 8);
+
 impl CabinetFrame {
     /// Whether cabinet input `i` is pressed.
     #[inline]
@@ -143,6 +147,20 @@ impl InputIngest {
 
     /// Applies every pending event with `timestamp_ns <= epoch_ns + tick * 1e6`
     /// (in timestamp order) and returns the frame for `tick`.
+    ///
+    /// # Call contract
+    ///
+    /// Call this exactly once per sim tick, with `tick` non-decreasing across
+    /// calls (normally increasing by one each time). Events with
+    /// `timestamp_ns <= epoch_ns + tick * 1_000_000` are applied.
+    ///
+    /// Passing a lower tick than an earlier call, or repeating a tick, is not
+    /// supported. The cutoff then does not move forward, so events already
+    /// applied stay applied and only pending events at or before that cutoff
+    /// are applied. Debounce windows are measured against the `tick` given to
+    /// each call (an edge is accepted when `tick >= lock_until`), so a lower
+    /// tick can hold edges back until the window ends. The returned frame
+    /// carries the given `tick`.
     pub fn advance(&mut self, tick: u64) -> CabinetFrame {
         let cutoff = self.tick_time_ns(tick);
         let n = self
