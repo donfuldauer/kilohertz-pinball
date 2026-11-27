@@ -68,6 +68,9 @@ ogg = "=0.8.0"            # 3.3: packet reader for the vendored lewton
 # Wave 4 additions (5.1)
 naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }  # 5.1: the version wgpu 30.0.1 uses; shader validation tests
 
+# #163 KP-069 additions
+libc = "=0.2.191"  # #163: pin_app test-only xattr helpers (Linux setxattr/fgetxattr/removexattr)
+
 [profile.dev]
 # Keep the 1 kHz solver usable in debug test runs.
 opt-level = 1

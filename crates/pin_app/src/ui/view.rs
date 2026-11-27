@@ -751,7 +751,7 @@ mod tests {
                         file: "preview.png".into(),
                         width: side,
                         height: side,
-                        rgba: vec![0; (side * side * 4) as usize],
+                        rgba: vec![0; (side * side * 4) as usize].into(),
                     }),
                     preview_error: None,
                     warning_count: 0,

@@ -99,30 +99,128 @@ fn collect_tables(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// `table.toml` fixtures that are intentionally not valid manifests, as repo-relative paths,
+/// each with a one-line reason. Every other `table.toml` under `tables/` and `crates/` must
+/// parse, serialize and round-trip. Checked on 2026-11-25: all 23 files parse (the "gap",
+/// "overflow", "trap" and "script_error" fixtures are valid manifests whose scripts or
+/// geometry misbehave at run time), so the list is empty; add a path with a reason here
+/// only for a fixture that is deliberately not a manifest.
+const EXCLUDED: &[&str] = &[];
+
+/// Frozen legacy `table.toml` inputs (repo-relative paths): committed test fixtures that
+/// predate CR-011 (optional lamp `position` / `radius`) and carry no lamp positions. They are
+/// frozen legacy inputs, so their lamps must stay without `position` / `radius` (the fields
+/// are additive and must not change what an old file means). Derived on 2026-11-26 from the
+/// files the discovery below finds under `crates/`, all of which carry no lamp positions.
+/// Production tables (`tables/**`) are never listed: they may use the new fields.
+const LEGACY_NO_LAMP_POSITION: &[&str] = &[
+    "crates/pin_app/tests/fixtures/spec_4_4/base/table.toml",
+    "crates/pin_app/tests/fixtures/spec_6_0/fits/table.toml",
+    "crates/pin_app/tests/fixtures/spec_6_0/oversized/table.toml",
+    "crates/pin_assets/tests/fixtures/apex/table.toml",
+    "crates/pin_core/fixtures/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/clean/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/gap/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/greybox_452eedf/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/overflow/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/script_error/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/trap/table.toml",
+    "crates/pin_sim/tests/fixtures/autoplay/unreachable/table.toml",
+    "crates/pin_sim/tests/fixtures/replay_table/table.toml",
+    "crates/pin_sim/tests/fixtures/spec_2_5/table/table.toml",
+    "crates/pin_sim/tests/fixtures/spec_2_9/clean/table.toml",
+    "crates/pin_sim/tests/fixtures/spec_2_9/gap/table.toml",
+    "crates/pin_sim/tests/fixtures/spec_2_9/hidden/table.toml",
+    "crates/pin_sim/tests/fixtures/spec_2_9/trap/table.toml",
+    "crates/pin_tablegen/tests/fixtures/spec_4_3/base/table.toml",
+];
+
+/// The per-file check of the discovery loop: every discovered `table.toml` (path `r`,
+/// contents `text`) must parse, serialize and round-trip; a frozen legacy fixture must in
+/// addition have no lamp `position` / `radius`. Returns the parsed manifest.
+fn check_discovered(r: &str, text: &str) -> TableManifest {
+    let m = TableManifest::from_toml_str(text)
+        .unwrap_or_else(|e| panic!("{r}: must parse (or be listed in EXCLUDED): {e:?}"));
+    if LEGACY_NO_LAMP_POSITION.contains(&r) {
+        assert!(
+            m.lamps
+                .iter()
+                .all(|l| l.position.is_none() && l.radius.is_none()),
+            "{r}: frozen legacy lamps gained position/radius"
+        );
+    }
+    let s = m
+        .to_toml_string()
+        .unwrap_or_else(|e| panic!("{r}: must serialize: {e:?}"));
+    let back = TableManifest::from_toml_str(&s)
+        .unwrap_or_else(|e| panic!("{r}: serialized text must re-parse: {e:?}"));
+    assert_eq!(back, m, "{r}: round trip");
+    m
+}
+
 #[test]
 fn req_vis_004_existing_table_files_parse_unchanged() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
     collect_tables(&root.join("tables"), &mut files);
     collect_tables(&root.join("crates"), &mut files);
-    assert!(files.len() >= 10, "found {} table.toml files", files.len());
-    let mut parsed = 0;
-    for f in &files {
-        let text = std::fs::read_to_string(f).unwrap();
-        if let Ok(m) = TableManifest::from_toml_str(&text) {
-            parsed += 1;
-            assert!(
-                m.lamps
-                    .iter()
-                    .all(|l| l.position.is_none() && l.radius.is_none()),
-                "{f:?}"
-            );
-            if let Ok(s) = m.to_toml_string() {
-                assert_eq!(TableManifest::from_toml_str(&s).unwrap(), m, "{f:?}");
-            }
-        }
+    let rel = |f: &std::path::Path| -> String {
+        f.strip_prefix(&root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let rels: Vec<String> = files.iter().map(|f| rel(f)).collect();
+    // A rename or deletion of an excluded fixture is noticed.
+    for e in EXCLUDED {
+        assert!(
+            rels.iter().any(|r| r == e) && root.join(e).is_file(),
+            "excluded fixture {e} does not exist"
+        );
     }
-    assert!(parsed >= 5, "only {parsed} parsed");
+    // A rename or deletion of a frozen legacy fixture is noticed too, and none is excluded
+    // from parsing.
+    for l in LEGACY_NO_LAMP_POSITION {
+        assert!(
+            rels.iter().any(|r| r == l) && root.join(l).is_file(),
+            "legacy fixture {l} does not exist"
+        );
+        assert!(!EXCLUDED.contains(l), "legacy fixture {l} is excluded");
+    }
+    // The production tables are never excluded and never frozen.
+    let production: Vec<&String> = rels.iter().filter(|r| r.starts_with("tables/")).collect();
+    assert!(production.len() >= 4, "production tables: {production:?}");
+    assert!(
+        production.iter().all(|r| !EXCLUDED.contains(&r.as_str())),
+        "a production table is excluded"
+    );
+    assert!(
+        LEGACY_NO_LAMP_POSITION
+            .iter()
+            .all(|l| !l.starts_with("tables/")),
+        "a production table is listed as frozen legacy"
+    );
+    let mut must_parse = 0;
+    let mut excluded = 0;
+    let mut legacy = 0;
+    for (f, r) in files.iter().zip(&rels) {
+        if EXCLUDED.contains(&r.as_str()) {
+            excluded += 1;
+            continue;
+        }
+        must_parse += 1;
+        if LEGACY_NO_LAMP_POSITION.contains(&r.as_str()) {
+            legacy += 1;
+        }
+        let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{r}: read: {e}"));
+        check_discovered(r, &text);
+    }
+    // Every file is exactly one of must-parse or excluded; every legacy file was checked.
+    assert_eq!(must_parse + excluded, files.len());
+    assert_eq!(excluded, EXCLUDED.len());
+    assert_eq!(legacy, LEGACY_NO_LAMP_POSITION.len());
     let fx = TableManifest::from_toml_str(TABLE).unwrap();
     assert!(!fx.lamps.is_empty());
     assert!(
@@ -132,6 +230,24 @@ fn req_vis_004_existing_table_files_parse_unchanged() {
     );
     let again = TableManifest::from_toml_str(&fx.to_toml_string().unwrap()).unwrap();
     assert_eq!(fx, again);
+}
+
+/// REQ-VIS-004: a discovered table that uses lamp `position` and `radius` (as a production
+/// table may) parses, round-trips and is accepted by the discovery check; the same text under
+/// a frozen legacy path is still rejected, so the legacy check keeps its strength.
+#[test]
+fn req_vis_004_discovered_table_with_lamp_position_is_accepted() {
+    let text = fixture_with(Some(LAMPS), None);
+    let m = check_discovered("tables/synthetic_lamp_positions/table.toml", &text);
+    assert_eq!(m.lamps[0].position, Some([410.0, 720.0, 0.0]));
+    assert_eq!(m.lamps[0].radius, Some(60.0));
+    assert_eq!(m.lamps[1].position, Some([1.5, 2.5, 3.5]));
+    let legacy = LEGACY_NO_LAMP_POSITION[0];
+    let caught = std::panic::catch_unwind(|| check_discovered(legacy, &text));
+    assert!(
+        caught.is_err(),
+        "legacy fixture with lamp positions must fail"
+    );
 }
 
 #[test]

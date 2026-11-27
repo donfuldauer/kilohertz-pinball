@@ -309,10 +309,9 @@ fn req_vis_002_spinner_quaternion_matches_state() {
                 None => pivot = Some(t.position_m),
                 Some(p) => assert_eq!(p, t.position_m, "pivot moved"),
             }
+            // Every tick is compared, at any angle (no cutoff): `wrap` reduces the
+            // difference modulo 2*pi exactly (f64 `%` is exact).
             let state = f64::from(sim.mech_set().spinner_state(0).expect("spinner").0);
-            if state.abs() >= 20.0 {
-                continue;
-            }
             let (ang, ax) = angle_axis(t.orientation);
             let dot = ax[0] * axis[0] + ax[1] * axis[1] + ax[2] * axis[2];
             if ang > 1e-6 {
@@ -338,15 +337,10 @@ fn req_vis_002_spinner_quaternion_matches_state() {
         };
         let plus = worst(|r| r.1);
         let minus = worst(|r| r.2);
-        if plus <= 1e-5 {
-            // Matches with the brief's axis sign.
-        } else if minus <= 1e-5 {
-            eprintln!(
-                "OBSERVATION: the quaternion axis sign is opposite to (u.y, -u.x, 0); worst error {minus:e}"
-            );
-        } else {
-            panic!("spinner angle mismatch: worst error {plus:e} (axis +) / {minus:e} (axis -)");
-        }
+        assert!(
+            plus <= 1e-5,
+            "spinner angle mismatch: worst error {plus:e} (documented axis (u.y, -u.x, 0)); opposite-sign worst error {minus:e}"
+        );
     });
 }
 

@@ -248,6 +248,195 @@ fn req_cab_005_backbox_overlap_names_backbox_front_y() {
     assert_eq!(g.validate(&envelope(0, None)), Ok(()));
 }
 
+/// The reported rolled configuration (#163 gate round 9): classic_standard with
+/// `mount.pitch_deg` 0, `mount.roll_deg` `roll` and `mount.height` 80.
+fn rolled(roll: f32) -> CabinetGeometry {
+    let mut g = preset("classic_standard");
+    g.mount.pitch_deg = 0.0;
+    g.mount.roll_deg = roll;
+    g.mount.height = 80.0;
+    g
+}
+
+/// REQ-CAB-005, REQ-CAB-008, REQ-BUILD-002: roll turns the playfield about its front-left
+/// origin, so at 45° the right surface corner alone reaches 80 + 514 sin 45° ≈ 443.5 mm,
+/// above the 404.7 mm front wall top: rejected naming `mount.height` and the right side.
+#[test]
+fn req_cab_005_req_cab_008_rolled_right_corner_rejected() {
+    let m = invalid_msg(rolled(45.0).validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(
+        m.contains("front edge") && m.contains("right corner"),
+        "{m}"
+    );
+    println!("{m}");
+}
+
+/// REQ-CAB-005, REQ-CAB-008: the same mount at roll 0 fits; a small roll that still clears
+/// fits; a negative roll that keeps the right side inside the body is not wrongly rejected.
+/// Brief gate163-r10-B: the old list held -45.0, which put the right corners about
+/// -283.5 mm below the body bottom and wrongly expected Ok; -8.0 gives 80 - 71.5 = 8.5 mm.
+#[test]
+fn req_cab_005_req_cab_008_roll_zero_small_and_negative_pass() {
+    for roll in [0.0, 2.0, -2.0, -8.0] {
+        assert_eq!(
+            rolled(roll).validate(&envelope(0, None)),
+            Ok(()),
+            "roll {roll}"
+        );
+    }
+}
+
+/// REQ-CAB-005, REQ-CAB-008: a large negative roll takes the right corners below the body
+/// bottom (80 + 514 sin(-45 deg) = -283.5 mm): rejected. The boundary is 80 + 514 sin(roll)
+/// = 0, roll about -8.96 deg: -8.9 passes, -9.1 fails.
+#[test]
+fn req_cab_005_req_cab_008_negative_roll_below_body_bottom_rejected() {
+    let m = invalid_msg(rolled(-45.0).validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(m.contains("right corner"), "{m}");
+    assert!(m.contains("below the body bottom"), "{m}");
+    println!("{m}");
+    assert_eq!(rolled(-8.9).validate(&envelope(0, None)), Ok(()));
+    let m = invalid_msg(rolled(-9.1).validate(&envelope(0, None)));
+    assert!(
+        m.contains("mount.height") && m.contains("below the body bottom"),
+        "{m}"
+    );
+}
+
+/// REQ-CAB-005, REQ-CAB-008: negative pitch (rear down) can take the rear corners below the
+/// body bottom: 20 - 1070 sin 6.5 deg = -101 mm. Zero and small negative pitch stay valid.
+#[test]
+fn req_cab_005_req_cab_008_negative_pitch_below_body_bottom_rejected() {
+    let mut g = preset("classic_standard");
+    g.mount.roll_deg = 0.0;
+    g.mount.height = 20.0;
+    g.mount.pitch_deg = -6.5;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(
+        m.contains("rear edge") && m.contains("below the body bottom"),
+        "{m}"
+    );
+    println!("{m}");
+    for pitch in [0.0, -0.5, -1.0] {
+        g.mount.pitch_deg = pitch;
+        assert_eq!(g.validate(&envelope(0, None)), Ok(()), "pitch {pitch}");
+    }
+}
+
+/// REQ-CAB-005: a rolled playfield's raised right corner is the highest glass top for
+/// the backbox check, so a backbox that clears the level playfield overlaps the rolled one.
+#[test]
+fn req_cab_005_rolled_backbox_overlap_rejected() {
+    let mut g = preset("classic_standard");
+    g.body.front_height = 900.0;
+    // Side wall top at the rear edge ≈ 550 mm, above every glass corner below.
+    g.body.rear_height = 480.0;
+    g.backbox.front_y = 900.0;
+    g.backbox.bottom_z = 530.0;
+    g.mount.height = 283.0;
+    // Level: rear glass top ≈ 520 mm < 530 mm, clear.
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+    // Rolled 2°: the rear-right glass top rises by 514 sin 2° ≈ 17.9 mm to ≈ 538 mm.
+    g.mount.roll_deg = 2.0;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(
+        m.contains("backbox.front_y") && m.contains("backbox.bottom_z"),
+        "{m}"
+    );
+    println!("{m}");
+    // Negative roll lowers the right side: the left corners govern, clear again.
+    g.mount.roll_deg = -2.0;
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+}
+
+/// The #163 gate round 12 mount: classic_standard with `mount.inset` 50 and
+/// `mount.height` 290.7 (pitch 6.5°, roll 0 from the preset).
+fn inset_50_mount() -> CabinetGeometry {
+    let mut g = preset("classic_standard");
+    g.mount.inset = 50.0;
+    g.mount.height = 290.7;
+    g
+}
+
+/// REQ-CAB-005 (SPEC A.4 containment: "the glass sheet's top at the playfield's front and
+/// rear edges below the side wall top"): the glass top lies along the playfield normal,
+/// forward of its surface corner by g sin(pitch) cos(roll), so it is checked against the
+/// side wall at its own cabinet-frame y. Here g = 112 + 4.8 = 116.8 mm: the front glass top
+/// is at y = 50 - 116.8 sin 6.5° ≈ 36.8 mm, z = 290.7 + 116.8 cos 6.5° ≈ 406.7 mm, where the
+/// wall top is 400 + 205 × 36.8 / 1315 ≈ 405.7 mm (at the surface corner's y = 50 it is
+/// 407.8 mm, which the old check sampled and wrongly passed).
+#[test]
+fn req_cab_005_glass_top_checked_at_its_own_y() {
+    let m = invalid_msg(inset_50_mount().validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(m.contains("front edge"), "{m}");
+    assert!(m.contains("405.7"), "{m}");
+    println!("{m}");
+}
+
+/// REQ-CAB-005: the same mount at pitch 0 has no longitudinal glass offset (glass y equals
+/// the surface y), so it fits: glass top 290.7 + 116.8 = 407.5 mm under the 407.795 mm wall
+/// top at y = 50, a 0.295 mm margin.
+#[test]
+fn req_cab_005_glass_top_own_y_level_mount_fits() {
+    let mut g = inset_50_mount();
+    g.mount.pitch_deg = 0.0;
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+}
+
+/// REQ-CAB-005: rolling the round-12 mount 2° (right side up) keeps it rejected.
+#[test]
+fn req_cab_005_glass_top_own_y_rolled_still_rejected() {
+    let mut g = inset_50_mount();
+    g.mount.roll_deg = 2.0;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(m.contains("front edge"), "{m}");
+    println!("{m}");
+}
+
+/// REQ-CAB-005 (SPEC A.4: "the backbox clear of the playfield: its front face at or behind
+/// the playfield's rear edge, or its bottom above the glass sheet's top"): under negative
+/// pitch the glass normal leans rearward, so the glass top's rear edge lies behind the
+/// surface's rear edge. Surface rear y = 30 + 1070 cos 6.5° ≈ 1093.12 mm, glass rear y =
+/// 1093.12 + 116.8 sin 6.5° ≈ 1106.34 mm; a backbox front at 1100 mm with its bottom
+/// (610 mm) under the highest glass top (≈ 716 mm at the front) overlaps the glass.
+#[test]
+fn req_cab_005_negative_pitch_glass_extent_backbox_overlap_rejected() {
+    let mut g = preset("classic_standard");
+    g.body.front_height = 900.0;
+    g.body.rear_height = 610.0;
+    g.backbox.bottom_z = 610.0;
+    g.backbox.front_y = 1100.0;
+    g.mount.height = 600.0;
+    g.mount.pitch_deg = -6.5;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(
+        m.contains("backbox.front_y") && m.contains("backbox.bottom_z"),
+        "{m}"
+    );
+    assert!(m.contains("1106.3"), "{m}");
+    println!("{m}");
+    // Behind the glass top's rear edge it is clear.
+    g.backbox.front_y = 1107.0;
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+}
+
+/// REQ-CAB-005: a glass top in front of the body (steep pitch, minimal inset: y = 19 -
+/// 116.8 sin 10° ≈ -1.28 mm) is checked against the wall at the nearest body end (y = 0),
+/// not rejected and not extrapolated; validation does not panic.
+#[test]
+fn req_cab_005_glass_top_in_front_of_body_clamped() {
+    let mut g = preset("classic_standard");
+    g.mount.inset = 19.0;
+    g.mount.pitch_deg = 10.0;
+    g.mount.height = 100.0;
+    assert_eq!(g.validate(&envelope(0, None)), Ok(()));
+}
+
 /// REQ-CAB-005: other containment rules name their fields.
 #[test]
 fn req_cab_005_other_containment_fields() {
@@ -323,6 +512,48 @@ fn req_cab_005_other_containment_fields() {
     let mut bad = g.clone();
     bad.body.width = -1.0;
     assert!(invalid_msg(bad.validate(&envelope(0, None))).contains("body.width"));
+}
+
+/// REQ-CAB-005, SPEC A.4 `[glass_panel]`: a sheet whose projection along the cabinet
+/// (at the mount pitch) exceeds `body.length` cannot fit and is rejected naming
+/// `glass_panel.length`; the limit itself, a pitched sheet that fits and every preset's
+/// 1,092 mm sheet are accepted.
+#[test]
+fn req_cab_005_glass_sheet_longer_than_body_names_glass_panel_length() {
+    // The review case: level mount, 2,000 mm sheet in a 1,315 mm cabinet.
+    let mut g = preset("classic_standard");
+    g.mount.pitch_deg = 0.0;
+    g.glass_panel.length = 2000.0;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(m.contains("`glass_panel.length`"), "{m}");
+    assert!(m.contains("exceeds the cabinet body length"), "{m}");
+    let m = invalid_msg(g.check_consistency());
+    assert!(m.contains("`glass_panel.length`"), "{m}");
+
+    // Exactly at the limit (level mount, sheet length == body length): accepted.
+    let mut at = preset("classic_standard");
+    at.mount.pitch_deg = 0.0;
+    at.glass_panel.length = at.body.length;
+    assert_eq!(at.check_consistency(), Ok(()));
+    // Just above the limit: rejected.
+    at.glass_panel.length = at.body.length + 1.0;
+    assert!(invalid_msg(at.check_consistency()).contains("`glass_panel.length`"));
+
+    // A 1,500 mm sheet does not fit level, but fits pitched at 30° (1,500 cos 30° ≈ 1,299).
+    let mut pitched = preset("classic_standard");
+    pitched.glass_panel.length = 1500.0;
+    pitched.mount.pitch_deg = 0.0;
+    assert!(invalid_msg(pitched.check_consistency()).contains("`glass_panel.length`"));
+    pitched.mount.pitch_deg = 30.0;
+    assert_eq!(pitched.check_consistency(), Ok(()));
+
+    // Every preset (1,092 mm sheet) still validates.
+    for (i, id) in PRESETS.iter().enumerate() {
+        let g = preset(id);
+        assert_eq!(g.glass_panel.length, 1092.0, "{id}");
+        assert_eq!(g.check_consistency(), Ok(()), "{id}");
+        assert_eq!(g.validate(&envelope(i, None)), Ok(()), "{id}");
+    }
 }
 
 /// REQ-CAB-007, REQ-CAB-005: an out-of-range leveler extension names

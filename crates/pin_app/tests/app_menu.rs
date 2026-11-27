@@ -18,8 +18,38 @@ use sdl3::keyboard::{Mod, Scancode};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// A fresh, empty directory under the cargo test temp dir.
-fn fresh_dir(tag: &str) -> PathBuf {
+/// A fresh, empty directory under the cargo test temp dir, removed (errors
+/// ignored) when the guard drops.
+struct TestDir(PathBuf);
+
+impl TestDir {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TestDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TestDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh, empty directory under the cargo test temp dir (removed when the
+/// returned guard drops).
+fn fresh_dir(tag: &str) -> TestDir {
     static N: AtomicU32 = AtomicU32::new(0);
     let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "app_menu_{tag}_{}_{}",
@@ -28,7 +58,18 @@ fn fresh_dir(tag: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    TestDir(d)
+}
+
+/// PR #197 review item: `fresh_dir` leaves no directory behind.
+#[test]
+fn fresh_dir_is_removed_on_drop() {
+    let d = fresh_dir("cleanup");
+    let p = d.path().to_path_buf();
+    std::fs::write(d.join("config.toml"), b"x").unwrap();
+    assert!(p.is_dir());
+    drop(d);
+    assert!(!p.exists(), "{} left behind", p.display());
 }
 
 fn key(down: bool, sc: Scancode, ts: u64, repeat: bool) -> Event {
