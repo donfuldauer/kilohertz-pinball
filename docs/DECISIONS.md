@@ -9699,3 +9699,88 @@ stack, the rate and a complete report keeps the evidence usable.
   issue's owned paths and would hide a real concurrency bug. A follow-up issue may evaluate a wgpu
   update, or a fix, once upstream answers.
 - A per-file lock in `srgb_blend_gpu`: rejected; see the Decision.
+
+
+## #138 KP-057 (tester) — How the black-box tests express the three-switch shot and the vertical flipper
+
+**Decision:** (1) The `drop_bank` shot on the scratch copy of `clean` is
+`["top_rollover", "bumper_ring", "right_eos"]`: the fixture has no third free switch, and an EOS
+switch is closed while its bat is at rest, so the tests force a switch open, then closed, then open
+(one closing edge) and never release it. (2) The vertical flipper is `lower_left` with
+`surface_normal = [0, -1, 0]`, pivot raised to 20 mm and rest angle -10 degrees (sweep +50 kept), so
+the bat clears the playfield and stays inside the table bounds. (3) Test 3a checks the vertical
+flipper's own button (`left_flipper` held by the bot) and a closing edge of `left_eos`, besides
+`predictions + cradles > 0`. On main the bot's only decision in that scenario is for the other
+flipper (the ball rolls to it later), so the global `BotStats` alone would pass on main. (4) The
+EndlessBall tests use `GameMonitor::with_endless_ticks(3000)` and `end_at_cap`, not the 300 s
+default, to keep each test short in debug builds.
+**Rationale:** Only existing fixture switches and the public API are used. Each test fails on main
+for the reason the brief states, and the scenarios stay emergent: several drop points and seeds,
+two tables and two hit-rate ratios.
+**Alternatives:** Declare three new positionless switches in the scratch table. Not chosen, because
+the brief asks for existing switches. Keep the -30 degree rest angle with a higher pivot. Not
+chosen, because the ball would start above the bounds margin of the 28 mm walls. Assert only the
+global stats for 3a. Not chosen, because that passes on main.
+
+## #138 KP-057 — shot progress is cleared on every drain and serve
+
+**Decision:** `GameMonitor` clears the partial progress of every `[[shots]]` entry whenever a ball
+leaves the table (drained or escaped; any vanished ball track in `observe_balls`) and whenever a new
+ball track appears (a serve or a multiball add, the `_ =>` arm that resets the slot's hit counts).
+Clearing happens before the tick's switch edges are processed. Completed shots stay counted
+(`shot_counts` never decreases), and a whole sequence on one ball inside its window still counts
+once. The window expiry is unchanged. Multiball caveat: progress is table-wide, not per ball, so a
+drain or an add-a-ball during multiball also drops the partial sequence of a ball still in play; the
+next full sequence on one ball is credited again.
+**Rationale:** This is the simplest reading of the issue ("cleared per ball on drain and serve") and
+removes the cross-ball credit (`drop_bank` drop 1 and 2 on one ball, drop 3 on the next). Per-ball
+progress would need a switch-to-ball attribution for every shot switch, and positionless switches
+have no reliable one. Under-crediting a rare multiball sequence is safer for coverage than crediting
+a sequence no single ball made.
+**Alternatives:** Per-ball progress keyed by the attributed ball (rejected: it depends on the
+attribution heuristic and needs per-slot state for every shot). Clearing only on drain (rejected:
+the issue names the serve too, and a ball added in multiball starts its own sequence).
+
+## #138 KP-057 — a positionless mech switch is credited to the ball nearest its mech
+
+**Decision:** Root cause confirmed: `credit_hits` credited a rising switch without a zone position to
+every tracked ball, so on a two-ball table the endless ball's most-hit switch could be another
+ball's switch (the new `autoplay_detectors` test names `bumper_ring` instead of `top_rollover` on
+main). The monitor now takes a switch's position from `TableInfo::switch_position_m`: the switch's
+own zone centre, else the position of the first mech in declaration order that names the switch
+and has a position (a bumper ring, a VUK switch). Such a switch is credited to the nearest ball by
+plane (x, y) distance, ties to the lowest slot, like a zoned switch. Only a switch with neither a
+zone nor a positioned mech keeps the old behaviour (credited to every ball). `GameOutcome.switch_hits`
+still comes from the simulation's rising-edge counts, so totals are unchanged.
+**Rationale:** The mech's position is the best table-data estimate of where the ball that closed the
+switch is, and nearest-ball attribution is the rule positioned switches already follow. It needs
+no new manifest data.
+**Alternatives:** Crediting the hit to no ball (rejected: an endless ball looping a bumper would be
+named after its position only). Splitting the hit across balls (rejected: the subject rule ranks
+whole hits). 3-D distance to the mech (rejected: positioned switches use the plane distance; one
+rule for both).
+
+## #138 KP-057 — the bot's flipper plane comes from the table's surface_normal
+
+**Decision:** `FlipperInfo` gains `surface_normal: Vec3`, read from the flipper's manifest
+`surface_normal` and normalised by `unit_normal_or_z`. A zero-length or non-finite normal falls back
+to world +Z, so the result is never NaN. `FlipperModel` gains `plane: FlipperPlane`, built with
+`FlipperPlane::from_normal`. That frame uses the physics' own `pin_physics::flipper::plane_axes`,
+so a bat angle in it is the simulation's bat angle. Any normal exactly along +Z gives
+`FlipperPlane::TABLE`, which projects to `(x, y)` bit for bit. The rest direction, the pivot, each
+ball's position and velocity, gravity, the "away" test (velocity against in-plane gravity) and the
+cradle speed are all expressed in that plane per flipper. For a flipper outside the table plane, a
+ball must also be within `slab_half_m` (bat radius + ball radius + 10 mm) of the plane through the
+pivot, so a ball elsewhere on the same layer whose projection happens to fall in the sector is
+ignored. A table-plane flipper has no slab test, as before. Without `TableInfo` (`Bot::new` without
+`with_table`), every flipper is modelled in the table plane, as before. The rest/launch test
+("near a flipper") uses the same plane and slab; it still judges rest by the table-plane speed.
+**Rationale:** The manifest normal is the physics' source, so it is the authoritative plane, and
+`FlipperSet` exposes no normal accessor (reading one would need a contract change to
+`pin_physics`). Keeping the +Z path literally the old code keeps decisions and RNG draw order
+bit-identical for every current playfield flipper, so the existing determinism, `spec_2_9_bot` and
+timing tests pass unchanged. No branch names a table (R7): the plane comes from geometry.
+**Alternatives:** Deriving the normal from two bat directions in `FlipperSet` (rejected: it needs
+the bat to move, and it is fragile at rest). A general projection for +Z too (rejected: `x*1 + y*0
++ z*0` can flip the sign of zero and is not guaranteed bit-identical). No slab test (rejected: a
+vertical flipper's projection collapses the whole layer onto its plane).
