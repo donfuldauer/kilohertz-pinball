@@ -32,6 +32,15 @@ the `plan-from-spec` skill instead.
 
 ## 1. Pick ready work
 
+**Red `main` comes first** (PROCESS.md P6 "Merge conditions", red-`main` ownership). Before
+picking, and after each merge, read `main`'s last push CI run (`gh run list --branch main --event
+push --limit 1`). If it is red and there is neither an open PR that fixes or reverts the failing
+run nor a fix issue for it with a governing claim (`work-issue` §1 step 4), the fix is the first
+issue this loop works: claim the existing fix issue, or create a `work-unit` fix issue for the
+failure under PROCESS.md P7 and claim it, and run `work-issue` on it ahead of every other
+candidate. Open PRs of other issues wait for it (their claims stay live) and resume once `main`
+is green.
+
 The units of work are GitHub issues. An issue is **ready** when it is open, labelled `ready`
 (every issue in its "Depends on" list is satisfied: closed as completed by a merged PR, or
 explicitly replaced as `work-issue` §1 step 2 describes), not `in-progress`, not labelled

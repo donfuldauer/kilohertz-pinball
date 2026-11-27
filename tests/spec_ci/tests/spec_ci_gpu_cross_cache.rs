@@ -159,7 +159,7 @@ fn gpu_cross_cache_build_budget_clamps_to_the_job_cap() {
     let lines: Vec<&str> = script.lines().map(str::trim).collect();
     let test_lines: Vec<&str> = test_script.lines().map(str::trim).collect();
     for formula in [
-        r#"if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi"#,
+        r#"if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=5; fi"#,
         "elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))",
         "minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))",
     ] {
@@ -295,17 +295,17 @@ fn minutes_of(start: u64, now: u64, cache_hit: &str) -> i64 {
 fn gpu_cross_cache_budget_leaves_time_for_the_cache_save() {
     const T0: u64 = 1_000_000;
     // (a) Cold run (no exact cache hit), 25 min after the first step: elapsed rounds to
-    // 25 + 1 min set-up allowance, reserve 8 -> 45 - 8 - 26 = 11.
-    assert_eq!(minutes_of(T0, T0 + 25 * 60, "false"), 11);
-    // A partial minute rounds up: 25 min 1 s counts as 26 (+1) -> 10, exactly MIN_TEST_MIN.
-    assert_eq!(minutes_of(T0, T0 + 25 * 60 + 1, ""), 10);
+    // 25 + 1 min set-up allowance, reserve 5 (issue #220, was 8) -> 45 - 5 - 26 = 14.
+    assert_eq!(minutes_of(T0, T0 + 25 * 60, "false"), 14);
+    // A partial minute rounds up: 28 min 1 s counts as 29 (+1) -> 10, exactly MIN_TEST_MIN.
+    assert_eq!(minutes_of(T0, T0 + 28 * 60 + 1, ""), 10);
     // Warm run (exact hit, save skipped): 12 min used, reserve 1 -> 45 - 1 - 13 = 31,
     // which covers the 15.5-minute test run.
     assert_eq!(minutes_of(T0, T0 + 12 * 60, "true"), 31);
     // (b) Too little time left: the step fails before the test step (non-zero exit), writes
     // no `minutes=` line and reports the reason. Previously the clamp wrote minutes=1 here
-    // (assert_eq!(run_budget(T0, T0 + 44 * 60, "false"), 1)), eating into the 8-minute reserve.
-    for (used, hit) in [(44u64, "false"), (30, "false"), (27, ""), (40, "true")] {
+    // (assert_eq!(run_budget(T0, T0 + 44 * 60, "false"), 1)), eating into the cache-save reserve.
+    for (used, hit) in [(44u64, "false"), (30, "false"), (31, ""), (40, "true")] {
         let b = run_budget(T0, T0 + used * 60, hit);
         assert!(!b.success, "used {used} min, hit {hit:?} must fail");
         assert!(b.minutes.is_empty(), "no minutes= below the threshold");
@@ -314,7 +314,7 @@ fn gpu_cross_cache_budget_leaves_time_for_the_cache_save() {
     }
     // (c) The reserve is never reduced: every value written ends at least `reserve` minutes
     // before the job cap, and is at least MIN_TEST_MIN.
-    for (hit, reserve) in [("false", 8i64), ("true", 1)] {
+    for (hit, reserve) in [("false", 5i64), ("true", 1)] {
         for used in 0..=60u64 {
             let b = run_budget(T0, T0 + used * 60, hit);
             for m in &b.minutes {

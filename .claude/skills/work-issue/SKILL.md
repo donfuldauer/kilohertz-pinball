@@ -30,6 +30,9 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
      counts, §1 step 2). If no such issue and PR can be identified (for example the last open
      entry was a "None" condition), change the label without a comment and say so in the RUN_LOG
      row.
+   - **Red `main` comes first.** Read `main`'s last push CI run (`gh run list --branch main
+     --event push --limit 1`). If it is red, apply §1 step 5's check; when it says to take the
+     fix, the fix issue is this session's candidate before any other (claim it with step 4).
    - **Resume abandoned work next.** Candidates are open issues labelled `in-progress` (a closed
      issue that still carries the label is skipped) and your open PRs. Neither may belong to an
      issue labelled `status:blocked-failure` or `blocked`; those wait for a person or for their
@@ -152,6 +155,16 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
       clears `status:blocked-failure` replaces it with `ready` (as §7 step 3 does for
       dependencies), and the person who reopens a closed issue for more work adds `ready` when
       reopening it; either makes the issue selectable again.
+5. **Red `main` (PROCESS.md P6 "Merge conditions", red-`main` ownership).** After the claim
+   holds, and again whenever §7 finds `main`'s last push CI red, read `main`'s last push CI run.
+   If it is red, check for (i) an open PR that fixes or reverts the failing run, and (ii) a fix
+   issue for the failure with a governing claim (step 4's rules). If either exists, continue; your
+   PR waits at §7 until `main` is green. If neither exists, take the fix first: claim the existing
+   fix issue with step 4, or create a `work-unit` fix issue for the failure under PROCESS.md P7
+   (failing run, job and first error in the body; labels, phase and tracking issue as for
+   discovered work) and claim it. Work that fix issue through §2–§7 to merge with priority over
+   this issue: this issue's claim stays live (do not release it) and its PR waits. Then resume
+   this issue where it stopped.
 
 ## 2. Branch
 
@@ -346,6 +359,11 @@ single documentation-only RUN_LOG-row commit of §6 step 4, which is not itself 
 `pr-checks`, the last work-verifier `pass`, and the phase's automated gates, and a milestone's
 exit criteria, are on that final head, and the merge names it; the P5 phase gate on `main` is
 confirmed after the merge):
+
+If `main`'s last push CI is red, only a PR that fixes or reverts the failing run may merge
+(PROCESS.md P6). When this PR is not that fix, run §1 step 5 now: unless an open fix or revert PR
+or a fix issue with a governing claim exists, take the fix issue first and come back to this PR
+once `main` is green.
 
 0. Immediately before the merge call, after the last wait for CI, the verifier or CodeRabbit,
    run §5 step 2's gate test and ordering check again. If a lower-numbered issue of the phase
