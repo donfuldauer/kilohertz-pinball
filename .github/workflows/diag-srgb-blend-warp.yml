@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Runs per mode (pageheap uses at most 20)
+        description: Runs per mode (pageheap uses at most 20); a push run uses 200
         type: string
         default: "50"
   push:
@@ -132,6 +132,7 @@ jobs:
     env:
       DIAG_MODE: ${{ matrix.mode }}
       RUNS_INPUT: ${{ inputs.runs }}
+      EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Job start
         id: start
@@ -255,7 +256,9 @@ jobs:
           if (-not (Test-Path $wd)) { Write-Host "::error::working directory $wd missing"; exit 1 }
           if ($mode -eq 'pageheap' -and -not $env:CDB_EXE) { Write-Host "::error::CDB_EXE not set"; exit 1 }
 
-          $n = 50; $parsed = 0
+          # workflow_dispatch defaults to 50 (input default); a push has an empty input and uses 200.
+          $n = if ($env:EVENT_NAME -eq 'push') { 200 } else { 50 }
+          $parsed = 0
           if ([int]::TryParse("$env:RUNS_INPUT", [ref]$parsed) -and $parsed -gt 0) { $n = $parsed }
           if ($mode -eq 'pageheap') { $n = [Math]::Min($n, 20) }
           $timeoutMs = 300000
@@ -310,6 +313,20 @@ jobs:
             for ($k = 0; $k -lt $l.Count; $k++) { if ($l[$k] -match $rx) { return $l[$k..([Math]::Min($l.Count - 1, $k + $max - 1))] -join "`n" } }
             return "(no line matched '$rx'; last lines)`n" + (($l | Select-Object -Last $max) -join "`n")
           }
+          # Evidence that the tests really ran: the libtest result line and the adapter line.
+          function Get-Evidence([string]$text) {
+            $tests = 'none'; $passed = 0; $ok = $false
+            $m = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored')
+            if ($m.Success) {
+              $tests = '{0}/{1}/{2}' -f $m.Groups[2].Value, $m.Groups[3].Value, $m.Groups[4].Value
+              $passed = [int]$m.Groups[2].Value
+              $ok = ($m.Groups[1].Value -eq 'ok')
+            }
+            $adapter = 'none'
+            $am = [regex]::Match($text, '(?m)\] adapter:[ \t]*(.*?)[ \t\r]*$')
+            if ($am.Success -and $am.Groups[1].Value.Length -gt 0) { $adapter = $am.Groups[1].Value }
+            [pscustomobject]@{ Tests = $tests; Passed = $passed; Ok = $ok; Adapter = $adapter }
+          }
           function Get-Class([string]$exit) {
             switch ($exit) {
               '0x00000000' { 'pass' } '0x00000065' { 'fail' } '0xC0000374' { 'heap_corruption' } 'TIMEOUT' { 'timeout' } default { 'other_exit' }
@@ -317,7 +334,9 @@ jobs:
           }
 
           $tsv = Join-Path $logDir 'summary.tsv'
-          "run`texit`tclass`tfailed_lines`tduration_s`td3d12_errors`tfault" | Set-Content $tsv
+          "run`texit`tclass`tfailed_lines`tduration_s`td3d12_errors`tfault`ttests`tadapter" | Set-Content $tsv
+          $q = '"'
+          $adapters = [System.Collections.Generic.List[string]]::new(); $testsPassedTotal = 0
           $count = @{ pass = 0; fail = 0; heap_corruption = 0; timeout = 0; other_exit = 0 }
           $hist = @{}; $excerpts = @(); $faultStack = $null
           $done = 0; $failedLineRuns = 0; $d3d12Err = 0; $d3d12Warn = 0; $validationLines = 0; $faults = 0; $stopped = ''
@@ -343,16 +362,22 @@ jobs:
               $text = $r.Out + "`n" + $r.Err
               $fault = $false; $exit = $r.Exit
             }
+            $ev = Get-Evidence $text
             $class = Get-Class $exit
+            # Exit 0 without a libtest "test result: ok." line means the tests did not run.
+            if ($class -eq 'pass' -and -not $ev.Ok) { $class = 'other_exit' }
             $count[$class]++; $done = $i
-            $hist[$exit] = 1 + [int]$hist[$exit]
+            $hk = "$exit`t$class"
+            $hist[$hk] = 1 + [int]$hist[$hk]
+            if ($ev.Ok) { $testsPassedTotal += $ev.Passed }
+            if (-not $adapters.Contains($ev.Adapter)) { $adapters.Add($ev.Adapter) }
             $failed = Get-Count $text 'FAILED|panicked at'
             if ($failed -gt 0) { $failedLineRuns++ }
             $errs = Get-Count $text 'D3D12 ERROR'
             $d3d12Err += $errs; $d3d12Warn += Get-Count $text 'D3D12 WARNING'; $validationLines += Get-Count $text '(?i)validation'
             $dur = [Math]::Round($r.Seconds, 1).ToString($inv)
-            "$i`t$exit`t$class`t$failed`t$dur`t$errs`t$fault" | Add-Content $tsv
-            Write-Host "$tag exit=$exit class=$class failed_lines=$failed d3d12_errors=$errs fault=$fault ${dur}s"
+            "$i`t$exit`t$class`t$failed`t$dur`t$errs`t$fault`t$($ev.Tests)`t$($ev.Adapter)" | Add-Content $tsv
+            Write-Host "$tag exit=$exit class=$class failed_lines=$failed d3d12_errors=$errs fault=$fault tests=$($ev.Tests) adapter=$q$($ev.Adapter)$q ${dur}s"
             if (($class -ne 'pass' -or $fault) -and $excerpts.Count -lt 3) {
               $adapter = ($text -split "`r?`n" | Where-Object { $_ -match '\] adapter:' } | Select-Object -First 1)
               $outLines = ($r.Out -split "`r?`n" | Where-Object { $_ -match 'FAILED|panicked at|^test |test result' } | Select-Object -First 80) -join "`n"
@@ -381,12 +406,14 @@ jobs:
               $dbgRuns = $j; $dbgErr += Get-Count $r.Out 'D3D12 ERROR'
               if (-not $dbgLines) { $dbgLines = ($r.Out -split "`r?`n" | Where-Object { $_ -match 'D3D12 (ERROR|WARNING|CORRUPTION)' } | Select-Object -First 40) -join "`n" }
               $dur = [Math]::Round($r.Seconds, 1).ToString($inv)
-              Write-Host "$tag cdb_exit=$($r.Exit) d3d12_error_lines=$(Get-Count $r.Out 'D3D12 ERROR') ${dur}s"
+              $dev = Get-Evidence ($r.Out + "`n" + $r.Err)
+              Write-Host "$tag cdb_exit=$($r.Exit) d3d12_error_lines=$(Get-Count $r.Out 'D3D12 ERROR') tests=$($dev.Tests) adapter=$q$($dev.Adapter)$q ${dur}s"
             }
           }
 
           $result = "RESULT mode=$mode runs=$done pass=$($count.pass) fail=$($count.fail) heap_corruption=$($count.heap_corruption) timeout=$($count.timeout) other_exit=$($count.other_exit)"
           $result += " runs_with_FAILED_or_panic_lines=$failedLineRuns requested=$n"
+          $result += " adapters=$($adapters -join ';') tests_passed_total=$testsPassedTotal"
           if ($mode -eq 'validation') { $result += " d3d12_errors=$d3d12Err d3d12_warnings=$d3d12Warn validation_lines=$validationLines dbg_runs=$dbgRuns dbg_d3d12_errors=$dbgErr" }
           if ($mode -eq 'pageheap') { $result += " faults=$faults" }
           if ($stopped) { $result += " stopped=$stopped" }
@@ -394,7 +421,7 @@ jobs:
           $result | Set-Content (Join-Path $logDir 'result.txt')
 
           $fence = '```'
-          $rows = ($hist.GetEnumerator() | Sort-Object Name | ForEach-Object { "| $($_.Name) | $(Get-Class $_.Name) | $($_.Value) |" }) -join "`n"
+          $rows = ($hist.GetEnumerator() | Sort-Object Name | ForEach-Object { $kc = $_.Name -split "`t"; "| $($kc[0]) | $($kc[1]) | $($_.Value) |" }) -join "`n"
           $md = @"
           ## srgb_blend_gpu diagnosis: $mode
 
@@ -402,8 +429,8 @@ jobs:
           $result
           $fence
 
-          Classes: pass = exit 0, fail = exit 0x00000065 (libtest test failure), heap_corruption = 0xC0000374,
-          timeout = killed after 300 s, other_exit = anything else. In pageheap the exit code is the debuggee's
+          Classes: pass = exit 0 and a libtest "test result: ok." line, fail = exit 0x00000065 (libtest test failure), heap_corruption = 0xC0000374,
+          timeout = killed after 300 s, other_exit = anything else (including exit 0 without a result line). In pageheap the exit code is the debuggee's
           (from cdb's exit-process event); a fault run ended in the debugger.
 
           | exit code | class | runs |

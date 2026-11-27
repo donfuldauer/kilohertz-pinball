@@ -9315,7 +9315,7 @@ existing cap.
 ## #209 KP-100 — diagnostic workflow design
 
 **Decision:** Phase 1 of #209 adds one stand-alone workflow, `.github/workflows/diag-srgb-blend-warp.yml`.
-It triggers only on `workflow_dispatch` (input `runs`, default 50) and on a push to an
+It triggers only on `workflow_dispatch` (input `runs`, default 50; a push run uses 200) and on a push to an
 `issue/209-*` branch that changes the workflow file itself; it has no `pull_request` trigger, is
 not referenced from `ci.yml` and is not a required check. The push trigger stays after merge. A
 `build` job compiles the unmodified `srgb_blend_gpu` test binary once (`cargo test --no-run
@@ -9329,8 +9329,10 @@ name> /full` for that one image name and disabled in an `if: always()` step.
 
 Details fixed by this entry:
 - Exit codes are recorded as uint32 hex. RESULT classes are disjoint and add up to `runs`:
-  `pass` = 0, `fail` = 0x00000065 (libtest's test-failure exit 101), `heap_corruption` =
-  0xC0000374, `timeout` = killed after 300 s, `other_exit` = anything else. The RESULT line also
+  `pass` = exit 0 and a libtest `test result: ok.` line in the run's output (exit 0 without one
+  means the tests did not run and counts as `other_exit`), `fail` = 0x00000065 (libtest's
+  test-failure exit 101), `heap_corruption` = 0xC0000374, `timeout` = killed after 300 s,
+  `other_exit` = anything else. The RESULT line also
   carries `runs_with_FAILED_or_panic_lines` and `requested`, plus `stopped=` when the loop stops
   early. The loop stops starting runs 82 min after the job starts, so the logs are still uploaded
   within the 90 min cap.
@@ -9345,6 +9347,15 @@ Details fixed by this entry:
 - The validation leg also runs the exe 3 extra times under cdb when cdb is available. Without a
   logger installed, wgpu does not print the D3D12 debug layer's OutputDebugString text, but a
   debugger receives it. These runs are counted separately (`dbg_runs`, `dbg_d3d12_errors`).
+- Evidence in the job log (the per-run artifacts cannot be downloaded from the agent
+  environment): every run line and `summary.tsv` row carries `tests=<passed>/<failed>/<ignored>`
+  from libtest's `test result:` line (`none` if absent; a `FAILED.` result line is reported too
+  but is not a pass) and `adapter="<text after 'adapter: '>"` (`none` if absent). The RESULT line
+  adds `adapters=<distinct adapters joined by ;>` and `tests_passed_total=<sum>`. The expected
+  passed count is not hard-coded.
+- Run count: `workflow_dispatch` keeps the default 50; a `push` run (empty `runs` input) uses 200
+  for as-is, serial and validation, for more evidence against the ~1/58 historic failure rate.
+  Pageheap stays at min(N, 20). The 82 min budget check before each run still bounds the loop.
 - The adapter line is matched as `] adapter:` because `context_for_tests` prints it as
   `[<test name>] adapter: …`.
 
