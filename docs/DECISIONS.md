@@ -9389,3 +9389,41 @@ decision (what the build contains) stands.
 holds.
 **Alternatives:** Keep the example as a thin wrapper (keeps the SDL3 build-header requirement for
 build.sh).
+
+## #211 — Newton captive ball rests at an end stop under gravity
+
+**Decision:** Root cause (confirmed by instrumenting `NewtonChain::advance` on the one-ball chain
+`pin_sim` builds, 6.5° pitch, 1 ms steps; the hypothesis held): the ball sits on the `t = 0` stop;
+each step gravity adds `5/7 g sin p dt = -7.93e-4` m/s (less the hold, -7.79e-4) pointing into the
+stop, and `bounce_at_stops` treated that as an impact (`speed = -e u`) with the steel–steel chain
+restitution e = 0.6 (the pair table's, not 0.37). The ball hopped off at 4.7e-4 m/s, and while it
+stayed within `CHAIN_TOUCH` of the stop the same reflection repeated every step, converging to the
+fixed point `u* = e g'/(1 + e) = 2.92e-4` m/s outward and a creep of ~0.29 mm/s, up to
+`CHAIN_TOUCH` (2e-5 m) by tick ~70, where it hovered. Fix, the rest rule: at an end stop, a speed
+pointing into the stop whose magnitude is at most the ball's rest speed
+`REST_SPEED + |5/7 g_along dt|` (`REST_SPEED = 1e-3` m/s, the order of the solver's
+`REST_SLOP_SPEED`, plus what gravity gives the ball along its path in this step) is not reflected:
+the speed is set to 0 and the ball is placed exactly on the stop. It applies in `bounce_at_stops`
+(ball already within `CHAIN_TOUCH`) and in `drift` (ball reaching the stop during the step). Faster
+arrivals reflect with e exactly as before. No digest moved: every pin_physics suite, including
+`ball_seam_bitident`, `spec_ball_determinism`, `ball_chain_*` and `spec_ball_criteria`, passes
+unchanged, so nothing was re-baselined there; the replay fixture (no Newton ball) still gives
+`state_hash=25097c21c2c3adc1`. Simulation output does change for tables with a Newton ball: the
+greybox autoplay pin `crates/pin_sim/tests/autoplay_endless.rs`
+(`the_pre_fix_greybox_traps_are_caught_and_named`, game 6 end tick) moves from 82 935 to 84 586
+(82 935 again with the rule disabled). That file is owned by #138, so its re-baseline is a request
+outside the #211 owned paths. The #103 tests (`crates/pin_sim/tests/spec_kp023_mech_motion.rs`,
+`crates/pin_sim/tests/mech_motion_impl.rs`), which tolerate the old settle (swing below 1e-3 rad
+over the first 20 ticks), may now be tightened to require zero swing at rest; that is a request
+outside the #211 owned paths, not an edit.
+**Rationale:** A ball pressed on a stop by gravity feels a contact force, not an impact; with
+gravity applied as a per-step impulse, the speed it gains in one step is the artefact to absorb.
+A constant 1e-3 m/s alone fails above about 8° of pitch (the one-step gain at 15° is 1.8e-3 m/s),
+so the threshold scales with the step's gain; the 1e-3 m/s margin also absorbs a neighbour's
+small push in a pressed chain. A bouncing ball's arrivals decay geometrically with e, so it
+settles on the low end in finite time (about 1.5 s from halfway up the 50 mm path at e = 0.6).
+Real impacts in every existing test (0.2 to 20 m/s) are far above the threshold.
+**Alternatives:** A fixed `REST_SPEED` only (fails at steep pitches); only the one-step gravity
+gain (a pressed chain's tiny neighbour impulses would still bounce); skip gravity for a ball on
+the stop (changes the pressed-chain and finding-G behaviour bit for bit); a new tunable in
+physics_defaults.toml (owned elsewhere; the brief rules it out).
