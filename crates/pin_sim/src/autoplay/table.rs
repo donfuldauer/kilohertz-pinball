@@ -43,6 +43,10 @@ pub struct FlipperInfo {
     pub radius_m: f32,
     /// Signed sweep, rad (+ = counter-clockwise about the surface normal).
     pub sweep_rad: f32,
+    /// Unit normal of the plane the bat sweeps in (the manifest's
+    /// `surface_normal`, normalised; world +Z when it is zero-length or
+    /// non-finite, see [`unit_normal_or_z`]).
+    pub surface_normal: Vec3,
     /// The cabinet button that drives it (`None` for analog or automatic
     /// staging, which the bot does not press).
     pub button: Option<CabinetInput>,
@@ -220,6 +224,7 @@ impl TableInfo {
                     length_m: length_mm * 1.0e-3,
                     radius_m: radius_mm * 1.0e-3,
                     sweep_rad: cfg.sweep_angle_deg.to_radians(),
+                    surface_normal: unit_normal_or_z(cfg.surface_normal),
                     button,
                 }
             })
@@ -362,6 +367,25 @@ impl TableInfo {
             .map(|s| s.name.as_str())
     }
 
+    /// Where switch `id` is, m: its own zone centre when it declares one,
+    /// else the position of the first mech (declaration order) that has a
+    /// position and uses `id` as its switch (a bumper ring, a VUK or a
+    /// target bank switch declared without a zone); `None` when neither
+    /// exists.
+    #[must_use]
+    pub fn switch_position_m(&self, id: SwitchId) -> Option<[f32; 3]> {
+        self.switches
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.position_m)
+            .or_else(|| {
+                self.mechs
+                    .iter()
+                    .filter(|m| m.switch == Some(id))
+                    .find_map(|m| m.position_m)
+            })
+    }
+
     /// The feature nearest to `p` (table frame, m; the plane distance) and
     /// its distance; `None` when the table has no positioned feature.
     #[must_use]
@@ -396,6 +420,23 @@ pub fn fmt_mm(p: Vec3) -> String {
         }
     };
     format!("({}, {}, {}) mm", c(p.x), c(p.y), c(p.z))
+}
+
+/// `n` as a unit vector: normalised when finite and longer than 1e-6,
+/// else world +Z (a degenerate manifest normal never yields NaN). An
+/// exactly axis-aligned `[0, 0, z]` with `z > 0` gives exactly `+Z`.
+#[must_use]
+pub fn unit_normal_or_z(n: [f32; 3]) -> Vec3 {
+    let v = Vec3::from_array(n);
+    if !v.is_finite() {
+        return Vec3::Z;
+    }
+    let len = v.length();
+    if !(len.is_finite() && len > 1.0e-6) {
+        return Vec3::Z;
+    }
+    let u = v / len;
+    if u.is_finite() { u } else { Vec3::Z }
 }
 
 /// Seconds to whole ticks (ms), rounded; non-finite or negative is 0.
@@ -441,5 +482,81 @@ mod tests {
         assert_eq!(ms_ticks(f32::NAN), 0);
         assert_eq!(ms_ticks(-1.0), 0);
         assert_eq!(fmt_mm(Vec3::new(0.1, 0.2, f32::NAN)), "(100, 200, NaN) mm");
+    }
+
+    #[test]
+    fn unit_normal_edge_cases() {
+        assert_eq!(unit_normal_or_z([0.0, 0.0, 1.0]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([0.0, 0.0, 3.0]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([0.0, 2.0, 0.0]), Vec3::Y);
+        assert_eq!(unit_normal_or_z([0.0; 3]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([1.0e-9, 0.0, 0.0]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([f32::NAN, 0.0, 1.0]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([f32::INFINITY, 0.0, 0.0]), Vec3::Z);
+        assert_eq!(unit_normal_or_z([f32::MAX, f32::MAX, 0.0]), Vec3::Z);
+        let n = unit_normal_or_z([0.0, -1.0, 1.0]);
+        assert!((n.length() - 1.0).abs() < 1e-6 && n.y < 0.0 && n.z > 0.0);
+    }
+
+    proptest::proptest! {
+        /// Any input (including hostile bit patterns) gives a finite unit
+        /// vector.
+        #[test]
+        fn unit_normal_is_always_finite_unit(
+            x in proptest::num::f32::ANY,
+            y in proptest::num::f32::ANY,
+            z in proptest::num::f32::ANY,
+        ) {
+            let n = unit_normal_or_z([x, y, z]);
+            proptest::prop_assert!(n.is_finite());
+            proptest::prop_assert!((n.length() - 1.0).abs() < 1.0e-5, "{n}");
+        }
+    }
+
+    fn info_with(switches: Vec<SwitchInfo>, mechs: Vec<MechInfo>) -> TableInfo {
+        TableInfo {
+            table_id: "t".into(),
+            flippers: Vec::new(),
+            switches,
+            mechs,
+            shots: Vec::new(),
+            modes: Vec::new(),
+            features: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn switch_position_falls_back_to_the_mech() {
+        let sw = |n: u16, pos: Option<[f32; 3]>| SwitchInfo {
+            name: format!("s{n}"),
+            id: SwitchId(n),
+            kind: SwitchKind::Leaf,
+            position_m: pos,
+            radius_m: None,
+            cabinet: false,
+        };
+        let mech = |sw: Option<u16>, pos: Option<[f32; 3]>| MechInfo {
+            name: "m".into(),
+            kind: MechKind::Bumper,
+            switch: sw.map(SwitchId),
+            position_m: pos,
+        };
+        let info = info_with(
+            vec![sw(1, Some([0.1, 0.2, 0.0])), sw(2, None), sw(3, None)],
+            vec![
+                mech(Some(1), Some([9.0, 9.0, 9.0])),
+                mech(Some(2), None),
+                mech(Some(2), Some([0.3, 0.4, 0.0])),
+                mech(Some(2), Some([0.5, 0.6, 0.0])),
+            ],
+        );
+        // Own zone wins over a mech.
+        assert_eq!(info.switch_position_m(SwitchId(1)), Some([0.1, 0.2, 0.0]));
+        // First positioned mech in declaration order.
+        assert_eq!(info.switch_position_m(SwitchId(2)), Some([0.3, 0.4, 0.0]));
+        // No zone, no mech.
+        assert_eq!(info.switch_position_m(SwitchId(3)), None);
+        // Undeclared switch still finds its mech.
+        assert_eq!(info.switch_position_m(SwitchId(7)), None);
     }
 }
