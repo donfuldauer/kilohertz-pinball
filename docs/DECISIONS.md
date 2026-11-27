@@ -10840,3 +10840,57 @@ In threads.rs the gate's `record_close` and #149's `record_latch` sit side by si
 **Rationale.** The seed `cc 9fc5bdc8…` (CI: 189 / 128 / 59) was instrumented with per-term counts (`cargo test -p pin_tablegen --lib pruned_headroom_equals_unpruned` with temporary eprintln output). In the final shrunk case, the unpruned legacy run had 72 candidates, 0 pruned and 56 wall queries (128). The pruned legacy run had 72 candidates, 4 pruned, so 68 counted; one seed pair (6, 8) with 58 wall queries (seed_cost 59); and 62 main-loop wall queries. In total that is 68 + 59 + 62 = 189 > 128 + 59 = 187. The candidate part is 68 + 1 <= 72 + 1. The excess is in the main loop's pair (support 6, ceiling 8). Unpruned, pairs (4, 8) and (4, 9) first lowered the kept gap to 0.024229, so (6, 8) was scanned with `limit = 0.024229` and made 40 wall queries. Pruned, rule 2 skipped (4, *) and (5, *) (floor > seed 0.023048), so (6, 8) was scanned with `limit = need = 0.028`, and more of its samples passed `gap < limit` and reached the wall test (58 queries). This confirms the working hypothesis and the #231 entry's own words ("only change which intermediate entries existed, and so the wall-test counts"). No pair is counted twice: the seed pair being scanned again in the main loop is the documented counter definition ("plus one per seed pair (and its wall queries)"), and the bound's `+ seed` term was meant to cover it. Fixing the code instead, for example by starting each mesh's `limit` at its seed, would change the `gap < limit` sequence (a sample with `gap == seed == M` would no longer be kept), so the result would no longer be bit-identical to the unpruned loop. The other two CI seeds (`9d3c91e6…`: 283 / 206 / 69; `69e7730a…`: 776 / 456 / 254) fail on the old assertion and pass on the new one. `PROPTEST_CASES=20000` passes with no new counterexample. A mutation that counts every pair the seed pass bounds fails the new assertion (candidate part 21 > 16 + 1), so the bound still catches a pruning that examines extra candidate pairs (R10).
 
 **Alternatives.** Keep the whole-counter bound and change `worst_under` so the pruned run makes no more wall queries (rejected: it either changes the kept-entry sequence or needs a second pass, and the pruning is not at fault). Drop the pair-count assertion (rejected: R10). Bound the extra wall queries by an algorithmic quantity (rejected: it depends on the full kept-gap history; no simple closed form is a true invariant).
+
+
+## #211 — Newton captive ball rests at an end stop under gravity
+
+**Decision:** Root cause (confirmed by instrumenting `NewtonChain::advance` on the one-ball chain
+`pin_sim` builds, 6.5° pitch, 1 ms steps; the hypothesis held): the ball sits on the `t = 0` stop;
+each step gravity adds `5/7 g sin p dt = -7.93e-4` m/s (less the hold, -7.79e-4) pointing into the
+stop, and `bounce_at_stops` treated that as an impact (`speed = -e u`) with the steel–steel chain
+restitution e = 0.6 (the pair table's, not 0.37). The ball hopped off at 4.7e-4 m/s, and while it
+stayed within `CHAIN_TOUCH` of the stop the same reflection repeated every step, converging to the
+fixed point `u* = e g'/(1 + e) = 2.92e-4` m/s outward and a creep of ~0.29 mm/s, up to
+`CHAIN_TOUCH` (2e-5 m) by tick ~70, where it hovered. Fix, the rest rule: at an end stop, a speed
+pointing into the stop whose magnitude is at most the ball's rest speed
+`REST_SPEED + |5/7 g_along dt|` (`REST_SPEED = 1e-3` m/s, the order of the solver's
+`REST_SLOP_SPEED`, plus what gravity gives the ball along its path in this step) is not reflected:
+the speed is set to 0 and the ball is placed exactly on the stop. It applies in `bounce_at_stops`
+(ball already within `CHAIN_TOUCH`) and in `drift` (ball reaching the stop during the step). Faster
+arrivals reflect with e exactly as before. No digest moved: every pin_physics suite, including
+`ball_seam_bitident`, `spec_ball_determinism`, `ball_chain_*` and `spec_ball_criteria`, passes
+unchanged, so nothing was re-baselined there; the replay fixture (no Newton ball) still gives
+`state_hash=25097c21c2c3adc1`. Simulation output does change for tables with a Newton ball: the
+greybox autoplay pin `crates/pin_sim/tests/autoplay_endless.rs`
+(`the_pre_fix_greybox_traps_are_caught_and_named`, game 6 end tick) moves from 82 935 to 84 586
+(82 935 again with the rule disabled). That file is owned by #138, so its re-baseline is a request
+outside the #211 owned paths. The #103 tests (`crates/pin_sim/tests/spec_kp023_mech_motion.rs`,
+`crates/pin_sim/tests/mech_motion_impl.rs`), which tolerate the old settle (swing below 1e-3 rad
+over the first 20 ticks), may now be tightened to require zero swing at rest; that is a request
+outside the #211 owned paths, not an edit.
+**Rationale:** A ball pressed on a stop by gravity feels a contact force, not an impact; with
+gravity applied as a per-step impulse, the speed it gains in one step is the artefact to absorb.
+A constant 1e-3 m/s alone fails above about 8° of pitch (the one-step gain at 15° is 1.8e-3 m/s),
+so the threshold scales with the step's gain; the 1e-3 m/s margin also absorbs a neighbour's
+small push in a pressed chain. A bouncing ball's arrivals decay geometrically with e, so it
+settles on the low end in finite time (about 1.5 s from halfway up the 50 mm path at e = 0.6).
+Real impacts in every existing test (0.2 to 20 m/s) are far above the threshold.
+**Alternatives:** A fixed `REST_SPEED` only (fails at steep pitches); only the one-step gravity
+gain (a pressed chain's tiny neighbour impulses would still bounce); skip gravity for a ball on
+the stop (changes the pressed-chain and finding-G behaviour bit for bit); a new tunable in
+physics_defaults.toml (owned elsewhere; the brief rules it out).
+
+## #211 tester — rolling kinetic energy in the energy checks
+**Decision:** The energy checks in the KP-102 tests (strike test and proptest 7b) use E = 0.7 v² − g·p per unit mass, not the brief's 0.5 v² − g·p.
+**Rationale:** The brief's own contract says gravity along the path accelerates the captive at 5/7 of the along-path component, i.e. it is a rolling ball with kinetic energy (1/2)(1 + 2/5) v² = 0.7 v². With 0.5 v² the expression rises by about 3e-4 per tick during a legitimate roll; with 0.7 v² the per-tick change is about −2e-5. The 1e-6 slack and all other assertions are unchanged.
+**Alternatives:** Keep 0.5 v² (contradicts the 5/7 contract, fails on correct behaviour); widen the slack (weakens the test).
+
+## #211 — autoplay_endless re-baseline after the Newton end-stop rest rule
+
+**Decision:** Game 6's pinned end tick in `the_pre_fix_greybox_traps_are_caught_and_named` is re-baselined 82_935 -> 84_586 (still GameOver, no EndlessBall, no vuk_sw). Game 82 is unchanged in kind (EndlessBall bumper_1_ring at tick 305_924, ends max_ticks at 330_000). Game 763 no longer produces its StuckBall: it now ends game_over at tick 46_037 with no findings. The sling-pocket pin is re-seeded from game 763 to game 756 (same trap class), so the test keeps proving all three trap classes; 763 is replaced, not weakened.
+
+**Search (round 2):** a scratch test (removed, not committed) played games 0..1000 of the soak (seed 1, standard skill, legacy bot settings, cap 120_000, two worker threads, `cargo test -p pin_sim --test zz_scratch_211 -- --nocapture --ignored`) and printed every game with a StuckBall. Candidates: game 756 `walls[3] @ (107, 241, 14) mm` at tick 47_867 (GameEnd::Stuck, "within one ball diameter"); game 930 `walls[3] @ (114, 247, 14) mm` at tick 30_805 (same class); game 957 `walls[0] @ (240, 1039, 14) mm` at tick 71_246 (different wall and place, rejected). The lowest game of the sling-pocket class, 756, is pinned: exactly one StuckBall, subject `walls[3] @ (107, 241, 14) mm`, summary.end Stuck. The range 0..1000 sufficed; no extension was needed.
+
+**Rationale:** The rest rule legitimately changes output for tables with a Newton ball (R3: re-baseline once). Game 763 no longer reaching the trap means the seed no longer proves the StuckBall detector; re-seeding after intentional output changes is the established practice (44 -> 334 -> 763 -> 756). All other assertions are unchanged.
+
+**Alternatives:** Dropping or loosening the 763 assertion (rejected, R10); editing pin_sim/src to restore the trap (rejected, out of owned paths).

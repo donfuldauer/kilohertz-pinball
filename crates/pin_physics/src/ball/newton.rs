@@ -14,6 +14,14 @@ pub const MAX_CHAIN_BALLS: usize = 8;
 /// Gap (metres) up to which two captive balls count as touching.
 pub(crate) const CHAIN_TOUCH: f32 = 2.0e-5;
 
+/// Rest speed (m/s) at an end stop, on top of the speed gravity gives a
+/// ball along its path in one step: a ball reaching or pressed on a stop no
+/// faster than [`REST_SPEED`] plus that one-step gain comes to rest on the
+/// stop instead of bouncing (the order of the free-ball resting-contact slop,
+/// the solver's `REST_SLOP_SPEED`; docs/DECISIONS.md, "#211 — Newton captive
+/// ball rests at an end stop under gravity").
+pub(crate) const REST_SPEED: f32 = 1.0e-3;
+
 /// Iteration budget of the end-stop event time search
 /// (`NewtonChain::end_stop_time`); fixed for determinism.
 const END_STOP_ITERATIONS: u32 = 8;
@@ -319,6 +327,11 @@ impl NewtonChain {
         t1 <= touch && u < 0.0 || t1 >= self.path.max_t() - touch && u > 0.0
     }
 
+    /// Curve parameter of the end stop that speed `u` points to.
+    fn stop_t(&self, u: f32) -> f32 {
+        if u > 0.0 { self.path.max_t() } else { 0.0 }
+    }
+
     /// Signed distance (metres, positive past the stop) of `t1` beyond the
     /// end stop that speed `u` points to, with tangent length `len`.
     fn overshoot(&self, t1: f32, len: f32, u: f32) -> f32 {
@@ -412,10 +425,12 @@ impl NewtonChain {
 
     /// Moves every ball for `tau` seconds along the path (midpoint rule in
     /// the curve parameter, [`Self::travel`]); balls reaching an end of the
-    /// path bounce off it.
-    fn drift(&mut self, tau: f32) {
+    /// path bounce off it with the chain restitution, except that a ball
+    /// reaching it no faster than its rest speed `rest[i]` stops exactly on
+    /// it (the rest rule of [`Self::advance`]).
+    fn drift(&mut self, tau: f32, rest: &[f32; MAX_CHAIN_BALLS]) {
         let max_t = self.path.max_t();
-        for i in 0..self.len() {
+        for (i, &rest_i) in rest.iter().enumerate().take(self.len()) {
             let u = self.speed[i];
             if u == 0.0 {
                 continue;
@@ -426,6 +441,11 @@ impl NewtonChain {
             // Within the touch distance of the stop it is reached (the event
             // search stopped the step there, up to rounding).
             if self.at_stop(t1, len, u) {
+                if u.abs() <= rest_i {
+                    self.speed[i] = 0.0;
+                    self.t[i] = self.stop_t(u);
+                    continue;
+                }
                 self.speed[i] = -self.restitution * u;
             }
             self.t[i] = t1.clamp(0.0, max_t);
@@ -435,10 +455,18 @@ impl NewtonChain {
     /// Bounces, in zero time, every ball that is at an end stop (within
     /// [`CHAIN_TOUCH`]) with its speed pointing out of the path, so that it
     /// moves back during the rest of the step instead of spending it pressed
-    /// on the stop. Returns whether any ball bounced.
-    fn bounce_at_stops(&mut self) -> bool {
+    /// on the stop. Returns whether any ball's speed changed.
+    ///
+    /// Rest rule: a ball at a stop whose speed into it is at most its rest
+    /// speed `rest[i]` (see [`Self::advance`]) is not reflected; its speed
+    /// is set to 0 and it is placed exactly on the stop. Gravity pressing a
+    /// ball on the stop is a contact force, not an impact: reflecting the
+    /// speed it adds in one step made a ball at rest hop off the stop and
+    /// creep (docs/DECISIONS.md, "#211 — Newton captive ball rests at an
+    /// end stop under gravity").
+    fn bounce_at_stops(&mut self, rest: &[f32; MAX_CHAIN_BALLS]) -> bool {
         let mut any = false;
-        for i in 0..self.len() {
+        for (i, &rest_i) in rest.iter().enumerate().take(self.len()) {
             let u = self.speed[i];
             if u == 0.0 {
                 continue;
@@ -449,7 +477,12 @@ impl NewtonChain {
                 continue;
             }
             if self.at_stop(t, len, u) {
-                self.speed[i] = -self.restitution * u;
+                if u.abs() <= rest_i {
+                    self.speed[i] = 0.0;
+                    self.t[i] = self.stop_t(u);
+                } else {
+                    self.speed[i] = -self.restitution * u;
+                }
                 any = true;
             }
         }
@@ -554,13 +587,27 @@ impl NewtonChain {
     /// the factor 5/7), rolling resistance with static hold, impulse
     /// transmission between touching balls, motion with 1D continuous
     /// collision detection, and overlap correction.
+    ///
+    /// End stops reflect a ball's path speed with the chain restitution,
+    /// except at rest speed: a ball that reaches a stop, or is at one (within
+    /// [`CHAIN_TOUCH`]) with its speed pointing into it, no faster than its
+    /// rest speed `REST_SPEED + |5/7 g_along dt|` (the speed gravity gives it
+    /// along the path in this step, plus [`REST_SPEED`]) gets speed 0 and is
+    /// placed exactly on the stop. A ball at rest on a stop under gravity so
+    /// stays at rest, and a bouncing ball settles there once its bounces have
+    /// decayed (SPEC §3, Subphase 2.2; KP-102).
     pub(crate) fn advance(&mut self, dt: f32, gravity: Vec3, rolling_resistance: f32) {
         let n = self.len();
-        for i in 0..n {
+        let mut rest = [REST_SPEED; MAX_CHAIN_BALLS];
+        for (i, rest_i) in rest.iter_mut().enumerate().take(n) {
             let tan = self.tangent(i);
             let along = gravity.dot(tan);
             let across = (gravity - tan * along).length();
-            let mut u = self.speed[i] + (5.0 / 7.0) * along * dt;
+            let gain = (5.0 / 7.0) * along * dt;
+            if gain.is_finite() {
+                *rest_i = REST_SPEED + gain.abs();
+            }
+            let mut u = self.speed[i] + gain;
             let hold = (5.0 / 7.0) * max_f32(rolling_resistance, 0.0) * across * dt;
             u = if u.abs() <= hold {
                 0.0
@@ -581,7 +628,7 @@ impl NewtonChain {
         // "issue-8 — advance() zero-time stop/contact cycles (CodeRabbit G)").
         let mut zero_time = 0;
         for _ in 0..6 * n {
-            if self.bounce_at_stops() {
+            if self.bounce_at_stops(&rest) {
                 self.resolve_touching();
             }
             // Earliest time at which two neighbours come into contact, or a
@@ -608,7 +655,7 @@ impl NewtonChain {
             if tau == 0.0 {
                 zero_time += 1;
             }
-            self.drift(tau);
+            self.drift(tau, &rest);
             self.resolve_touching();
             remaining -= tau;
             if remaining.is_nan() || remaining <= 0.0 {
@@ -618,7 +665,7 @@ impl NewtonChain {
         // Event budget spent (many contacts in one step): the rest of the
         // step is integrated without events rather than dropped.
         if remaining > 0.0 {
-            self.drift(remaining);
+            self.drift(remaining, &rest);
             self.resolve_touching();
         }
         self.separate();
@@ -1223,6 +1270,218 @@ mod tests {
             c.bind(R, 0.08, 1.0);
             c.separate();
             assert_eq!((c.ball_t(0), c.ball_t(1)), (0.5, 1.5));
+        }
+    }
+
+    /// Path as `pin_sim` builds a Newton ball: two knots, 50 mm along
+    /// `(cos angle, sin angle, 0)` from a point one radius above the
+    /// playfield (one segment, `max_t = 1`).
+    fn table_path(angle_deg: f32) -> CubicSpline {
+        let a = angle_deg.to_radians();
+        let start = Vec3::new(0.3, 0.6, R);
+        let dir = Vec3::new(libm::cosf(a), libm::sinf(a), 0.0);
+        CubicSpline::interpolate(&[start, start + dir * 0.05]).unwrap()
+    }
+
+    /// Gravity on a table pitched by `pitch_deg` (+y uphill), as `pin_sim`
+    /// sets it.
+    fn table_gravity(pitch_deg: f32) -> Vec3 {
+        let p = pitch_deg.to_radians();
+        Vec3::new(0.0, -9.81 * libm::sinf(p), -9.81 * libm::cosf(p))
+    }
+
+    /// Default rolling resistance of `BallSolverConfig`.
+    const RR: f32 = 0.002;
+
+    fn table_chain(angle_deg: f32, t: f32, e: f32) -> NewtonChain {
+        let mut c = NewtonChain::new(table_path(angle_deg), ProfileId(0), &[t]).unwrap();
+        c.bind(R, 0.08, e);
+        c
+    }
+
+    /// SPEC §3 / Subphase 2.2 deliverable 4 (captive Newton balls), KP-102:
+    /// a ball at rest stays at rest. A captive ball at the low end stop
+    /// (t = 0) of a 6.5° pitched table is pressed on the stop by gravity;
+    /// that speed must not be reflected as an impact. Over 10 s of 1 ms
+    /// steps it stays within 1e-6 m of its start and its speed is at most
+    /// 1e-6 m/s after tick 1 (before #211 it hopped off at 2.9e-4 m/s and
+    /// crept to `CHAIN_TOUCH`), for restitutions from 0 to 1.
+    #[test]
+    fn idle_ball_at_the_low_stop_stays_at_rest_kp102() {
+        let g = table_gravity(6.5);
+        for &e in &[0.6f32, 0.0, 0.37, 1.0] {
+            let mut c = table_chain(90.0, 0.0, e);
+            let p0 = c.ball_position(0);
+            for tick in 1..=10_000 {
+                c.advance(1.0e-3, g, RR);
+                let off = c.ball_position(0).distance(p0);
+                assert!(off <= 1.0e-6, "e {e} tick {tick}: {off} m off");
+                assert!(
+                    c.ball_speed(0).abs() <= 1.0e-6,
+                    "e {e} tick {tick}: speed {}",
+                    c.ball_speed(0)
+                );
+            }
+        }
+    }
+
+    /// SPEC §3 / Subphase 2.2, KP-102: the same with the path reversed
+    /// (angle 270°: the low end is `t = max_t`, the ball is placed there).
+    #[test]
+    fn idle_ball_at_the_reversed_low_stop_stays_at_rest_kp102() {
+        let g = table_gravity(6.5);
+        for &e in &[0.6f32, 0.0, 1.0] {
+            let mut c = table_chain(270.0, 1.0, e);
+            assert_eq!(c.path().max_t(), 1.0);
+            assert!(c.tangent(0).y < -0.99, "low end at max_t");
+            let p0 = c.ball_position(0);
+            for tick in 1..=10_000 {
+                c.advance(1.0e-3, g, RR);
+                let off = c.ball_position(0).distance(p0);
+                assert!(off <= 1.0e-6, "e {e} tick {tick}: {off} m off");
+                assert!(c.ball_speed(0).abs() <= 1.0e-6, "e {e} tick {tick}");
+            }
+        }
+    }
+
+    /// SPEC §3 / Subphase 2.2, KP-102: a ball placed halfway up the pitched
+    /// path rolls down, bounces with decaying speed and settles at the low
+    /// end: after 10 s it is within 1e-6 m of the stop with |speed| at most
+    /// 1e-3 m/s, at both orientations of the path.
+    #[test]
+    fn ball_placed_higher_settles_at_the_low_stop_kp102() {
+        let g = table_gravity(6.5);
+        for &(angle, low) in &[(90.0f32, 0.0f32), (270.0, 1.0)] {
+            for &e in &[0.6f32, 0.0, 0.37, 0.9] {
+                let mut c = table_chain(angle, 0.5, e);
+                let stop = c.path().point(low);
+                let mut bounced = false;
+                for _ in 0..10_000 {
+                    let before = c.ball_speed(0);
+                    c.advance(1.0e-3, g, RR);
+                    bounced |= e > 0.0
+                        && before != 0.0
+                        && c.ball_speed(0).signum() != before.signum()
+                        && c.ball_speed(0) != 0.0;
+                }
+                let off = c.ball_position(0).distance(stop);
+                assert!(
+                    off <= 1.0e-6,
+                    "angle {angle} e {e}: {off} m from the low end"
+                );
+                assert!(c.ball_speed(0).abs() <= 1.0e-3, "angle {angle} e {e}");
+                assert_eq!(bounced, e > 0.0, "angle {angle} e {e}: bounces");
+            }
+        }
+    }
+
+    /// SPEC §3 / Subphase 2.2, KP-102: a real impact still reflects. A ball
+    /// at the low stop struck outward (1 m/s, which also reaches the upper
+    /// stop, and 0.2 m/s, which turns back under gravity) on the pitched
+    /// table comes back and bounces off the low stop with `e` times its
+    /// impact speed (to 1e-5 m/s), repeatedly, and, unless elastic (which
+    /// only the rolling hold slows), finally rests on the stop.
+    ///
+    /// Gravity is applied at the start of a step ([`NewtonChain::advance`]),
+    /// so the impact speed in the step that bounces is the previous speed
+    /// plus that step's gain, less the rolling hold.
+    #[test]
+    fn real_impact_at_the_low_stop_still_reflects_kp102() {
+        let g = table_gravity(6.5);
+        for &u0 in &[1.0f32, 0.2] {
+            for &e in &[0.6f32, 0.37, 1.0, 0.0] {
+                let mut c = table_chain(90.0, 0.0, e);
+                let tan = c.tangent(0);
+                let along = g.dot(tan);
+                let across = (g - tan * along).length();
+                let gain = (5.0 / 7.0) * along * 1.0e-3;
+                let hold = (5.0 / 7.0) * RR * across * 1.0e-3;
+                c.strike(0, u0);
+                let mut bounces = 0;
+                for _ in 0..10_000 {
+                    let before = c.ball_speed(0);
+                    c.advance(1.0e-3, g, RR);
+                    let after = c.ball_speed(0);
+                    if before < 0.0 && after > 0.0 {
+                        let impact = -(before + gain) - hold;
+                        assert!(
+                            (after - e * impact).abs() <= 1.0e-5,
+                            "u0 {u0} e {e} bounce {bounces}: {after} after an impact at {impact}"
+                        );
+                        // Only impacts above the rest speed bounce.
+                        assert!(impact > REST_SPEED + gain.abs(), "u0 {u0} e {e}: {impact}");
+                        bounces += 1;
+                    }
+                }
+                if e >= 0.37 {
+                    assert!(bounces >= 3, "u0 {u0} e {e}: {bounces} bounces");
+                } else {
+                    assert_eq!(bounces, 0, "u0 {u0} e {e}");
+                }
+                if e < 1.0 {
+                    assert_eq!(c.ball_t(0), 0.0, "u0 {u0} e {e}: at rest on the stop");
+                    assert_eq!(c.ball_speed(0), 0.0, "u0 {u0} e {e}");
+                }
+            }
+        }
+    }
+
+    /// The rest threshold: at a stop a speed into it at most `REST_SPEED`
+    /// above the one-step gravity gain is stopped (exactly on the stop,
+    /// within `CHAIN_TOUCH` of it), and a speed above it reflects (KP-102).
+    #[test]
+    fn rest_threshold_at_a_stop_kp102() {
+        let near = 0.5 * CHAIN_TOUCH / (2.0 * R);
+        for &(t, sign) in &[
+            (0.0f32, -1.0f32),
+            (near, -1.0),
+            (11.0, 1.0),
+            (11.0 - near, 1.0),
+        ] {
+            let end = if sign > 0.0 { 11.0 } else { 0.0 };
+            let mut c = chain(&[t], 0.5);
+            c.strike(0, sign * 0.9 * REST_SPEED);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert_eq!((c.ball_t(0), c.ball_speed(0)), (end, 0.0), "t {t}");
+            let mut c = chain(&[t], 0.5);
+            c.strike(0, sign * 1.5 * REST_SPEED);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert!(
+                (c.ball_speed(0) + 0.5 * sign * 1.5 * REST_SPEED).abs() < 1e-9,
+                "t {t}: {}",
+                c.ball_speed(0)
+            );
+        }
+        // Arriving during a step (the end-stop event) below the rest speed:
+        // the ball stops on the stop instead of bouncing.
+        let mut c = chain(&[0.5e-6 / (2.0 * R)], 1.0);
+        c.strike(0, -0.9 * REST_SPEED);
+        c.advance(1.0e-3, Vec3::ZERO, 0.0);
+        assert_eq!((c.ball_t(0), c.ball_speed(0)), (0.0, 0.0));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// SPEC §3 / Subphase 2.2, KP-102: on any pitch from 0 to 15° and
+        /// any chain restitution, an idle ball at the low stop never leaves
+        /// it by more than 1e-6 m (2 s of 1 ms steps), at either orientation
+        /// of the path.
+        #[test]
+        fn idle_ball_never_leaves_the_low_stop_kp102(
+            pitch in 0.0f32..=15.0,
+            e in 0.0f32..=1.0,
+            reversed in proptest::bool::ANY,
+        ) {
+            let (angle, low) = if reversed { (270.0, 1.0) } else { (90.0, 0.0) };
+            let g = table_gravity(pitch);
+            let mut c = table_chain(angle, low, e);
+            let p0 = c.ball_position(0);
+            for tick in 0..2000 {
+                c.advance(1.0e-3, g, RR);
+                let off = c.ball_position(0).distance(p0);
+                proptest::prop_assert!(off <= 1.0e-6, "tick {}: {} m", tick, off);
+            }
         }
     }
 
