@@ -364,13 +364,67 @@ fn req_view_006_menu_load_handoff_success() {
 /// REQ-VIEW-006 req 6: Down then Select picks the focused ready table.
 #[test]
 fn req_view_006_menu_down_select_requests_load() {
-    let (mut c, _cfg, tmp, tables) = controller("kp005_menu_sel");
+    let (mut c, _cfg, tmp, _tables) = controller("kp005_menu_sel");
     c.set_browser_enabled(true);
     c.toggle(1, &mut sink());
-    c.apply(MenuInput::Down, 2, &mut sink());
-    c.apply(MenuInput::Select, 3, &mut sink());
-    let (_, path) = c.take_load_request().expect("Select requests a load");
-    assert!(tables.iter().any(|t| t.path == path && t.is_ready()));
+    let initial = c.menu().focused_table();
+    let mut ts = 2;
+    // Down once, then again: each focused ready row is what Select loads, and
+    // the second differs from the first, so "always the first ready table"
+    // cannot pass.
+    let mut picked = Vec::new();
+    for _ in 0..2 {
+        c.apply(MenuInput::Down, ts, &mut sink());
+        ts += 1;
+        let idx = c.menu().focused_table().expect("Down focuses a table row");
+        let focused = c.menu().tables()[idx].clone();
+        assert!(focused.is_ready(), "fixture rows 0 and 1 are ready");
+        assert_ne!(Some(idx), initial, "focus moved off the initial row");
+        c.apply(MenuInput::Select, ts, &mut sink());
+        ts += 1;
+        let (id, path) = c.take_load_request().expect("Select requests a load");
+        assert_eq!(path, focused.path, "Select loads the focused row");
+        c.finish_load(id, Err("again".into()));
+        c.toggle(ts, &mut sink());
+        ts += 1;
+        if !c.is_open() {
+            c.toggle(ts, &mut sink());
+            ts += 1;
+        }
+        picked.push((idx, path));
+    }
+    assert_ne!(picked[0].0, picked[1].0);
+    assert_ne!(picked[0].1, picked[1].1);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+/// REQ-VIEW-006: disabling the browser leaves no live request behind; an
+/// untaken load fails with LOAD_NOT_WIRED and is republished.
+#[test]
+fn req_view_006_disable_clears_pending_requests() {
+    let (mut c, _cfg, tmp, tables) = controller("kp005_disable");
+    c.set_browser_enabled(true);
+    c.toggle(1, &mut sink());
+    c.apply(MenuInput::LoadTable(0), 2, &mut sink());
+    c.apply(MenuInput::Rescan, 3, &mut sink());
+    let share = pin_app::ui::MenuShare::new();
+    c.set_share(share.clone());
+    let _ = share.take();
+    c.set_browser_enabled(false);
+    let published = share.take().expect("Failed state republished");
+    assert!(matches!(
+        published.load_state(),
+        TableLoadState::Failed { error, .. } if error == LOAD_NOT_WIRED
+    ));
+    assert!(c.take_load_request().is_none());
+    assert!(!c.take_rescan_request());
+    match c.menu().load_state() {
+        TableLoadState::Failed { path, error } => {
+            assert_eq!(path, &tables[0].path);
+            assert_eq!(error, LOAD_NOT_WIRED);
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
     let _ = std::fs::remove_dir_all(tmp);
 }
 
