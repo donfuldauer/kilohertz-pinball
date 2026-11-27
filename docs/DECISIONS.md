@@ -9639,3 +9639,131 @@ stack, the rate and a complete report keeps the evidence usable.
   issue's owned paths and would hide a real concurrency bug. A follow-up issue may evaluate a wgpu
   update, or a fix, once upstream answers.
 - A per-file lock in `srgb_blend_gpu`: rejected; see the Decision.
+
+## #231 tester — Too-low-deck scaling also measured on a fixed plan (flat decks)
+
+**Decision:** Besides the brief's constant-density linear-growth tests (two flat, then two ridged,
+decks 60 mm apart, 15 mm cells, ~8k / ~30k / ~75k triangles, the area growing with the count),
+`tests/clearance_index.rs` adds `spec_2_8_6_0_kp109_too_low_dense_deck_on_fixed_plan_pairs_grow_linearly`:
+the same flat too-low decks on one fixed 690 mm plan, the density growing with the count, with the
+same ≤ 1.25 × linear bound. The ridged decks are not asserted on the fixed plan. Ties in the
+too-low-deck verdict scenes are made observable by splitting the floor into several support meshes
+(the message names a node and layer, not a triangle), and the expected node is the first one in
+mesh order that reaches the minimum.
+**Rationale:** At constant density each support sees a constant number of ceiling triangles, so
+the pre-#231 code already grew linearly there (16,900 → 60,000 triangles: 784,996 → 2,858,256
+Fine pairs, 1.03 × linear), and the brief's test alone cannot tell the change apart. The #135
+"Known limit" (211,860 → 12,006,112 pairs for 8,405 → 74,420 triangles) is the fixed-plan shape,
+where pairs grew with the product of the two densities: on the pre-#231 code this test measured
+384,400 / 4,743,684 / 25,260,676 pairs (12.3 × for 3.6 × triangles) and failed, so it is the one
+that checks the issue's acceptance criterion. Ridged decks on a fixed plan put ridges finer than the
+ball under it, and every valley support ties the minimum only up to its own exact narrow-phase
+value: a sound prune by a bound cannot drop them without examining their reachable ceilings, so
+quadratic growth there is inherent to the scene, not a defect (it measured 384,400 → 25,260,676
+before and after the change).
+**Alternatives:** Only the constant-density tests (passes before the change: no evidence for
+#231). Also asserting the ridged fixed-plan scene (would fail on any verdict-preserving prune that
+must compute each tied valley support). Asserting the named support by triangle index (not
+observable through the public report).
+
+## #231 — headroom prune
+
+**Decision:** `headroom::decks` keeps the original sample loop and its iteration order (supports in
+`w.tris` order, the index's candidates ascending, the samples in order) and skips, uncounted, a
+(support, ceiling) pair only when a lower bound `F` on every headroom the loop would compute for
+it (f64, rounding included) proves the pair cannot change the kept entry of its ceiling mesh:
+
+1. `F >= kept` (the entry already kept for the mesh): every sample of the pair would fail the
+   existing `gap < kept` test, so the pair is a no-op.
+2. `F > seed`, where `seed` is a headroom that a valid sample of the mesh really has (allowed, not
+   in a transition zone, laterally free, below `need`). The reported entry is the FIRST sample in
+   loop order that reaches the minimum `M` of the valid headroom samples: the kept gap only ever
+   strictly decreases, and the first sample at `M` replaces anything above `M` and is never
+   replaced. `M <= seed < F`, so no sample of the pair reaches `M`, and dropping samples that do not
+   reach `M` leaves that first sample, its gap and its support unchanged (they only change which
+   intermediate entries existed, and so the wall-test counts).
+
+The seed of a ceiling mesh comes from a bound-only pass before the loop: for each mesh, the first
+pair (same order) with the lowest `F` below `need`, which is then sampled once (counted) with the
+original sample test; when it has no valid sample there is no seed. A table whose ceilings are
+all out of reach (every `F >= need`) has no seed and no entry, so nothing is pruned and its
+counter is unchanged (the #135 dense scenes with a high deck count exactly as before); a mesh
+with some `F < need` adds its one seed pair (and that pair's wall queries) to the counter. The prune is applied after the index query, identically for `SpatialIndex::Legacy` and
+`Fine`: the seed pair is chosen among the pairs the narrow phase does not skip at once (the same
+set from both indexes), and Fine's extra skips are no-ops, so `Fine <= Legacy` still holds.
+`IndexStats::pairs_examined` counts each candidate the query returns except the pruned pairs,
+plus one per seed pair (and its wall queries).
+
+The bound (`headroom_floor`), `F = r + |(gx, gy, D)|` evaluated with glam's `length` (the very
+operations the sample uses for `r + cp.distance(centre)`):
+
+- `F = r` unless the ceiling triangle is level (its three vertex heights equal). Every computed
+  headroom is at least `r` (`r + sqrt(non-negative)`), so this is always sound.
+- Level ceiling at height `h`: `closest_on_triangle` returns `h` exactly or NaN (every branch is a
+  vertex or adds products of the exact-zero height differences). The computed resting-centre
+  height `fl(z_at(q) + r / nz)` lies in `[zlo, zhi] = [fl(Zlo + r/nz), fl(Zhi + r/nz)]` by
+  monotonicity of rounding, with `Tri::z_at_bounds` giving `Zlo..Zhi` (exactly `p[0].z` for a
+  level support, where `z_at` multiplies exact zeros; otherwise the plane's values at the four
+  plan-box corners widened by `16 ε (|p0.z| + T)`, which covers the `3 ε (|p0.z| + T)` error of
+  `z_at` at the sample and at the corners). So `|dz| = fl(h - cz) >= D = fl(h - zhi)` when
+  `h >= zhi`, or `fl(cz - h) >= fl(zlo - h)` when `h <= zlo`, else `D = 0`.
+- Plan offsets `gx, gy` (`Tri::level_plan_clearance`): the gap per axis between the pair's
+  sample box and the ceiling's plan bounding box, minus a `16 ε` margin on the coordinate
+  magnitudes; zero unless the box is farther than `g0 = 4096 ε L² (D' + L)² / (l · 2A)` from the
+  ceiling's bounding box (`L`, `l` longest and shortest edge, `2A` twice the area, `D'` the size of
+  box and triangle together). For a level triangle the closest-point computation is planar. Its
+  vertex and edge branches return a vertex or `a + e·t` with `t` in `[0, 1]` (the divisions have
+  non-negative operands with the numerator at most the denominator), i.e. inside the bounding box
+  up to a few coordinate roundings, which the margin covers. Its interior branch returns
+  (approximately) the query point itself, which is why the plan term needs `g0`: the six dot
+  products carry `O(ε L (D' + L))` error and the three barycentric numerators `O(ε L² (D' + L)²)`;
+  a point at distance `g` outside the triangle has the deciding quantities of its exact Voronoi
+  region at least `g · 2A / L` (dot products) and `g · l · 2A` (numerators) from zero, except the
+  one that vanishes on the boundary with a neighbouring region, and whichever sign that one takes
+  the test of one of the two regions passes. With `g > g0` (a 4096 factor over the first-order
+  estimate) no error can reach those margins, so a vertex or an edge is returned. Slivers make `g0`
+  large and only switch the plan term off.
+- Monotonicity then gives `fl(fl(dx²) + fl(dy²)) + fl(dz²) >= fl(fl(gx²) + fl(gy²)) + fl(D²)`
+  term by term in the same order, and `sqrt` and `r +` are monotone, so `F <=` every computed
+  headroom of the pair (NaN samples never update anything).
+
+**Ties.** The tie argument is exactness, not a margin: for a level deck over a level floor, `F`
+with zero plan offsets is computed by the same f64 operations on the same operands as a sample
+straight under the deck (whose plan offsets are below half an ulp of `dz²` and vanish in the sum),
+so `F` equals that sample's headroom bit for bit. Rule 1 then drops every later tied pair
+(`F >= kept`, equality included) while the first support that reaches the minimum is the one kept
+(rule 2 is strict, so a pair whose `F` equals the seed is examined and can still be the first at the
+minimum). Margins appear only in sloped supports' height bounds and in the plan offsets; both only
+lower `F`, which makes pruning less aggressive, never unsound, and they are irrelevant to the flat
+tie.
+
+**Result (Fine, headroom counter alone, 79.4 mm ball, flat deck over the upper-right quarter of a
+514 × 1070 mm floor, 60 and 65 mm decks):** 211,588 pairs at 8,364 triangles and 11,941,240 at
+75,522 before; 2 and 2 after (one seed pair, one pair that reaches the minimum; every report the
+same). Legacy, which still counts every same-layer candidate of its plan-box query, falls from
+1,696,096 / 89,654,648 to 1,483,890 / 77,683,714. Wall time of the Fine headroom pass at 75 k
+triangles: 2.1 s before, 1.1 s after (test profile); what remains is the broad phase (the index
+queries, now two passes, and the bound per candidate), which still grows with the product of the
+densities but costs tens of nanoseconds per candidate instead of a sampled pair.
+
+This supersedes the "Known limit" paragraph of "#135 — clearance spatial index".
+
+Remaining limits: a sloped ceiling gets no bound beyond `r`, so a too-low deck that is not level
+(or a level deck under a fine support mesh whose minimum is only approached, not tied) is pruned
+only as far as rule 2 and the plan offsets allow; the bound-only passes keep the broad-phase cost.
+
+**Rationale:** The brief asks for a prune that provably keeps byte-identical reports, including
+which support the message names, and linear narrow-phase work on a flat too-low deck. Rule 1
+alone (the running minimum) left the band of supports just outside reach of the deck edge
+(headroom at or above `need`, so no entry yet) examined against every ceiling within reach, which
+measured 517 → 9,313 pairs for 9× the triangles; the seed (rule 2) removes that band without
+pruning against `need`, which would have changed the counts of tables that pass. Exact f64
+reproduction of the sample's operations is what makes flat ties prunable without a margin.
+
+**Alternatives:** Pruning against `need` directly (sound, but changes the counter of every passing
+table and of the #135 reference scenes). A margin on the running minimum (the #135 objection: it
+can drop the first tied support). Best-first ordering of the pairs (needs all pairs in memory,
+O(n·k)). A rigorous bound for sloped ceilings (needs the full branch analysis of the closest-point
+routine in 3D; left out to keep the proof small). Pruning whole BVH subtrees (would also cut the
+broad-phase time, but needs per-node level/mesh data in `geom.rs` and a per-mesh threshold inside
+the index; left for a follow-up if the broad phase matters).
