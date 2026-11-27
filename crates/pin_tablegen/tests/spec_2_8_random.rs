@@ -288,8 +288,12 @@ fn check_report(
     loaded: &Loaded,
     declared: &BTreeSet<&'static str>,
 ) -> Result<(), TestCaseError> {
+    assert_no_layer_exit_errors(report);
     for e in report.errors.iter().chain(&report.warnings) {
         check_error_shape(e, Some(loaded));
+        if e.feature == Feature::LayerExit {
+            continue;
+        }
         prop_assert!(
             declared.contains(e.profile.as_str()),
             "finding for a profile the table does not declare: {e:?}"
@@ -537,6 +541,7 @@ fn apply(scene: &mut GltfScene, t: &Tweak) {
 /// parts of the shape check are skipped (mesh indices are checked against
 /// the tweaked scene).
 fn check_loose(report: &ClearanceReport, scene: &GltfScene) -> Result<(), TestCaseError> {
+    assert_no_layer_exit_errors(report);
     for e in report.errors.iter().chain(&report.warnings) {
         check_error_shape(e, None);
         if let Some(rest) = e.path.strip_prefix("meshes[") {

@@ -28,8 +28,8 @@ use super::held_inputs::{HeldInputs, RAW_AXIS, RAW_BUTTON, RAW_KEY, source_id};
 use arrayvec::ArrayVec;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_input::{
-    DeviceProfile, DigitalNudge, GamepadAxis, GamepadButton, NudgeDirection, PlungerConfig,
-    PlungerFilter, ProfileMapper, RawInput, SdlGuid, detect,
+    AXIS_BUTTON_THRESHOLD, DeviceProfile, DigitalNudge, GamepadAxis, GamepadButton, NudgeDirection,
+    PlungerConfig, PlungerFilter, ProfileMapper, RawInput, SdlGuid, detect,
 };
 use sdl3::event::Event;
 
@@ -48,10 +48,6 @@ pub const DIGITAL_NUDGE_STRENGTH: f32 = 0.6;
 pub const DIGITAL_NUDGE_MS: u32 = 60;
 
 const NS_PER_MS: u64 = 1_000_000;
-
-/// Normalised value at which an axis bound as a nudge button counts as
-/// pressed (the same threshold `pin_input` uses for axes bound as buttons).
-const AXIS_BUTTON_THRESHOLD: f32 = 0.5;
 
 const AXES: usize = GamepadAxis::ALL.len();
 

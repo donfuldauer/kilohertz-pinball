@@ -19,6 +19,15 @@
 //!   bundle root, decoded to RGBA8 and box-downscaled to at most
 //!   [`PREVIEW_MAX_SIDE`] pixels per side. A broken or oversized preview is
 //!   dropped (the table still loads) and noted in [`TableInfo::preview_error`].
+//! * Preview byte budget (D25: scanned folders and images are untrusted): the
+//!   decoded thumbnails of one scan hold at most [`PREVIEW_BUDGET_BYTES`] of
+//!   RGBA (256 thumbnails of 256²; without it, 4,096 candidates could pin
+//!   about 1 GiB). Previews are decoded in list order while the running total
+//!   fits; once one does not fit, it and every later preview are dropped and
+//!   no further preview is decoded, so the scan never holds more than the
+//!   budget plus one thumbnail. Such a table is still `Ready` and loadable;
+//!   the browser shows "(no preview)" and [`TableInfo::preview_error`] stays
+//!   `None` ([`enforce_preview_budget`] applies the same rule to any list).
 
 use pin_assets::validate::FlipperStageHint;
 use pin_assets::{AssetError, LoadedTable, Vfs, load_table};
@@ -34,6 +43,10 @@ pub const MAX_PREVIEW_DECODE_SIDE: u32 = 4096;
 pub const PREVIEW_MAX_SIDE: u32 = 256;
 /// Most candidates one scan looks at (the rest are ignored, sorted first).
 pub const MAX_SCAN_ENTRIES: usize = 4096;
+
+/// Most decoded preview bytes (RGBA8, summed over every entry) one
+/// [`scan_tables`] result holds: 64 MiB = 256 thumbnails of 256 × 256.
+pub const PREVIEW_BUDGET_BYTES: u64 = 64 << 20;
 
 /// Preview file names tried, in order.
 pub const PREVIEW_FILES: [&str; 3] = ["preview.png", "preview.jpg", "preview.jpeg"];
@@ -297,9 +310,94 @@ pub fn browser_dir(args: &[String], configured: Option<&Path>, exe: &Path) -> Op
     Some(resolve_tables_dir(configured, exe))
 }
 
+/// Decoded preview bytes held by `entries`: the sum of `rgba.len()` over
+/// every `Ready` entry's preview.
+pub fn preview_bytes(entries: &[TableEntry]) -> u64 {
+    entries
+        .iter()
+        .filter_map(TableEntry::info)
+        .filter_map(|i| i.preview.as_ref())
+        .map(|p| p.rgba.len() as u64)
+        .sum()
+}
+
+/// Puts `entries` under a decoded-preview byte `budget`: in list order,
+/// previews are kept while the running total stays within `budget`; the
+/// first preview that would exceed it and every later one are set to `None`
+/// (`preview_error` and every other field are left unchanged). Idempotent.
+pub fn enforce_preview_budget(entries: &mut [TableEntry], budget: u64) {
+    let mut used = 0u64;
+    let mut full = false;
+    for e in entries {
+        let TableStatus::Ready(info) = &mut e.status else {
+            continue;
+        };
+        let Some(p) = &info.preview else { continue };
+        let n = p.rgba.len() as u64;
+        if !full && used.saturating_add(n) <= budget {
+            used += n;
+        } else {
+            full = true;
+            info.preview = None;
+        }
+    }
+}
+
 /// Scans `root` for table bundles. Never panics; an unreadable or missing
-/// root gives an empty list. See the module docs for the rules.
+/// root gives an empty list. The decoded previews of the result stay within
+/// [`PREVIEW_BUDGET_BYTES`] ([`preview_bytes`]). See the module docs for the
+/// rules.
 pub fn scan_tables(root: &Path) -> Vec<TableEntry> {
+    scan_tables_with_budget(root, PREVIEW_BUDGET_BYTES)
+}
+
+/// [`scan_tables`] with a preview byte `budget` (tests use a small one).
+fn scan_tables_with_budget(root: &Path, budget: u64) -> Vec<TableEntry> {
+    let candidates = scan_candidates(root);
+    inspect_within_budget(candidates, budget, inspect)
+}
+
+/// Inspects `candidates` in order with `inspect(path, decode_preview)`,
+/// decoding previews only while the running total of kept preview bytes is
+/// within `budget`: the first preview that does not fit is dropped and no
+/// later preview is decoded (at most `budget` + one thumbnail is held at any
+/// time). The result satisfies `preview_bytes(..) <= budget`.
+fn inspect_within_budget(
+    candidates: Vec<(String, PathBuf)>,
+    budget: u64,
+    mut inspect: impl FnMut(&Path, bool) -> TableStatus,
+) -> Vec<TableEntry> {
+    let mut used = 0u64;
+    let mut full = false;
+    let mut out: Vec<TableEntry> = candidates
+        .into_iter()
+        .map(|(file_name, path)| {
+            let mut status = inspect(&path, !full);
+            if let TableStatus::Ready(info) = &mut status
+                && let Some(p) = &info.preview
+            {
+                let n = p.rgba.len() as u64;
+                if !full && used.saturating_add(n) <= budget {
+                    used += n;
+                } else {
+                    full = true;
+                    info.preview = None;
+                }
+            }
+            TableEntry {
+                path,
+                file_name,
+                status,
+            }
+        })
+        .collect();
+    // Already true by construction; kept so the bound never depends on it.
+    enforce_preview_budget(&mut out, budget);
+    out
+}
+
+/// The sorted, truncated candidate list of `root` (`(file name, path)`).
+fn scan_candidates(root: &Path) -> Vec<(String, PathBuf)> {
     let Ok(dir) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -321,21 +419,17 @@ pub fn scan_tables(root: &Path) -> Vec<TableEntry> {
     });
     candidates.truncate(MAX_SCAN_ENTRIES);
     candidates
-        .into_iter()
-        .map(|(file_name, path)| {
-            let status = inspect_bundle(&path);
-            TableEntry {
-                path,
-                file_name,
-                status,
-            }
-        })
-        .collect()
 }
 
 /// Opens and validates one bundle (folder or archive) and reads its metadata
 /// and preview. Never panics.
 pub fn inspect_bundle(path: &Path) -> TableStatus {
+    inspect(path, true)
+}
+
+/// [`inspect_bundle`]; the preview is read and decoded only when
+/// `decode_preview` (otherwise `preview` and `preview_error` are `None`).
+fn inspect(path: &Path, decode_preview: bool) -> TableStatus {
     let vfs = match Vfs::open(path) {
         Ok(v) => v,
         Err(e) => return TableStatus::Broken(e.to_string()),
@@ -344,9 +438,13 @@ pub fn inspect_bundle(path: &Path) -> TableStatus {
         Ok(t) => t,
         Err(e) => return TableStatus::Broken(e.to_string()),
     };
-    let (preview, preview_error) = match read_preview(&vfs) {
-        Ok(p) => (p, None),
-        Err(e) => (None, Some(e)),
+    let (preview, preview_error) = if !decode_preview {
+        (None, None)
+    } else {
+        match read_preview(&vfs) {
+            Ok(p) => (p, None),
+            Err(e) => (None, Some(e)),
+        }
     };
     let meta = &table.manifest.meta;
     TableStatus::Ready(TableInfo {
@@ -513,6 +611,230 @@ mod tests {
         assert_eq!(
             browser_dir(&[], Some(Path::new("mine")), exe),
             Some(PathBuf::from("mine"))
+        );
+    }
+
+    /// A synthetic ready entry with a `side`² RGBA preview (zeroed, so the
+    /// pages of large test lists are never touched).
+    fn ready(i: usize, side: u32) -> TableEntry {
+        TableEntry {
+            path: PathBuf::from(format!("/t/{i:05}")),
+            file_name: format!("{i:05}"),
+            status: TableStatus::Ready(TableInfo {
+                id: format!("t{i}"),
+                name: format!("Table {i}"),
+                author: "a".into(),
+                version: "1".into(),
+                players_max: 1,
+                features: Vec::new(),
+                preview: Some(PreviewArt {
+                    file: "preview.png".into(),
+                    width: side,
+                    height: side,
+                    rgba: vec![0; (side * side * 4) as usize].into(),
+                }),
+                preview_error: Some("kept".into()),
+                warning_count: 0,
+            }),
+        }
+    }
+
+    /// SPEC §4 Subphase 4.4 / D25 (#131): 4,096 entries with 256² previews
+    /// (1 GiB of RGBA) end within `PREVIEW_BUDGET_BYTES`; the first 256 keep
+    /// their previews, later ones lose only the preview; idempotent.
+    #[test]
+    fn spec_4_4_preview_budget_on_4096_thumbnails() {
+        let mut v: Vec<TableEntry> = (0..MAX_SCAN_ENTRIES).map(|i| ready(i, 256)).collect();
+        v.push(TableEntry {
+            path: "/t/broken".into(),
+            file_name: "broken".into(),
+            status: TableStatus::Broken("x".into()),
+        });
+        assert_eq!(preview_bytes(&v), 4096 * 256 * 256 * 4);
+        let before = v.clone_without_previews();
+        enforce_preview_budget(&mut v, PREVIEW_BUDGET_BYTES);
+        assert_eq!(preview_bytes(&v), PREVIEW_BUDGET_BYTES);
+        let kept = v
+            .iter()
+            .filter(|e| e.info().is_some_and(|i| i.preview.is_some()))
+            .count();
+        assert_eq!(kept, 256);
+        assert!(v[..256].iter().all(|e| e.info().unwrap().preview.is_some()));
+        assert!(
+            v[256..4096]
+                .iter()
+                .all(|e| e.info().unwrap().preview.is_none())
+        );
+        // Nothing but the preview changed (still Ready, error text kept).
+        assert_eq!(v.clone_without_previews(), before);
+        let snapshot = v.clone();
+        enforce_preview_budget(&mut v, PREVIEW_BUDGET_BYTES);
+        assert_eq!(v, snapshot, "idempotent");
+        // Once a preview does not fit, later (smaller) ones are dropped too.
+        let mut w = vec![ready(0, 2), ready(1, 4), ready(2, 1)];
+        enforce_preview_budget(&mut w, 20);
+        let has: Vec<bool> = w
+            .iter()
+            .map(|e| e.info().unwrap().preview.is_some())
+            .collect();
+        assert_eq!(has, [true, false, false]);
+        enforce_preview_budget(&mut w, 0);
+        assert_eq!(preview_bytes(&w), 0);
+    }
+
+    trait WithoutPreviews {
+        fn clone_without_previews(&self) -> Vec<TableEntry>;
+    }
+
+    impl WithoutPreviews for Vec<TableEntry> {
+        fn clone_without_previews(&self) -> Vec<TableEntry> {
+            // Field by field: cloning the previews would touch every page.
+            self.iter()
+                .map(|e| TableEntry {
+                    path: e.path.clone(),
+                    file_name: e.file_name.clone(),
+                    status: match &e.status {
+                        TableStatus::Ready(i) => TableStatus::Ready(TableInfo {
+                            id: i.id.clone(),
+                            name: i.name.clone(),
+                            author: i.author.clone(),
+                            version: i.version.clone(),
+                            players_max: i.players_max,
+                            features: i.features.clone(),
+                            preview: None,
+                            preview_error: i.preview_error.clone(),
+                            warning_count: i.warning_count,
+                        }),
+                        TableStatus::Broken(b) => TableStatus::Broken(b.clone()),
+                    },
+                })
+                .collect()
+        }
+    }
+
+    /// SPEC §4 Subphase 4.4 / D25 (#131): a scan of 4,096 candidates whose
+    /// previews are 256² decodes only until the budget is reached (never
+    /// holding more than the budget plus one thumbnail) and ends within it.
+    #[test]
+    fn spec_4_4_scan_stops_decoding_at_the_budget() {
+        let candidates: Vec<(String, PathBuf)> = (0..MAX_SCAN_ENTRIES)
+            .map(|i| (format!("{i:05}"), PathBuf::from(format!("/t/{i:05}"))))
+            .collect();
+        let mut decodes = 0usize;
+        let mut asked = 0usize;
+        let out = inspect_within_budget(candidates, PREVIEW_BUDGET_BYTES, |path, decode| {
+            asked += 1;
+            let i: usize = path.file_name().unwrap().to_str().unwrap().parse().unwrap();
+            let mut e = ready(i, 256);
+            if decode {
+                decodes += 1;
+            } else if let TableStatus::Ready(info) = &mut e.status {
+                info.preview = None;
+                info.preview_error = None;
+            }
+            e.status
+        });
+        assert_eq!(asked, MAX_SCAN_ENTRIES, "every table is still inspected");
+        assert_eq!(decodes, 257, "256 kept + the one that did not fit");
+        assert_eq!(preview_bytes(&out), PREVIEW_BUDGET_BYTES);
+        assert!(out.iter().all(TableEntry::is_ready));
+        assert!(
+            out[256..]
+                .iter()
+                .all(|e| e.info().unwrap().preview.is_none())
+        );
+    }
+
+    /// Writes a copy of the reference bundle (plus stand-in meshes) to
+    /// `dir`, with `preview` as its `preview.png`.
+    fn write_bundle(dir: &Path, preview: &[u8]) {
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap() {
+                let e = e.unwrap();
+                let p = e.path();
+                if p.is_dir() {
+                    copy(&p, &to.join(e.file_name()));
+                } else {
+                    std::fs::copy(&p, to.join(e.file_name())).unwrap();
+                }
+            }
+        }
+        let apex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pin_assets/tests/fixtures/apex");
+        copy(&apex, dir);
+        for mesh in ["playfield.glb", "backbox.glb"] {
+            std::fs::write(dir.join(mesh), triangle_glb()).unwrap();
+        }
+        std::fs::write(dir.join("preview.png"), preview).unwrap();
+    }
+
+    /// A one-triangle GLB.
+    fn triangle_glb() -> Vec<u8> {
+        let mut bin: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        bin.extend([0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()));
+        bin.extend([0, 0]);
+        let json = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+"nodes":[{"name":"tri","mesh":0}],
+"meshes":[{"name":"tri","primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},
+{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],
+"buffers":[{"byteLength":44}]}"#;
+        let mut j = json.as_bytes().to_vec();
+        while !j.len().is_multiple_of(4) {
+            j.push(b' ');
+        }
+        let total = 12 + 8 + j.len() + 8 + bin.len();
+        let mut out = Vec::with_capacity(total);
+        out.extend(b"glTF");
+        out.extend(2u32.to_le_bytes());
+        out.extend((total as u32).to_le_bytes());
+        out.extend((j.len() as u32).to_le_bytes());
+        out.extend(0x4E4F_534Au32.to_le_bytes());
+        out.extend(&j);
+        out.extend((bin.len() as u32).to_le_bytes());
+        out.extend(0x004E_4942u32.to_le_bytes());
+        out.extend(&bin);
+        out
+    }
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// SPEC §4 Subphase 4.4 / D25 (#131): a real scan with a tiny budget
+    /// keeps the first preview, drops the one that does not fit and does not
+    /// even decode later ones (a broken later preview reports no error);
+    /// every table stays ready.
+    #[test]
+    fn spec_4_4_real_scan_respects_a_tiny_budget() {
+        let root = std::env::temp_dir().join(format!("kp_scan131_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write_bundle(&root.join("a"), &png(4, 4));
+        write_bundle(&root.join("b"), &png(4, 4));
+        write_bundle(&root.join("c"), b"\x89PNG broken");
+        let full = scan_tables(&root);
+        assert_eq!(full.len(), 3);
+        assert!(full.iter().all(TableEntry::is_ready), "{full:?}");
+        assert_eq!(preview_bytes(&full), 2 * 64);
+        assert!(full[2].info().unwrap().preview_error.is_some());
+        let small = scan_tables_with_budget(&root, 100);
+        let _ = std::fs::remove_dir_all(&root);
+        let info = |i: usize| small[i].info().unwrap();
+        assert!(small.iter().all(TableEntry::is_ready));
+        assert_eq!(preview_bytes(&small), 64);
+        assert!(info(0).preview.is_some());
+        assert!(info(1).preview.is_none() && info(1).preview_error.is_none());
+        assert!(info(2).preview.is_none());
+        assert!(
+            info(2).preview_error.is_none(),
+            "a preview after the budget is not decoded"
         );
     }
 }
