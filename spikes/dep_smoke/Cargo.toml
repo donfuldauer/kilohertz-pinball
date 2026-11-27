@@ -22,6 +22,18 @@ egui-wgpu.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 libm.workspace = true
+# #164 KP-070: the web engine pins. The wasm-bindgen family builds natively
+# too (its JS calls panic outside wasm32), so it is compile-checked here.
+wasmi.workspace = true
+wasmparser.workspace = true
+wasm-encoder.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys.workspace = true
+wasm-bindgen-futures.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# #164 KP-070: random valid modules (wasm-smith reads them from arbitrary bytes).
+wasm-smith.workspace = true
+arbitrary.workspace = true
