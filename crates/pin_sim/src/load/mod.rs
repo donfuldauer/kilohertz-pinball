@@ -27,8 +27,15 @@
 //!   (`[playfield] wall_height` of a `layout.toml` in the bundle, else
 //!   [`DEFAULT_WALL_HEIGHT_MM`]); wireforms become [`Wireform`]s (gauge,
 //!   `roll_deg`, up hint `+z`). Each collides on its own layer only.
-//! * **Gravity** `9.81 m/s²` tilted by `meta.pitch_deg` down `−y`; then the
-//!   2.7 hooks ([`register_all`]), after which gravity never changes.
+//! * **Gravity** `9.81 m/s²` along the playfield attitude derived from the
+//!   cabinet (REQ-CAB-008): the bundle's optional `cabinet.toml` resolved
+//!   against its preset, or preset `classic_standard` when the bundle has
+//!   none; [`playfield_attitude`] gives pitch `θ` (rear up pulls toward
+//!   `−y`) and roll `φ` (right side up pulls toward `−x`) from the legs,
+//!   levelers and mount, and [`attitude_gravity`] builds
+//!   `g·(−sin φ, −cos φ·sin θ, −cos φ·cos θ)`. `meta.pitch_deg` is not used
+//!   here (the bundle validator checks it). Then the 2.7 hooks
+//!   ([`register_all`]), after which gravity never changes.
 //! * **Magnets** (main deck), **sensors** for every switch with a position
 //!   and radius (or bound through glTF extras `switch`), **flippers**
 //!   ([`FlipperSet`], body set 0) with the input staging router, **mechs**
@@ -70,7 +77,10 @@ use pin_core::ids::{
 use pin_core::input::CabinetInput;
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
 use pin_core::schema::table::{MechKind, SplineKind, SwitchKind};
-use pin_core::schema::{GLASS_FILE, GlassManifest, LayoutManifest};
+use pin_core::schema::{
+    Attitude, CABINET_FILE, CabinetGeometry, CabinetManifest, GLASS_FILE, GlassManifest,
+    LayoutManifest, playfield_attitude,
+};
 use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS, MAX_DYNAMIC_MESHES};
 use pin_core::{
     BallProfile, HostCommandQueue, HostCtx, HostView, Material, Pcg32, PhysicsDefaults,
@@ -336,6 +346,39 @@ fn glass_height_m(vfs: &Vfs) -> Result<Option<f32>, SimError> {
     let glass =
         GlassManifest::from_toml_str(&text).map_err(|e| build_err(format!("{GLASS_FILE}: {e}")))?;
     Ok(Some(glass.height * 1.0e-3))
+}
+
+/// The bundle's cabinet geometry (REQ-CAB-008): its optional `cabinet.toml`
+/// resolved against its preset, or preset `classic_standard` when the file
+/// is absent. Setup-time only. Errors name `cabinet.toml`.
+fn cabinet_geometry(vfs: &Vfs) -> Result<CabinetGeometry, SimError> {
+    if !vfs.exists(CABINET_FILE) {
+        return CabinetGeometry::default_preset()
+            .map_err(|e| build_err(format!("{CABINET_FILE}: default preset: {e}")));
+    }
+    let bytes = vfs.read(CABINET_FILE)?;
+    let text = String::from_utf8(bytes).map_err(|e| build_err(format!("{CABINET_FILE}: {e}")))?;
+    CabinetManifest::from_toml_str(&text)
+        .and_then(|m| m.resolve())
+        .map_err(|e| build_err(format!("{CABINET_FILE}: {e}")))
+}
+
+/// The gravity vector for a playfield attitude, playfield frame (`x` across,
+/// `y` up the table, `z` up from the surface), m/s² (REQ-CAB-008):
+/// `GRAVITY_M_S2 · (−sin φ, −cos φ·sin θ, −cos φ·cos θ)` with pitch `θ` and
+/// roll `φ`. Unit-norm composition (pitch, then roll), computed in `f64` with
+/// `libm` and cast to `f32` per component. DECISIONS.md "#113 KP-032 —
+/// Gravity vector from pitch and roll".
+pub fn attitude_gravity(att: Attitude) -> Vec3 {
+    let g = f64::from(GRAVITY_M_S2);
+    let (sp, cp) = (libm::sin(att.pitch_rad), libm::cos(att.pitch_rad));
+    let (sr, cr) = (libm::sin(att.roll_rad), libm::cos(att.roll_rad));
+    Vec3::new(
+        // `0.0 - …` (not `-…`): a level cabinet gives `+0.0`, as before.
+        (0.0 - g * sr) as f32,
+        (-g * (cr * sp)) as f32,
+        (-g * (cr * cp)) as f32,
+    )
 }
 
 /// Collider nodes named after a mech: `<id>` / `<id>.on` (on) and
@@ -659,12 +702,8 @@ impl Simulation {
         // --- Solver: gravity first, then the 2.7 hooks. ---
         let defaults = PhysicsDefaults::builtin();
         let mut solver_cfg = BallSolverConfig::from_defaults(&defaults);
-        let pitch = table.pitch_rad;
-        solver_cfg.gravity = Vec3::new(
-            0.0,
-            -GRAVITY_M_S2 * libm::sinf(pitch),
-            -GRAVITY_M_S2 * libm::cosf(pitch),
-        );
+        let attitude = playfield_attitude(&cabinet_geometry(vfs)?);
+        solver_cfg.gravity = attitude_gravity(attitude);
         solver_cfg.rolling_resistance = table.physics.rolling_resistance;
         solver_cfg.magnet_remanence_tau_s = table.physics.magnet_remanence_tau_ms * 1.0e-3;
         let mut solver = BallSolver::new(solver_cfg, &profiles(&table));
