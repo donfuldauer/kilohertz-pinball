@@ -22,10 +22,18 @@
 //!   [`BotConfig::launch_interval_ms`] throttle).
 //! * **Flip on prediction:** each flipper with a cabinet button is modelled
 //!   as an annular sector around its pivot (bat length plus radius plus a
-//!   ball radius, from its rest angle across its sweep). A ball on the
+//!   ball radius, from its rest angle across its sweep) in the flipper's
+//!   own plane ([`FlipperPlane`]: the plane the bat sweeps in, from the
+//!   table's `surface_normal`). Ball positions and velocities and gravity
+//!   are projected into that plane; a flipper on the playfield (normal
+//!   world +Z) uses the table's x/y plan view unchanged, while a flipper in
+//!   any other plane (a vertical backbox flipper) also requires the ball to
+//!   be within [`FlipperModel::slab_half_m`] of its plane. A ball on the
 //!   flipper's layer whose ballistic path (current position and velocity,
-//!   table-plane gravity) enters that sector within
-//!   [`BotConfig::lead_ms`] is a *predicted crossing*. The bot then skips
+//!   in-plane gravity) enters that sector within
+//!   [`BotConfig::lead_ms`] is a *predicted crossing*. A ball moving
+//!   against the in-plane gravity faster than 0.3 m/s was just hit and is
+//!   left alone. The bot then skips
 //!   the flip with the skill's miss rate, or plans a press a PCG-drawn
 //!   delay in [`BotConfig::flip_delay_ms`] after the prediction (the shot it
 //!   tries for: when in its stroke the bat meets the ball) and presses the
@@ -67,7 +75,7 @@ use pin_core::input::CabinetInput;
 use pin_core::snapshot::{MAX_BALLS, MAX_FLIPPERS};
 use pin_core::{FlipperId, Pcg32, Rng, SeedableRng};
 
-use super::table::{DEFAULT_BAT_LENGTH_M, TableInfo};
+use super::table::{DEFAULT_BAT_LENGTH_M, TableInfo, unit_normal_or_z};
 use crate::Simulation;
 use crate::replay::{GameOp, GameOpSink};
 use crate::tick::NUDGE_DV_PER_TICK;
@@ -329,16 +337,98 @@ impl BotStats {
     }
 }
 
-/// A flipper's sweep sector in the table plane.
+/// Extra out-of-plane distance, beyond bat radius plus ball radius, within
+/// which a ball counts as in the plane of a flipper that does not lie in the
+/// table plane, m.
+pub const PLANE_SLAB_MARGIN_M: f32 = 0.01;
+
+/// The plane a flipper's bat sweeps in, as an orthonormal frame: `u` and
+/// `v` span the plane and `normal = u × v`. Positions and directions are
+/// expressed in it as `(w · u, w · v)`.
+///
+/// The frame is the one the physics builds the bat in
+/// ([`pin_physics::flipper::plane_axes`]: world +X and +Y carried along by
+/// the shortest rotation taking +Z to the normal), so a bat angle measured
+/// here is the bat angle of the simulation. For the normal world +Z the
+/// frame is exactly (`+X`, `+Y`) and [`project`](Self::project) returns
+/// the table's x/y plan view bit for bit.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FlipperPlane {
+    /// Unit normal of the plane.
+    pub normal: Vec3,
+    /// First in-plane axis (the bat's angle 0).
+    pub u: Vec3,
+    /// Second in-plane axis (the bat's angle +90°).
+    pub v: Vec3,
+}
+
+impl FlipperPlane {
+    /// The table plane: normal +Z, axes +X and +Y.
+    pub const TABLE: FlipperPlane = FlipperPlane {
+        normal: Vec3::Z,
+        u: Vec3::X,
+        v: Vec3::Y,
+    };
+
+    /// The frame for surface normal `normal` (any length). A zero-length
+    /// or non-finite normal falls back to [`TABLE`](Self::TABLE), as does
+    /// any normal pointing exactly along +Z.
+    #[must_use]
+    pub fn from_normal(normal: Vec3) -> FlipperPlane {
+        let n = unit_normal_or_z(normal.to_array());
+        if n.x == 0.0 && n.y == 0.0 && n.z > 0.0 {
+            return FlipperPlane::TABLE;
+        }
+        let (u, v) = pin_physics::flipper::plane_axes(n);
+        if u.is_finite() && v.is_finite() {
+            FlipperPlane { normal: n, u, v }
+        } else {
+            FlipperPlane::TABLE
+        }
+    }
+
+    /// Whether this is the table plane ([`TABLE`](Self::TABLE)).
+    #[must_use]
+    pub fn is_table(&self) -> bool {
+        *self == FlipperPlane::TABLE
+    }
+
+    /// `w` (a world position or direction) in plane coordinates
+    /// `(w · u, w · v)`; exactly `(w.x, w.y)` for the table plane.
+    #[must_use]
+    pub fn project(&self, w: Vec3) -> Vec2 {
+        if self.is_table() {
+            Vec2::new(w.x, w.y)
+        } else {
+            Vec2::new(w.dot(self.u), w.dot(self.v))
+        }
+    }
+
+    /// The component of `w` along the normal (`w · normal`; `w.z` for the
+    /// table plane).
+    #[must_use]
+    pub fn height(&self, w: Vec3) -> f32 {
+        if self.is_table() {
+            w.z
+        } else {
+            w.dot(self.normal)
+        }
+    }
+}
+
+/// A flipper's sweep sector in its own plane ([`FlipperPlane`]).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FlipperModel {
     /// Flipper id.
     pub id: FlipperId,
     /// Collision layer index.
     pub layer: u8,
-    /// Unit direction of the bat at rest (table plane).
+    /// The plane the bat sweeps in.
+    pub plane: FlipperPlane,
+    /// Unit direction of the bat at rest, in [`plane`](Self::plane)
+    /// coordinates (for a flipper in the table plane: table x/y).
     pub rest_dir: Vec2,
-    /// Signed sweep, rad (+ = counter-clockwise).
+    /// Signed sweep, rad (+ = counter-clockwise about the plane normal).
     pub sweep_rad: f32,
     /// Bat length, m.
     pub length_m: f32,
@@ -355,25 +445,33 @@ fn rotate(v: Vec2, a: f32) -> Vec2 {
 
 impl FlipperModel {
     /// The model of flipper `id` from the simulation's flipper state: the
-    /// rest direction is the current bat direction turned back by the
-    /// relative angle. Length, radius, sweep, layer and button come from
-    /// `info` when given; otherwise the defaults ([`DEFAULT_BAT_LENGTH_M`],
-    /// [`DEFAULT_BAT_RADIUS_M`], layer 0) and the side: a bat pointing to
-    /// `+x` at rest is a left flipper (counter-clockwise sweep, the
-    /// `left_flipper` button), else a right one.
+    /// rest direction is the current bat direction, projected into the
+    /// flipper's plane, turned back by the relative angle. The plane comes
+    /// from the flipper's `surface_normal` in `info`
+    /// ([`FlipperInfo::surface_normal`](super::table::FlipperInfo::surface_normal));
+    /// without `info` it is the table plane. Length, radius, sweep, layer
+    /// and button come from `info` when given; otherwise the defaults
+    /// ([`DEFAULT_BAT_LENGTH_M`], [`DEFAULT_BAT_RADIUS_M`], layer 0) and the
+    /// side: a bat pointing to `+x` at rest is a left flipper
+    /// (counter-clockwise sweep, the `left_flipper` button), else a right
+    /// one.
     #[must_use]
     pub fn infer(sim: &Simulation, id: FlipperId, info: Option<&TableInfo>) -> Option<Self> {
         let fs = sim.flipper_set();
         let dir = fs.bat_direction(id)?;
         let rel = fs.relative_angle_rad(id);
         let rel = if rel.is_finite() { rel } else { 0.0 };
-        let rest = rotate(Vec2::new(dir.x, dir.y), -rel).normalize_or_zero();
-        let left = rest.x >= 0.0;
         let known = info.and_then(|t| t.flippers.iter().find(|f| f.id == id));
+        let plane = known.map_or(FlipperPlane::TABLE, |f| {
+            FlipperPlane::from_normal(f.surface_normal)
+        });
+        let rest = rotate(plane.project(dir), -rel).normalize_or_zero();
+        let left = rest.x >= 0.0;
         Some(match known {
             Some(f) => FlipperModel {
                 id,
                 layer: f.layer,
+                plane,
                 rest_dir: rest,
                 sweep_rad: f.sweep_rad,
                 length_m: f.length_m,
@@ -383,6 +481,7 @@ impl FlipperModel {
             None => FlipperModel {
                 id,
                 layer: 0,
+                plane,
                 rest_dir: rest,
                 sweep_rad: if left {
                     DEFAULT_SWEEP_RAD
@@ -406,8 +505,30 @@ impl FlipperModel {
         self.length_m + self.radius_m + BALL_RADIUS_M
     }
 
-    /// Whether a ball centred at `q` (table plane) lies in the swept sector
-    /// of the bat pivoting at `pivot`.
+    /// Half-thickness of the slab around the plane of a flipper outside the
+    /// table plane in which a ball can meet the bat, m: bat radius plus
+    /// ball radius plus [`PLANE_SLAB_MARGIN_M`].
+    #[must_use]
+    pub fn slab_half_m(&self) -> f32 {
+        self.radius_m + BALL_RADIUS_M + PLANE_SLAB_MARGIN_M
+    }
+
+    /// Whether a ball centred at world point `p` is close enough to the
+    /// plane through `pivot` (world) to meet the bat: always for a flipper
+    /// in the table plane (its model is the plan view, as before), else
+    /// within [`slab_half_m`](Self::slab_half_m) of the plane. False for a
+    /// non-finite offset.
+    #[must_use]
+    pub fn near_plane(&self, pivot: Vec3, p: Vec3) -> bool {
+        if self.plane.is_table() {
+            return true;
+        }
+        let h = self.plane.height(p - pivot);
+        h.is_finite() && h.abs() <= self.slab_half_m()
+    }
+
+    /// Whether a ball centred at `q` (plane coordinates) lies in the swept
+    /// sector of the bat pivoting at `pivot` (plane coordinates).
     #[must_use]
     pub fn in_sector(&self, pivot: Vec2, q: Vec2) -> bool {
         let d = q - pivot;
@@ -425,8 +546,8 @@ impl FlipperModel {
     }
 
     /// The first time (s, in steps of 2 ms up to `horizon_s`) at which a
-    /// ball at `p` with velocity `v` under plane gravity `g` is in the
-    /// sector, or `None`.
+    /// ball at `p` with velocity `v` under in-plane gravity `g` (all in
+    /// plane coordinates) is in the sector, or `None`.
     #[must_use]
     pub fn predict_entry(
         &self,
@@ -467,12 +588,12 @@ struct FlipperBrain {
     post_cradle_until: u64,
 }
 
-/// A ball the bot sees this tick (table plane).
+/// A ball the bot sees this tick (world frame, m and m/s).
 #[derive(Copy, Clone, Debug)]
 struct SeenBall {
     slot: u8,
-    p: Vec2,
-    v: Vec2,
+    p: Vec3,
+    v: Vec3,
     layer: u8,
 }
 
@@ -704,8 +825,6 @@ impl Bot {
         }
         let now = sim.tick() + 1;
         let g3 = sim.solver().config().gravity;
-        let g = Vec2::new(g3.x, g3.y);
-        let up = (-g).normalize_or_zero();
 
         let mut balls: ArrayVec<SeenBall, MAX_BALLS> = ArrayVec::new();
         for h in sim.ball_handles() {
@@ -715,8 +834,8 @@ impl Bot {
                 if p.is_finite() && v.is_finite() {
                     balls.push(SeenBall {
                         slot: h.slot(),
-                        p: Vec2::new(p.x, p.y),
-                        v: Vec2::new(v.x, v.y),
+                        p,
+                        v,
                         layer: b.layer,
                     });
                 }
@@ -730,7 +849,7 @@ impl Bot {
         }
 
         let mut desired = [false; 8];
-        self.update_flippers(sim, now, &balls, g, up, &mut desired);
+        self.update_flippers(sim, now, &balls, g3, &mut desired);
         let resting = self.update_rest(sim, &balls);
         self.update_start(now, &mut desired);
         self.update_launch(now, resting, self.empty_ticks, &mut desired);
@@ -743,8 +862,7 @@ impl Bot {
         sim: &Simulation,
         now: u64,
         balls: &[SeenBall],
-        g: Vec2,
-        up: Vec2,
+        g3: Vec3,
         desired: &mut [bool; 8],
     ) {
         let Some(mut brains) = self.brains.take() else {
@@ -759,7 +877,11 @@ impl Bot {
             let Some(pivot3) = sim.flipper_set().pivot_m(m.id) else {
                 continue;
             };
-            let pivot = Vec2::new(pivot3.x, pivot3.y);
+            // Everything in the flipper's own plane (the plan view for a
+            // flipper in the table plane).
+            let pivot = m.plane.project(pivot3);
+            let g = m.plane.project(g3);
+            let up = (-g).normalize_or_zero();
             // State transitions first.
             match brain.state {
                 FlipState::Pending { at, action } if now >= at => {
@@ -778,23 +900,27 @@ impl Bot {
             }
             if brain.state == FlipState::Idle && now >= brain.ignore_until {
                 let mut decision = None;
-                for b in balls.iter().filter(|b| b.layer == m.layer) {
-                    if b.v.dot(up) > AWAY_SPEED_M_S {
+                for b in balls
+                    .iter()
+                    .filter(|b| b.layer == m.layer && m.near_plane(pivot3, b.p))
+                {
+                    let (bp, bv) = (m.plane.project(b.p), m.plane.project(b.v));
+                    if bv.dot(up) > AWAY_SPEED_M_S {
                         continue;
                     }
-                    let inside = m.in_sector(pivot, b.p);
-                    if inside && b.v.length() < self.cfg.cradle_speed_m_s {
+                    let inside = m.in_sector(pivot, bp);
+                    if inside && bv.length() < self.cfg.cradle_speed_m_s {
                         if self.cfg.cradle && now >= brain.post_cradle_until {
                             decision = Some(Action::Cradle);
                             break;
                         }
-                        if b.p.distance(pivot) >= CRADLE_FLIP_REACH * m.reach() {
+                        if bp.distance(pivot) >= CRADLE_FLIP_REACH * m.reach() {
                             decision = Some(Action::Flip);
                             break;
                         }
                         continue;
                     }
-                    if m.predict_entry(pivot, b.p, b.v, g, horizon).is_some() {
+                    if m.predict_entry(pivot, bp, bv, g, horizon).is_some() {
                         decision = Some(Action::Flip);
                         break;
                     }
@@ -848,14 +974,16 @@ impl Bot {
             present[slot] = true;
             let near_flipper = self.brains.as_ref().is_some_and(|brains| {
                 brains.iter().any(|x| {
-                    x.model.layer == b.layer
-                        && sim
-                            .flipper_set()
-                            .pivot_m(x.model.id)
-                            .is_some_and(|p| b.p.distance(Vec2::new(p.x, p.y)) <= x.model.reach())
+                    let m = &x.model;
+                    m.layer == b.layer
+                        && sim.flipper_set().pivot_m(m.id).is_some_and(|p| {
+                            m.near_plane(p, b.p)
+                                && m.plane.project(b.p).distance(m.plane.project(p)) <= m.reach()
+                        })
                 })
             });
-            if b.v.length() < self.cfg.rest_speed_m_s && !near_flipper {
+            // Rest is judged on the table-plane speed (as before).
+            if Vec2::new(b.v.x, b.v.y).length() < self.cfg.rest_speed_m_s && !near_flipper {
                 self.rest_ticks[slot] = self.rest_ticks[slot].saturating_add(1);
             } else {
                 self.rest_ticks[slot] = 0;
@@ -1005,6 +1133,7 @@ mod tests {
         FlipperModel {
             id: FlipperId(0),
             layer: 0,
+            plane: FlipperPlane::TABLE,
             rest_dir: rotate(Vec2::X, (-30.0f32).to_radians()),
             sweep_rad: 50.0f32.to_radians(),
             length_m: 0.076,
@@ -1080,6 +1209,148 @@ mod tests {
         );
         // Zero horizon only checks now.
         assert_eq!(m.predict_entry(Vec2::ZERO, start, Vec2::ZERO, g, 0.0), None);
+    }
+
+    fn clean() -> (Simulation, TableInfo) {
+        let b =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/autoplay/clean");
+        (
+            Simulation::load(&b, crate::SimConfig::default()).unwrap(),
+            TableInfo::load(&b).unwrap(),
+        )
+    }
+
+    /// Issue #138 deliverable 3: a flipper with normal +Z keeps today's
+    /// plan-view model bit for bit (rest direction from the bat's x/y).
+    #[test]
+    fn table_plane_flipper_model_is_unchanged() {
+        let (sim, info) = clean();
+        assert!(info.flippers.iter().all(|f| f.surface_normal == Vec3::Z));
+        let fs = sim.flipper_set();
+        for f in &info.flippers {
+            let dir = fs.bat_direction(f.id).unwrap();
+            let rel = fs.relative_angle_rad(f.id);
+            // Today's (pre-#138) formula.
+            let old = rotate(Vec2::new(dir.x, dir.y), -rel).normalize_or_zero();
+            for table in [None, Some(&info)] {
+                let m = FlipperModel::infer(&sim, f.id, table).unwrap();
+                assert_eq!(m.plane, FlipperPlane::TABLE);
+                assert_eq!(m.rest_dir.x.to_bits(), old.x.to_bits());
+                assert_eq!(m.rest_dir.y.to_bits(), old.y.to_bits());
+                // The table plane accepts any height (no slab test).
+                assert!(m.near_plane(Vec3::ZERO, Vec3::new(0.0, 0.0, 5.0)));
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_normals_fall_back_to_the_table_plane() {
+        for n in [
+            Vec3::ZERO,
+            Vec3::splat(f32::NAN),
+            Vec3::new(f32::INFINITY, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 7.0),
+            Vec3::new(0.0, 0.0, 1.0e-9),
+            Vec3::new(f32::MAX, f32::MAX, f32::MAX),
+        ] {
+            assert_eq!(FlipperPlane::from_normal(n), FlipperPlane::TABLE, "{n}");
+        }
+        assert!(FlipperPlane::TABLE.is_table());
+        // -Z is a real (upside-down) plane, not the fallback.
+        let down = FlipperPlane::from_normal(Vec3::NEG_Z);
+        assert!(!down.is_table());
+        assert!(down.u.is_finite() && down.v.is_finite());
+        assert!((down.normal - Vec3::NEG_Z).length() < 1e-6);
+    }
+
+    /// A bat in a vertical plane (normal +Y, like a backbox flipper):
+    /// the frame matches the physics' `plane_axes`, a ball falling through
+    /// its sector under the in-plane part of gravity is predicted, and a
+    /// ball off the plane is ignored.
+    #[test]
+    fn vertical_flipper_predicts_in_its_own_plane() {
+        let plane = FlipperPlane::from_normal(Vec3::Y);
+        let (u, v) = pin_physics::flipper::plane_axes(Vec3::Y);
+        assert_eq!((plane.u, plane.v), (u, v));
+        assert!(!plane.is_table());
+        let m = FlipperModel { plane, ..left() };
+        let pivot3 = Vec3::new(0.2, 0.95, 0.20);
+        // Table gravity at 6.5 degrees: mostly along -Z, i.e. in the plane.
+        let a = 6.5f32.to_radians();
+        let g3 = Vec3::new(0.0, -9.81 * libm::sinf(a), -9.81 * libm::cosf(a));
+        let g = plane.project(g3);
+        let up = (-g).normalize_or_zero();
+        assert!(g.length() > 9.0, "{g}");
+        // 6 cm "above" the middle of the rest bat in the plane, at rest.
+        let start2 = m.rest_dir * 0.04 + up * 0.06;
+        let p3 = pivot3 + plane.u * start2.x + plane.v * start2.y;
+        let pivot = plane.project(pivot3);
+        let p = plane.project(p3);
+        assert!(m.near_plane(pivot3, p3));
+        let t = m.predict_entry(pivot, p, Vec2::ZERO, g, 0.15);
+        assert!(t.is_some_and(|t| t > 0.0 && t < 0.15), "{t:?}");
+        // The world trajectory under the in-plane gravity agrees.
+        let t = t.unwrap();
+        let g_in = g3 - plane.normal * g3.dot(plane.normal);
+        let w = p3 + g_in * (0.5 * t * t);
+        assert!(m.in_sector(pivot, plane.project(w)));
+        // A ball well in front of the plane is not near it.
+        let off = p3 + plane.normal * (m.slab_half_m() + 0.001);
+        assert!(!m.near_plane(pivot3, off));
+        assert!(!m.near_plane(pivot3, Vec3::NAN));
+    }
+
+    proptest::proptest! {
+        /// Any finite non-degenerate normal gives a finite orthonormal
+        /// frame and finite model values.
+        #[test]
+        fn random_normals_give_finite_frames(
+            nx in -1.0f32..1.0, ny in -1.0f32..1.0, nz in -1.0f32..1.0,
+            px in -2.0f32..2.0, py in -2.0f32..2.0, pz in -2.0f32..2.0,
+            vx in -10.0f32..10.0, vy in -10.0f32..10.0, vz in -10.0f32..10.0,
+        ) {
+            let plane = FlipperPlane::from_normal(Vec3::new(nx, ny, nz));
+            let (n, u, v) = (plane.normal, plane.u, plane.v);
+            proptest::prop_assert!(n.is_finite() && u.is_finite() && v.is_finite());
+            for (a, b) in [(n, n), (u, u), (v, v)] {
+                proptest::prop_assert!((a.dot(b) - 1.0).abs() < 1.0e-4);
+            }
+            for (a, b) in [(n, u), (n, v), (u, v)] {
+                proptest::prop_assert!(a.dot(b).abs() < 1.0e-4);
+            }
+            let m = FlipperModel { plane, ..left() };
+            let p = Vec3::new(px, py, pz);
+            let w = Vec3::new(vx, vy, vz);
+            let q = plane.project(p);
+            proptest::prop_assert!(q.is_finite() && plane.project(w).is_finite());
+            proptest::prop_assert!(plane.height(p).is_finite());
+            // Projection keeps the in-plane length.
+            let inplane = p - n * p.dot(n);
+            proptest::prop_assert!((q.length() - inplane.length()).abs() < 1.0e-4);
+            let g = plane.project(Vec3::new(0.0, -1.1, -9.7));
+            proptest::prop_assert!(g.is_finite());
+            let _ = m.in_sector(Vec2::ZERO, q);
+            if let Some(t) = m.predict_entry(Vec2::ZERO, q, plane.project(w), g, 0.03) {
+                proptest::prop_assert!(t.is_finite() && (0.0..=0.03).contains(&t));
+            }
+        }
+
+        /// The +Z frame (any positive length) reproduces the plan view
+        /// bit for bit.
+        #[test]
+        fn plus_z_frame_is_the_plan_view(
+            z in 1.0e-3f32..1.0e3,
+            x in proptest::num::f32::ANY,
+            y in proptest::num::f32::ANY,
+            w in proptest::num::f32::ANY,
+        ) {
+            let plane = FlipperPlane::from_normal(Vec3::new(0.0, 0.0, z));
+            proptest::prop_assert_eq!(plane, FlipperPlane::TABLE);
+            let q = plane.project(Vec3::new(x, y, w));
+            proptest::prop_assert_eq!(q.x.to_bits(), x.to_bits());
+            proptest::prop_assert_eq!(q.y.to_bits(), y.to_bits());
+            proptest::prop_assert_eq!(plane.height(Vec3::new(x, y, w)).to_bits(), w.to_bits());
+        }
     }
 
     #[test]
