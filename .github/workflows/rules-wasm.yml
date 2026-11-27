@@ -112,6 +112,8 @@ jobs:
           done
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Linux packages (SDL3 build headers for pin_app)
         run: |

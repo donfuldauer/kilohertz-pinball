@@ -1234,3 +1234,120 @@ fn pr_checks_script_exit_codes() {
         Some(0)
     );
 }
+
+/// Issue #220 (KP-104): the `save-if` every `Swatinem/rust-cache@v2` step must carry, so only
+/// `main` runs write caches and pull-request caches cannot evict `main`'s.
+const SAVE_ONLY_ON_MAIN: &str = "${{ github.ref == 'refs/heads/main' }}";
+
+/// `(job id, trimmed with.save-if)` for every `Swatinem/rust-cache@v2` step of a workflow,
+/// read from the raw YAML (the `Job` helper does not expose a step's `with:`).
+fn rust_cache_save_ifs(file: &str) -> Vec<(String, Option<String>)> {
+    use yaml_rust2::{Yaml, YamlLoader};
+    let docs = YamlLoader::load_from_str(&workflow_text(file))
+        .unwrap_or_else(|e| panic!("{file} parses: {e}"));
+    let jobs = docs[0]["jobs"]
+        .as_hash()
+        .unwrap_or_else(|| panic!("{file} has jobs"));
+    let mut out = Vec::new();
+    for (id, node) in jobs {
+        let id = id.as_str().expect("job ids are strings").to_owned();
+        for step in node["steps"].as_vec().map(Vec::as_slice).unwrap_or(&[]) {
+            if step["uses"].as_str() != Some("Swatinem/rust-cache@v2") {
+                continue;
+            }
+            let save_if = match &step["with"]["save-if"] {
+                Yaml::String(s) => Some(s.trim().to_owned()),
+                _ => None,
+            };
+            out.push((id.clone(), save_if));
+        }
+    }
+    out
+}
+
+/// Issue #220 (KP-104), deliverable 3(a): every rust-cache step in ci.yml saves only on `main`.
+#[test]
+fn every_rust_cache_step_saves_only_on_main() {
+    let steps = rust_cache_save_ifs("ci.yml");
+    assert!(
+        steps.len() >= 6,
+        "ci.yml lost its rust-cache steps: {steps:?}"
+    );
+    // Every job that uses rust-cache is covered by the YAML walk above.
+    for j in ci().jobs() {
+        if j.uses().iter().any(|u| u == "Swatinem/rust-cache@v2") {
+            assert!(
+                steps.iter().any(|(id, _)| *id == j.id),
+                "job `{}` uses rust-cache but its step was not found",
+                j.id
+            );
+        }
+    }
+    for (id, save_if) in &steps {
+        assert_eq!(
+            save_if.as_deref(),
+            Some(SAVE_ONLY_ON_MAIN),
+            "job `{id}`: the rust-cache step must save only on main (issue #220)"
+        );
+    }
+}
+
+/// Issue #220 (KP-104), deliverable 1: the other cargo workflows' rust-cache steps also save
+/// only on `main`.
+#[test]
+fn other_workflows_rust_cache_steps_save_only_on_main() {
+    for file in ["spikes.yml", "windowed.yml", "rules-wasm.yml", "soak.yml"] {
+        let steps = rust_cache_save_ifs(file);
+        assert!(!steps.is_empty(), "{file} has no rust-cache step");
+        for (id, save_if) in &steps {
+            assert_eq!(
+                save_if.as_deref(),
+                Some(SAVE_ONLY_ON_MAIN),
+                "{file} job `{id}`: the rust-cache step must save only on main (issue #220)"
+            );
+        }
+    }
+}
+
+/// Issue #220 (KP-104), deliverable 3(b): the gpu-tests-cross build and test budgets reserve
+/// 5 min for the cache save on a miss and 1 min on an exact hit, and stay in step.
+#[test]
+fn gpu_tests_cross_budgets_reserve_five_minutes_on_a_miss_and_one_on_a_hit() {
+    use yaml_rust2::YamlLoader;
+    let docs = YamlLoader::load_from_str(&workflow_text("ci.yml")).expect("ci.yml parses");
+    let steps = docs[0]["jobs"]["gpu-tests-cross"]["steps"]
+        .as_vec()
+        .expect("gpu-tests-cross has steps")
+        .clone();
+    let want = r#"if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=5; fi"#;
+    for name in ["Build-step budget", "Test-step budget"] {
+        let step = steps
+            .iter()
+            .find(|s| s["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("gpu-tests-cross has no `{name}` step"));
+        let script = step["run"].as_str().expect("budget step has a script");
+        let reserves: Vec<&str> = script
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains("reserve="))
+            .collect();
+        assert_eq!(
+            reserves,
+            vec![want],
+            "`{name}`: exactly one reserve line, 5 min on a miss and 1 on a hit (issue #220)"
+        );
+        assert_eq!(
+            step["env"]["JOB_TIMEOUT_MIN"].as_str(),
+            Some("45"),
+            "{name}"
+        );
+    }
+    // Deliverable 3(c): the job cap stays at most 45 minutes.
+    let cap = job("gpu-tests-cross")
+        .timeout_minutes()
+        .expect("timeout-minutes");
+    assert!(
+        (1..=45).contains(&cap),
+        "gpu-tests-cross timeout-minutes = {cap}"
+    );
+}
