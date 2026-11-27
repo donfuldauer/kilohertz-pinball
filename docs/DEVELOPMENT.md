@@ -17,11 +17,25 @@ Any issue whose change makes a section here stale updates it in its own PR.
   `license = "MIT OR Apache-2.0"`, `publish = false`; members `crates/*` and
   `crates/pin_script/guest-sdk`; `spikes/` is a separate workspace and excluded.
 - Dependency pins: `versions.toml` `[crates]` holds the exact versions that passed the Subphase
-  0.1 spikes and stays unchanged (`spikes/dep_smoke/tests/versions.rs` asserts it agrees with
-  `spikes/Cargo.toml` and `spikes/Cargo.lock`). The root `[workspace.dependencies]` copies them
+  0.1 spikes, extended only by units whose brief owns it (#164 KP-070 added the web engine pins:
+  wasmi 2.0.2, wasmparser and wasm-encoder 0.261.0, wasm-smith 0.261.0 with arbitrary 1.5.0, and
+  the wasm-bindgen family wasm-bindgen 0.2.130, js-sys 0.3.107, web-sys 0.3.107,
+  wasm-bindgen-futures 0.4.80), each with a compile and trivial-use check in `spikes/dep_smoke`
+  (`spikes/dep_smoke/tests/versions.rs` asserts it agrees with `spikes/Cargo.toml` and
+  `spikes/Cargo.lock`, features included). The root `[workspace.dependencies]` copies them
   with their feature sets; later pins are exact (`=x.y.z`), one line per crate, under a comment
   naming the work item that added them (for example `# Wave 3 additions …`; from now on
-  `# #<N> KP-NNN additions`). Crates use `<name>.workspace = true`.
+  `# #<N> KP-NNN additions`). Crates use `<name>.workspace = true`. The wasm-bindgen family is
+  pinned at the root without features; the crates that use it declare it under
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]` and choose the web-sys features.
+- `pin_script` backend features (D10, REQ-WEB-001): `lua` (mlua, libm), `wasmtime` (wasmtime,
+  wat, notify; hot reload needs `lua` and `wasmtime`) and `wasmi` (the web Wasm engine, default
+  features off with `std`, `validate`, `auto-dispatch`, `deterministic`); the default is `lua` +
+  `wasmtime`, so native builds are unchanged. With `--no-default-features` only the engine-neutral
+  modules build (`config`, `rng`, `budget`, the Wasm pre-scan in `wasm/limits.rs`, the name
+  tables), and the crate must stay clean for the web target (the `wasm32-unknown-unknown` std is
+  added with `rustup target add wasm32-unknown-unknown`):
+  `cargo clippy --target wasm32-unknown-unknown -p pin_script --no-default-features -- -D warnings`.
 - Vendored and patched: `third_party/lua-src` (Lua 5.4.9 build crate), `third_party/lewton`
   (Ogg Vorbis) and `third_party/sdl3-sys` (SDL3 bindings; the patch lets SDL3 build from checkout
   paths with spaces), each with its patches in `KHZ_PATCHES.md`, wired through
@@ -124,7 +138,7 @@ kilohertz-pinball/
 │   │                   # telemetry, materials, schema/, snapshot, triple_buffer, spsc
 │   ├── pin_physics/    # world/ · ball/ · ball_ext/ (Magnus, remanence) · flipper/ · flipper_banana/ · mech/ · debug/
 │   ├── pin_input/      # events/ · staging/ · profiles/ · calibration/ · haptics/
-│   ├── pin_script/     # lua/ (Lua 5.4, sandbox, hot reload) · wasm/ (wasmtime) · guest_sdk/ (host side)
+│   ├── pin_script/     # lua/ (Lua 5.4, sandbox, hot reload) · wasm/ (wasmtime; pre-scan) · config · rng · budget · guest_sdk/ (host side)
 │   │   └── guest-sdk/  # crate pin_guest_sdk: no_std Rust SDK for Wasm table rules
 │   ├── pin_assets/     # vfs/ · zip/ · gltf/ · validate/
 │   ├── pin_tablegen/   # layout/ → .glb · clearance/ · backbox/ (binary pin_tablegen)
@@ -155,7 +169,7 @@ kilohertz-pinball/
 | `pin_core` | yes | 85 % | — | Contracts only; changes through `contracts/CHANGE_REQUESTS.md` (R2). Clippy bans std transcendentals (CR-009). Fixtures in `crates/pin_core/fixtures/`; `tests/schema_fixtures.rs` reads SPEC Appendix A verbatim. |
 | `pin_physics` | yes | 85 % | — | Module-level ownership (D3): one owner per module directory. |
 | `pin_input` | yes | 85 % | — | |
-| `pin_script` | yes | 85 % | — | Sandbox and budgets (R11); `tests/attack_corpus/`. |
+| `pin_script` | yes | 85 % | features `lua`, `wasmtime` (default), `wasmi` | Sandbox and budgets (R11); `tests/attack_corpus/`. Engine-neutral `config` (limits), `rng` (both backends' random helpers), `budget` (per-tick budget, D45) and the Wasm pre-scan build with `--no-default-features` (wasm32). |
 | `pin_assets` | yes | 85 % | — | VFS, zip hardening, glTF loader, validation and lints. |
 | `pin_tablegen` | yes | 85 % | `pin_tablegen` | `<layout.toml> --table <table.toml> --out <dir>`; `validate <bundle>`. |
 | `pin_sim` | yes | 85 % | `pin_sim` | Headless simulation, replay, state hash, autoplay and soak. |

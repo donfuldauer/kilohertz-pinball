@@ -68,6 +68,17 @@ ogg = "=0.8.0"            # 3.3: packet reader for the vendored lewton
 # Wave 4 additions (5.1)
 naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }  # 5.1: the version wgpu 30.0.1 uses; shader validation tests
 
+# #164 KP-070 additions (web engine: pin_script backend features; also in versions.toml [crates]).
+wasmi = { version = "=2.0.2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }  # the web Wasm backend (D10)
+wasmparser = "=0.261.0"         # engine-neutral pre-scan; the version wasmtime 50.0.1 resolves
+wasm-encoder = "=0.261.0"       # load-time instrumentation (later units); same wasm-tools family
+wasm-smith = "=0.261.0"         # dev-dependency: random valid modules for differential tests
+arbitrary = "=1.5.0"            # wasm-smith's input (Unstructured); the version it resolves
+wasm-bindgen = "=0.2.130"       # wasm32 only in consuming crates ([target.'cfg(target_arch = "wasm32")'.dependencies])
+js-sys = "=0.3.107"
+web-sys = "=0.3.107"            # feature lists are chosen by the consuming crates
+wasm-bindgen-futures = "=0.4.80"
+
 # #163 KP-069 additions
 libc = "=0.2.191"  # #163: pin_app test-only xattr helpers (Linux setxattr/fgetxattr/removexattr)
 

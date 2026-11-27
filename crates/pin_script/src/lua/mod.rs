@@ -22,6 +22,7 @@
 //!
 //! # Hot reload
 //!
+//! Built with the `wasmtime` feature as well as `lua` (the file watcher).
 //! [`reload::ReloadWatcher`] (I/O worker) watches `rules.lua` and hands
 //! syntax-checked source to the sim thread, which calls `apply_reload` at a
 //! tick boundary. A reload builds a fresh sandboxed state; the old
@@ -45,6 +46,9 @@
 
 pub(crate) mod api;
 mod bridge;
+// #164 KP-070: hot reload watches files with notify, which the `wasmtime`
+// feature brings in; the web build has no file system to watch.
+#[cfg(feature = "wasmtime")]
 pub mod reload;
 mod sandbox;
 mod saved;
@@ -59,6 +63,10 @@ use std::rc::Rc;
 
 use crate::NameTables;
 
+/// The Lua backend's limits, defined in [`crate::config`] (built with every
+/// feature set).
+pub use crate::config::LuaConfig;
+
 /// Instructions between two budget-hook calls; the budget's granularity.
 pub const HOOK_INTERVAL: u32 = 1000;
 
@@ -66,39 +74,6 @@ pub const HOOK_INTERVAL: u32 = 1000;
 /// every `on_tick` (`LUA_GCSTEP`). The automatic incremental collector stays
 /// on as well, so allocation-heavy scripts are still paced by allocation.
 pub const GC_STEP_KBYTES: i32 = 16;
-
-/// Limits of one Lua backend (§3.4, D25).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct LuaConfig {
-    /// Hard cap on the Lua heap, bytes.
-    pub memory_limit_bytes: usize,
-    /// VM instructions allowed per callback (granularity [`HOOK_INTERVAL`]).
-    pub instruction_budget: u32,
-}
-
-impl LuaConfig {
-    /// The configuration the engine runs table rules with (DECISIONS.md
-    /// "Orchestrator — 4.2 re-review round 3"): 100 000 instructions per
-    /// callback and a 2 MiB heap. Under it no script can make a single tick
-    /// take more than 8 ms (release build; measured in DECISIONS.md "4.2 — fix
-    /// round 3"). [`LuaConfig::default`] keeps the brief's larger limits for
-    /// tools and tests.
-    pub const fn engine() -> Self {
-        Self {
-            memory_limit_bytes: 2 * 1024 * 1024,
-            instruction_budget: 100_000,
-        }
-    }
-}
-
-impl Default for LuaConfig {
-    fn default() -> Self {
-        Self {
-            memory_limit_bytes: 16 * 1024 * 1024,
-            instruction_budget: 1_000_000,
-        }
-    }
-}
 
 /// The Lua 5.4 [`TableScriptBackend`]. See the module docs.
 ///
