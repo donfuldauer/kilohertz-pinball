@@ -29,6 +29,8 @@ pub use surfaces::{
 };
 // 6.0 (issue #9a): window lifetime guard for surfaces and presenter threads.
 pub use surfaces::{PRESENTER_JOIN_TIMEOUT, WindowGuard, spawn_guarded};
+// #239 (KP-112): a device-loss rebuild on DX12 / Vulkan recreates surfaces.
+pub use surfaces::recreate_surface;
 // Issue #10: display layers composite in display-encoded space on `*Srgb`
 // (fallback) surfaces too.
 pub use surfaces::{LayerCompositor, LayerTarget};
@@ -229,6 +231,12 @@ pub enum GpuError {
     Readback(String),
     /// Invalid arguments (e.g. a zero-sized image).
     InvalidArgument(String),
+    /// The device was lost (driver reset, `Device::destroy`, ...): the
+    /// payload is the loss reason only ([`GpuContext::device_lost_reason`],
+    /// e.g. `"Destroyed"` or `"Unknown: <message>"`). Nothing created on the
+    /// device can be used again; the application rebuilds the context and
+    /// its renderers (SPEC §4 Subphase 5.4 item 4).
+    DeviceLost(String),
 }
 
 impl fmt::Display for GpuError {
@@ -239,6 +247,7 @@ impl fmt::Display for GpuError {
             GpuError::Surface(e) => write!(f, "GPU surface error: {e}"),
             GpuError::Readback(e) => write!(f, "GPU readback failed: {e}"),
             GpuError::InvalidArgument(e) => write!(f, "invalid argument: {e}"),
+            GpuError::DeviceLost(e) => write!(f, "GPU device lost: {e}"),
         }
     }
 }
@@ -249,9 +258,68 @@ impl std::error::Error for GpuError {}
 ///
 /// Creating and destroying contexts is serialised process-wide (see
 /// [`lifecycle_lock`]); using them is not.
+///
+/// # Device loss
+///
+/// Every constructor registers the device's one device-lost callback
+/// (`wgpu::Device::set_device_lost_callback`) before the context is
+/// returned; it records the loss in a flag shared with everything built on
+/// the context ([`device_lost`](Self::device_lost),
+/// [`device_lost_reason`](Self::device_lost_reason); the ray-query
+/// reflection source reads the same flag). wgpu 30 calls it for a driver
+/// loss (`Unknown`) and after `Device::destroy` (`Destroyed`, delivered by
+/// the next device maintenance, e.g. a poll), never for a plain drop, so
+/// normal teardown does not set it. Do not register another device-lost
+/// callback on [`device`](Self::device): wgpu keeps one per device and a
+/// later one would replace the context's.
 pub struct GpuContext {
     /// `None` only while dropping.
     inner: Option<Inner>,
+    /// Set by the device-lost callback (first reason wins).
+    loss: std::sync::Arc<LossFlag>,
+}
+
+/// Device-loss state shared between a [`GpuContext`], the wgpu device-lost
+/// callback its constructor registers (called from wgpu threads) and the
+/// objects built on the context (SPEC §4 Subphase 5.4 item 4).
+#[derive(Debug, Default)]
+pub(crate) struct LossFlag {
+    lost: std::sync::atomic::AtomicBool,
+    reason: std::sync::OnceLock<String>,
+}
+
+impl LossFlag {
+    /// Records the loss: the first reason wins, the flag is set after the
+    /// reason so a reader that sees the flag also sees a reason.
+    pub(crate) fn set(&self, reason: &str) {
+        let _ = self.reason.set(reason.to_owned());
+        self.lost.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// `true` once the device is known to be lost.
+    pub(crate) fn is_set(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The first recorded reason (empty before a loss).
+    pub(crate) fn reason(&self) -> &str {
+        self.reason.get().map_or("", String::as_str)
+    }
+
+    /// The reason once the device is lost, `None` before.
+    pub(crate) fn lost_reason(&self) -> Option<String> {
+        self.is_set().then(|| self.reason().to_owned())
+    }
+}
+
+/// The reason string recorded for a wgpu device-lost callback:
+/// `"<reason>"`, or `"<reason>: <message>"` with a message.
+pub(crate) fn device_lost_reason(reason: wgpu::DeviceLostReason, message: &str) -> String {
+    if message.is_empty() {
+        format!("{reason:?}")
+    } else {
+        format!("{reason:?}: {message}")
+    }
 }
 
 /// Fields in teardown order (queue first, instance last).
@@ -393,10 +461,55 @@ pub fn create_instance(backends: Backends) -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
-/// Features [`GpuContext::with_instance`] enables whenever the adapter
-/// offers them (timestamp queries for GPU frame timing); never required.
+/// Features every context enables whenever the adapter offers them
+/// (timestamp queries for GPU frame timing); never required.
 fn optional_timestamp_features() -> wgpu::Features {
     wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+}
+
+/// The features a context's device requests on an adapter offering
+/// `adapter`, when the caller wants `wanted`: `(wanted | timestamp
+/// queries) & adapter`. Features the adapter lacks are silently left out
+/// (check [`wgpu::Device::features`]); the timestamp queries
+/// (`TIMESTAMP_QUERY`, `TIMESTAMP_QUERY_INSIDE_ENCODERS`) are always added
+/// when offered. Pure; every [`GpuContext`] constructor requests exactly
+/// this (SPEC §4 Subphase 5.4 item 4, §4 Subphase 1.4).
+pub fn device_features(adapter: wgpu::Features, wanted: wgpu::Features) -> wgpu::Features {
+    (wanted | optional_timestamp_features()) & adapter
+}
+
+/// What the shared build path asks the adapter for (pure, so both
+/// constructors' inputs are testable without a GPU).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DeviceRequest {
+    /// [`device_features`] of the adapter's features and `wanted`.
+    pub(crate) features: wgpu::Features,
+    /// Downlevel defaults at the adapter's resolution limits, plus the
+    /// adapter's acceleration-structure limits with ray queries.
+    pub(crate) limits: wgpu::Limits,
+    /// The experimental-features opt-in is needed (an experimental feature
+    /// such as [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`] is requested).
+    pub(crate) experimental: bool,
+}
+
+/// The device request for an adapter with `adapter_features` and
+/// `adapter_limits` when `wanted` is asked for (the one request path of
+/// every [`GpuContext`] constructor).
+pub(crate) fn device_request(
+    adapter_features: wgpu::Features,
+    adapter_limits: &wgpu::Limits,
+    wanted: wgpu::Features,
+) -> DeviceRequest {
+    let features = device_features(adapter_features, wanted);
+    let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter_limits.clone());
+    if features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) {
+        limits = limits.using_acceleration_structure_values(adapter_limits.clone());
+    }
+    DeviceRequest {
+        features,
+        limits,
+        experimental: features.intersects(wgpu::Features::all_experimental_mask()),
+    }
 }
 
 impl GpuContext {
@@ -409,11 +522,59 @@ impl GpuContext {
     /// `compatible_surface` (created from the same instance). The device
     /// enables `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS` when
     /// the adapter offers them (check [`wgpu::Device::features`]); nothing
-    /// else beyond the defaults.
+    /// else beyond the defaults. Same as
+    /// [`with_instance_features`](Self::with_instance_features) with
+    /// `wgpu::Features::empty()`.
     pub fn with_instance(
         instance: wgpu::Instance,
         opts: &GpuOptions,
         compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> Result<GpuContext, GpuError> {
+        Self::build(instance, opts, compatible_surface, wgpu::Features::empty())
+    }
+
+    /// [`with_instance`](Self::with_instance) whose device additionally
+    /// enables every feature of `wanted` the adapter reports
+    /// ([`device_features`]; features the adapter lacks are silently left
+    /// out: check [`wgpu::Device::features`]). Experimental features (e.g.
+    /// [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`], SPEC §4 Subphase 5.4)
+    /// are opted into only when requested and supported; with ray queries
+    /// the adapter's acceleration-structure limits are requested as well.
+    /// The windowed counterpart of
+    /// [`new_headless_with_features`](Self::new_headless_with_features):
+    /// both go through the same request path.
+    pub fn with_instance_features(
+        instance: wgpu::Instance,
+        opts: &GpuOptions,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+        wanted: wgpu::Features,
+    ) -> Result<GpuContext, GpuError> {
+        Self::build(instance, opts, compatible_surface, wanted)
+    }
+
+    /// A headless context like [`new_headless`](Self::new_headless) whose
+    /// device additionally enables every feature of `wanted` that the
+    /// adapter reports (5.4): [`create_instance`] followed by
+    /// [`with_instance_features`](Self::with_instance_features) without a
+    /// surface. Features the adapter lacks are silently left out: check
+    /// [`wgpu::Device::features`] on the result. Timestamp queries are
+    /// enabled when offered, as for every context.
+    pub fn new_headless_with_features(
+        opts: &GpuOptions,
+        wanted: wgpu::Features,
+    ) -> Result<GpuContext, GpuError> {
+        Self::build(create_instance(opts.backends), opts, None, wanted)
+    }
+
+    /// The one adapter / device request path of every constructor: the
+    /// adapter for `compatible_surface`, then a device with
+    /// [`device_request`], then the device-lost callback that records a
+    /// loss in the context's flag. Runs under the [`lifecycle_lock`].
+    fn build(
+        instance: wgpu::Instance,
+        opts: &GpuOptions,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+        wanted: wgpu::Features,
     ) -> Result<GpuContext, GpuError> {
         let _g = lifecycle_lock();
         let adapter =
@@ -432,69 +593,8 @@ impl GpuContext {
                     )));
                 }
             };
-        let (device, queue) =
-            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("pin_render"),
-                // GPU timestamp queries (the app's GPU frame-time profiler),
-                // only where the adapter offers them: an optional, additive
-                // request; check `device.features()` before using them.
-                required_features: adapter.features() & optional_timestamp_features(),
-                required_limits:
-                    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-                ..Default::default()
-            })) {
-                Ok(dq) => dq,
-                Err(e) => {
-                    drop(adapter); // under the lock
-                    drop(instance);
-                    return Err(GpuError::RequestDevice(e.to_string()));
-                }
-            };
-        Ok(GpuContext {
-            inner: Some(Inner {
-                queue,
-                device,
-                adapter,
-                instance,
-            }),
-        })
-    }
-
-    /// A headless context like [`new_headless`](Self::new_headless) whose
-    /// device additionally enables every feature of `wanted` that the
-    /// adapter reports (5.4). Features the adapter lacks are silently left
-    /// out: check [`wgpu::Device::features`] on the result. Experimental
-    /// features (e.g. [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`]) are
-    /// opted into only when requested and supported; with ray queries the
-    /// adapter's acceleration-structure limits are requested as well.
-    pub fn new_headless_with_features(
-        opts: &GpuOptions,
-        wanted: wgpu::Features,
-    ) -> Result<GpuContext, GpuError> {
-        let instance = create_instance(opts.backends);
-        let _g = lifecycle_lock();
-        let adapter =
-            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: opts.force_fallback_adapter,
-                compatible_surface: None,
-                apply_limit_buckets: false,
-            })) {
-                Ok(a) => a,
-                Err(e) => {
-                    drop(instance); // under the lock
-                    return Err(GpuError::NoAdapter(format!(
-                        "{e} (backends {:?}, force_fallback_adapter {})",
-                        opts.backends, opts.force_fallback_adapter
-                    )));
-                }
-            };
-        let features = wanted & adapter.features();
-        let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        if features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) {
-            limits = limits.using_acceleration_structure_values(adapter.limits());
-        }
-        let experimental = if features.intersects(wgpu::Features::all_experimental_mask()) {
+        let request = device_request(adapter.features(), &adapter.limits(), wanted);
+        let experimental = if request.experimental {
             // SAFETY: the experimental features are requested explicitly by
             // the caller (the optional ray-query path of 5.4, which falls
             // back to probes on any runtime error); see
@@ -506,8 +606,11 @@ impl GpuContext {
         let (device, queue) =
             match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("pin_render"),
-                required_features: features,
-                required_limits: limits,
+                // GPU timestamp queries (the app's GPU frame-time profiler)
+                // only where the adapter offers them, plus what the caller
+                // wanted and the adapter has: check `device.features()`.
+                required_features: request.features,
+                required_limits: request.limits,
                 experimental_features: experimental,
                 ..Default::default()
             })) {
@@ -518,6 +621,11 @@ impl GpuContext {
                     return Err(GpuError::RequestDevice(e.to_string()));
                 }
             };
+        let loss = std::sync::Arc::new(LossFlag::default());
+        let cb_loss = std::sync::Arc::clone(&loss);
+        device.set_device_lost_callback(move |reason, message| {
+            cb_loss.set(&device_lost_reason(reason, &message));
+        });
         Ok(GpuContext {
             inner: Some(Inner {
                 queue,
@@ -525,7 +633,27 @@ impl GpuContext {
                 adapter,
                 instance,
             }),
+            loss,
         })
+    }
+
+    /// `true` once the device is lost (its device-lost callback ran: a
+    /// driver loss, or `Device::destroy` followed by a device poll).
+    /// Dropping a context never sets it. Thread-safe.
+    pub fn device_lost(&self) -> bool {
+        self.loss.is_set()
+    }
+
+    /// The loss reason once [`device_lost`](Self::device_lost) is true
+    /// (`"Destroyed"`, `"Unknown: <message>"`, ...; the first reason
+    /// wins), `None` before.
+    pub fn device_lost_reason(&self) -> Option<String> {
+        self.loss.lost_reason()
+    }
+
+    /// The loss state shared with objects built on this context.
+    pub(crate) fn loss_flag(&self) -> &std::sync::Arc<LossFlag> {
+        &self.loss
     }
 
     fn inner(&self) -> &Inner {

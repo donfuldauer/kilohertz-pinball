@@ -6,11 +6,27 @@
 //! (a placeholder that parks until shutdown). The main thread stays the SDL
 //! pump (D6) and only talks to these threads through rings, the triple
 //! buffer and the atomics in [`OrchestratorStats`].
+//!
+//! After a GPU device loss the render thread rebuilds its table presenter
+//! (#133, SPEC §4 Subphase 1.4 / 6.0): it counts the loss
+//! ([`StatsSnapshot::device_losses`]), dissolves the dead presenter into
+//! its surfaces ([`AppSurfaces::into_sources`]), drops the dead context and
+//! builds a new one on the same `wgpu::Instance` with the same options and
+//! wanted features, then a new [`AppSurfaces`] on the same surfaces (on
+//! DX12 and Vulkan recreated once per loss from the same windows, #239),
+//! with the display state restored. One attempt per render-loop iteration, at
+//! most [`MAX_DEVICE_REBUILD_ATTEMPTS`] per loss, each logged; after the
+//! last failure the thread stops presenting and sets
+//! [`StatsSnapshot::gpu_error`]. The debug-view presenter is not rebuilt
+//! (its `SurfaceSet` cannot hand its surfaces back): a loss there stops
+//! presenting the same way.
 
 use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
 use super::gpu_timer::GpuFrameTimer;
 use super::hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
-use super::present::{AppSurfaces, SurfacePlan, table_set_accepted};
+use super::present::{
+    AppSurfaces, SurfacePlan, SurfaceRecovery, UnrecoveredSurface, table_set_accepted,
+};
 use super::table::{DisplayCommand, FlipperOutline};
 use super::trace::{FrameTraceWriter, SimTraceWriter};
 use super::view::{TableRenderOptions, TableVisuals};
@@ -29,7 +45,10 @@ use pin_core::spsc::SpscConsumer;
 use pin_core::{FrameStateSnapshot, InputEvent, ProfileId, SimStep, TripleBuffer, TripleReader};
 use pin_input::haptics::HapticsConsumer;
 use pin_render::debug::{Camera, DebugLine, DebugLines, snapshot_lines};
-use pin_render::gpu::{GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wgpu};
+use pin_render::gpu::{
+    GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, recreate_surface,
+    wait_for_device, wgpu,
+};
 use pin_render::topology::{SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -91,6 +110,12 @@ pub struct RenderGpu {
     pub surface_options: SurfaceOptions,
 }
 
+/// Consecutive rebuild attempts the render thread makes after one GPU
+/// device loss (one per render-loop iteration) before it stops presenting
+/// and sets [`StatsSnapshot::gpu_error`] (#133). A later loss gets a fresh
+/// budget.
+pub const MAX_DEVICE_REBUILD_ATTEMPTS: u32 = 3;
+
 /// Render thread configuration.
 pub struct RenderConfig {
     /// GPU and surfaces; `None` runs the render thread without a GPU (it
@@ -142,6 +167,17 @@ pub struct RenderConfig {
     /// [`MenuOverlay`](crate::ui::MenuOverlay). `None` (default), or a
     /// closed menu: frames unchanged.
     pub menu: Option<crate::ui::MenuShare>,
+    /// Test hook (default `None`, #133): while it is `Some` and the flag
+    /// reads true at the top of a render-loop iteration with a GPU
+    /// presenter, the render thread clears it, destroys its current device
+    /// (`wgpu::Device::destroy`) and handles the loss exactly like a real
+    /// one (counted, logged, rebuilt). Read only on the render thread.
+    pub force_device_loss: Option<Arc<AtomicBool>>,
+}
+
+impl RenderConfig {
+    /// [`MAX_DEVICE_REBUILD_ATTEMPTS`], as an associated constant.
+    pub const MAX_DEVICE_REBUILD_ATTEMPTS: u32 = MAX_DEVICE_REBUILD_ATTEMPTS;
 }
 
 /// How often the render thread refreshes the profiler HUD text (250 ms:
@@ -229,6 +265,7 @@ impl Default for RenderConfig {
             hud: None,
             latency_trace: None,
             menu: None,
+            force_device_loss: None,
         }
     }
 }
@@ -347,6 +384,8 @@ pub struct OrchestratorStats {
     close_requested: AtomicBool,
     gpu_ready: AtomicBool,
     gpu_error: AtomicBool,
+    device_losses: AtomicU64,
+    device_rebuilds: AtomicU64,
     audio_haptic_events: AtomicU64,
     audio_frames: AtomicU64,
     audio_datagrams: AtomicU64,
@@ -392,8 +431,14 @@ pub struct StatsSnapshot {
     pub close_requested: bool,
     /// The render thread created its GPU context and surfaces.
     pub gpu_ready: bool,
-    /// GPU setup failed (the render thread continued without a GPU).
+    /// GPU setup failed, or the GPU device was lost and could not be
+    /// rebuilt (the render thread continued without a GPU).
     pub gpu_error: bool,
+    /// GPU device losses the render thread detected (one per loss, #133).
+    pub device_losses: u64,
+    /// Successful rebuilds of the render thread's GPU context and table
+    /// presenter after a device loss (#133).
+    pub device_rebuilds: u64,
 }
 
 impl Default for OrchestratorStats {
@@ -415,6 +460,8 @@ impl Default for OrchestratorStats {
             close_requested: AtomicBool::new(false),
             gpu_ready: AtomicBool::new(false),
             gpu_error: AtomicBool::new(false),
+            device_losses: AtomicU64::new(0),
+            device_rebuilds: AtomicU64::new(0),
             audio_haptic_events: AtomicU64::new(0),
             audio_frames: AtomicU64::new(0),
             audio_datagrams: AtomicU64::new(0),
@@ -477,6 +524,8 @@ impl OrchestratorStats {
             close_requested: self.close_requested.load(Ordering::Relaxed),
             gpu_ready: self.gpu_ready.load(Ordering::Relaxed),
             gpu_error: self.gpu_error.load(Ordering::Relaxed),
+            device_losses: self.device_losses.load(Ordering::Relaxed),
+            device_rebuilds: self.device_rebuilds.load(Ordering::Relaxed),
         }
     }
 
@@ -929,6 +978,329 @@ enum Presenter {
     Table(GpuContext, AppSurfaces),
 }
 
+impl Presenter {
+    /// The context the presenter draws with.
+    fn ctx(&self) -> &GpuContext {
+        match self {
+            Presenter::Debug(c, _) | Presenter::Table(c, _) => c,
+        }
+    }
+}
+
+/// Where the render thread is in recovering from a GPU device loss.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+enum RebuildState {
+    /// No loss pending (presenting, or never had a GPU).
+    #[default]
+    Idle,
+    /// A loss was counted; `failed` attempts have failed so far.
+    Pending {
+        /// Failed attempts for this loss.
+        failed: u32,
+    },
+    /// [`MAX_DEVICE_REBUILD_ATTEMPTS`] attempts failed: presenting stopped.
+    Exhausted,
+}
+
+/// What the render thread does after a rebuild attempt.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum AttemptOutcome {
+    /// The presenter is back: count the rebuild.
+    Rebuilt,
+    /// Try again on the next render-loop iteration.
+    Retry,
+    /// The budget is used up: stop presenting, set `gpu_error`.
+    GiveUp,
+}
+
+/// The device-loss rebuild policy (pure, #133): one loss counted per loss,
+/// one attempt per render-loop iteration, at most
+/// [`MAX_DEVICE_REBUILD_ATTEMPTS`] consecutive attempts per loss, a fresh
+/// budget after a successful rebuild.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+struct RebuildPolicy {
+    state: RebuildState,
+}
+
+impl RebuildPolicy {
+    /// A loss was detected: `true` when it is a new loss to count (only
+    /// while [`RebuildState::Idle`]).
+    fn lost(&mut self) -> bool {
+        if self.state == RebuildState::Idle {
+            self.state = RebuildState::Pending { failed: 0 };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The number (1-based) of the attempt to make now, `None` when no
+    /// rebuild is pending.
+    fn next_attempt(&self) -> Option<u32> {
+        match self.state {
+            RebuildState::Pending { failed } if failed < MAX_DEVICE_REBUILD_ATTEMPTS => {
+                Some(failed + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Records the result of the attempt [`next_attempt`](Self::next_attempt)
+    /// returned.
+    fn record(&mut self, ok: bool) -> AttemptOutcome {
+        let RebuildState::Pending { failed } = self.state else {
+            return if ok {
+                AttemptOutcome::Rebuilt
+            } else {
+                AttemptOutcome::GiveUp
+            };
+        };
+        if ok {
+            self.state = RebuildState::Idle;
+            AttemptOutcome::Rebuilt
+        } else if failed + 1 >= MAX_DEVICE_REBUILD_ATTEMPTS {
+            self.state = RebuildState::Exhausted;
+            AttemptOutcome::GiveUp
+        } else {
+            self.state = RebuildState::Pending { failed: failed + 1 };
+            AttemptOutcome::Retry
+        }
+    }
+}
+
+/// The stderr line of a detected loss.
+fn device_lost_line(reason: &str) -> String {
+    format!("pin_app: GPU device lost ({reason}); rebuilding")
+}
+
+/// The stderr line of rebuild attempt `n`.
+fn rebuild_attempt_line(n: u32, result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => format!("pin_app: GPU rebuild attempt {n} of {MAX_DEVICE_REBUILD_ATTEMPTS}: ok"),
+        Err(e) => format!(
+            "pin_app: GPU rebuild attempt {n} of {MAX_DEVICE_REBUILD_ATTEMPTS}: failed: {e}"
+        ),
+    }
+}
+
+/// How the render thread's GPU context is (re)built: kept for a rebuild
+/// after a device loss, so the new context gets the same options and
+/// features (ray queries stay off in the app, D33: `wanted` is empty).
+#[derive(Copy, Clone, Debug)]
+struct GpuInputs {
+    options: GpuOptions,
+    surface_options: SurfaceOptions,
+    wanted: wgpu::Features,
+}
+
+/// A pending rebuild: the dead presenter's surfaces and the instance they
+/// belong to.
+struct PendingRebuild {
+    instance: wgpu::Instance,
+    recovery: SurfaceRecovery,
+    /// Whether the surfaces are still to be recreated for this loss (#239).
+    recreation: SurfaceRecreation,
+}
+
+/// Whether a rebuild after one device loss must recreate the surfaces
+/// first (#239, KP-112; DECISIONS "#239 KP-112 — surfaces are recreated for
+/// a DX12 or Vulkan rebuild"): on DX12 and Vulkan a reused surface keeps a
+/// swap chain bound to the dead device, so the surfaces are recreated, once
+/// per loss (a later attempt reuses the recreated ones). Metal and other
+/// backends reuse the surfaces.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct SurfaceRecreation {
+    /// The dead context's backend.
+    backend: wgpu::Backend,
+    /// The surfaces were recreated (or their recreation failed) for this
+    /// loss.
+    done: bool,
+}
+
+impl SurfaceRecreation {
+    /// No recreation yet for a loss on `backend`.
+    fn new(backend: wgpu::Backend) -> SurfaceRecreation {
+        SurfaceRecreation {
+            backend,
+            done: false,
+        }
+    }
+
+    /// `true` exactly once per loss on DX12 or Vulkan: the surfaces must be
+    /// recreated now.
+    fn due(&mut self) -> bool {
+        let due = !self.done && matches!(self.backend, wgpu::Backend::Dx12 | wgpu::Backend::Vulkan);
+        self.done = true;
+        due
+    }
+}
+
+/// Replaces every item through `recreate`, keeping the order; an item whose
+/// replacement fails becomes its failure value (the window that lost its
+/// surface). Returns the replaced items, the failures and one line naming
+/// every failure (`None` when nothing failed).
+fn recreate_each<T, U>(
+    items: Vec<T>,
+    mut recreate: impl FnMut(T) -> Result<T, (U, String)>,
+) -> (Vec<T>, Vec<U>, Option<String>) {
+    let mut kept = Vec::with_capacity(items.len());
+    let mut failed = Vec::new();
+    let mut notes = Vec::new();
+    for item in items {
+        match recreate(item) {
+            Ok(t) => kept.push(t),
+            Err((u, note)) => {
+                failed.push(u);
+                notes.push(note);
+            }
+        }
+    }
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
+    (kept, failed, note)
+}
+
+/// Recreates the surface of every source in `recovery` on `instance`
+/// (#239). A source whose surface cannot be recreated has lost it (the old
+/// one is dropped), so it moves to [`SurfaceRecovery::unrecovered`] with its
+/// window guard, and the error names its window.
+fn recreate_sources(
+    instance: &wgpu::Instance,
+    recovery: &mut SurfaceRecovery,
+) -> Result<(), String> {
+    let sources = std::mem::take(&mut recovery.sources);
+    let (sources, lost, note) = recreate_each(sources, |src| {
+        let role = src.role();
+        let SurfaceSource {
+            window,
+            viewports,
+            surface,
+            logical_size,
+            pixel_size,
+            keep_alive,
+        } = src;
+        // SAFETY: `keep_alive`, the guard paired with `surface`, is held
+        // across the call and paired with the new surface below, so the
+        // window outlives both (`recreate_surface`'s `# Safety`). Only on
+        // DX12 / Vulkan (`SurfaceRecreation::due`).
+        match unsafe { recreate_surface(instance, surface) } {
+            Ok(surface) => Ok(SurfaceSource {
+                window,
+                viewports,
+                surface,
+                logical_size,
+                pixel_size,
+                keep_alive,
+            }),
+            Err(e) => Err((
+                UnrecoveredSurface {
+                    window,
+                    role,
+                    keep_alive,
+                },
+                format!("window {window} ({role:?}): {e}"),
+            )),
+        }
+    });
+    recovery.sources = sources;
+    recovery.unrecovered.extend(lost);
+    match note {
+        Some(n) => Err(format!("surface recreation failed: {n}")),
+        None => Ok(()),
+    }
+}
+
+/// Longest blocking wait after a forced `Device::destroy` for the queue to
+/// drain. wgpu queues the device-lost callback from device maintenance only
+/// once the destroyed device's queue is empty, so the in-flight submissions
+/// must finish first (see DECISIONS "#239 KP-112 — forced loss waits for the
+/// queue").
+const FORCED_LOSS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fallback non-blocking polls after the [`FORCED_LOSS_WAIT`] wait, should
+/// the callback still be outstanding.
+const FORCED_LOSS_POLLS: u32 = 64;
+
+/// Destroys `ctx`'s device (the [`RenderConfig::force_device_loss`] hook),
+/// then waits, at most [`FORCED_LOSS_WAIT`], for its submitted work so wgpu
+/// delivers the device-lost callback, then polls it without blocking at
+/// most [`FORCED_LOSS_POLLS`] times while the callback is still missing.
+/// Runs on the render thread only (tests only). The loss itself is never
+/// flagged by hand: a forced loss and a real one take the same callback
+/// path.
+fn force_device_loss(ctx: &GpuContext) {
+    ctx.device().destroy();
+    // A timeout is not fatal: the fallback polls below and the render
+    // loop's per-iteration poll still deliver a late callback.
+    let _ = wait_for_device(ctx.device(), FORCED_LOSS_WAIT);
+    for _ in 0..FORCED_LOSS_POLLS {
+        if ctx.device_lost() {
+            break;
+        }
+        let _ = ctx.device().poll(wgpu::PollType::Poll);
+    }
+}
+
+/// One rebuild attempt: a new context on `pending.instance` (same options
+/// and features as the first build) and a new table presenter on the
+/// recovered surfaces, with the carried display and window state
+/// restored. After a loss on DX12 or Vulkan the first attempt recreates
+/// every surface first ([`recreate_sources`], #239); a window whose surface
+/// cannot be recreated fails this and every later attempt. On failure the
+/// surfaces stay in `pending` for the next attempt.
+fn rebuild_table_presenter(
+    pending: &mut PendingRebuild,
+    inputs: &GpuInputs,
+    visuals: &TableVisuals,
+    table_render: TableRenderOptions,
+) -> Result<Presenter, String> {
+    if let Some(note) = pending.recovery.unrecovered_note() {
+        return Err(note);
+    }
+    if pending.recreation.due() {
+        recreate_sources(&pending.instance, &mut pending.recovery)?;
+        eprintln!(
+            "pin_app: surface recreated for the rebuild ({:?})",
+            pending.recreation.backend
+        );
+    }
+    let Some(first) = pending.recovery.sources.first() else {
+        return Err("no surface left to present to".to_owned());
+    };
+    let ctx = GpuContext::with_instance_features(
+        pending.instance.clone(),
+        &inputs.options,
+        Some(&first.surface),
+        inputs.wanted,
+    )
+    .map_err(|e| e.to_string())?;
+    let sources = &pending.recovery.sources;
+    let plans: Vec<(SurfaceRole, SurfacePlan)> = sources
+        .iter()
+        .zip(AppSurfaces::plan(&ctx, sources, inputs.surface_options))
+        .map(|(s, p)| (s.role(), p))
+        .collect();
+    if choose_presenter(true, &plans) != PresenterKind::Table {
+        return Err("the playfield surface offers no 8-bit format on the new device".to_owned());
+    }
+    let sources = std::mem::take(&mut pending.recovery.sources);
+    match AppSurfaces::try_new(&ctx, sources, inputs.surface_options, visuals, table_render) {
+        Ok(mut s) => {
+            s.restore_state(&pending.recovery.state);
+            Ok(Presenter::Table(ctx, s))
+        }
+        Err(e) => {
+            let SurfaceRecovery {
+                sources,
+                unrecovered,
+                ..
+            } = e.recovery;
+            pending.recovery.sources = sources;
+            pending.recovery.unrecovered.extend(unrecovered);
+            Err(e.message)
+        }
+    }
+}
+
 /// Which presenter the render thread builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PresenterKind {
@@ -960,6 +1332,12 @@ trait DisplayCommandSink {
 impl DisplayCommandSink for AppSurfaces {
     fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
         AppSurfaces::apply_display_command(self, cmd, now_ms);
+    }
+}
+
+impl DisplayCommandSink for super::present::DisplayMemory {
+    fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
+        self.record(cmd, now_ms);
     }
 }
 
@@ -1101,7 +1479,7 @@ fn refresh_hud(
 
 fn render_thread(
     cfg: RenderConfig,
-    mut reader: TripleReader<FrameStateSnapshot>,
+    reader: TripleReader<FrameStateSnapshot>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
     spawned: Instant,
@@ -1121,6 +1499,7 @@ fn render_thread(
         hud,
         mut latency_trace,
         menu,
+        force_device_loss: force_loss,
     } = cfg;
     // The HUD is drawn by the playfield's table renderer (or, in the debug
     // view, by `DebugViewHooks`), only when a reader is configured
@@ -1136,10 +1515,24 @@ fn render_thread(
     let mut debug_hooks: Option<DebugViewHooks> = None;
     // GPU setup on this thread (the device lives here). Without surfaces
     // there is nothing to present, so no adapter is requested.
+    // The rebuild after a device loss reuses these (#133).
+    let mut inputs = None;
+    let profiling = present_profiler.is_some();
     let mut presenter = match gpu {
         Some(g) if !g.surfaces.is_empty() => {
-            let ctx =
-                GpuContext::with_instance(g.instance, &g.options, Some(&g.surfaces[0].surface));
+            let gi = GpuInputs {
+                options: g.options,
+                surface_options: g.surface_options,
+                // D33: ray-query reflections stay off in the app.
+                wanted: wgpu::Features::empty(),
+            };
+            inputs = Some(gi);
+            let ctx = GpuContext::with_instance_features(
+                g.instance,
+                &gi.options,
+                Some(&g.surfaces[0].surface),
+                gi.wanted,
+            );
             let made = ctx.map_err(|e| e.to_string()).and_then(|ctx| {
                 build_presenter(
                     ctx,
@@ -1168,10 +1561,7 @@ fn render_thread(
                                 debug_view_hooks(ctx, set, present_profiler.take(), hud.is_some());
                         }
                     }
-                    let ctx = match &p {
-                        Presenter::Debug(c, _) | Presenter::Table(c, _) => c,
-                    };
-                    let info = ctx.adapter_info();
+                    let info = p.ctx().adapter_info();
                     match &p {
                         Presenter::Debug(_, set) => eprintln!(
                             "pin_app: render on {} ({:?}); debug view; present modes {:?}",
@@ -1226,34 +1616,163 @@ fn render_thread(
         }
     }
     let mut lines = DebugLines::new(4096 + table_lines.len() + flippers.len());
-    let mut last_tick = 0u64;
+    // The snapshot latch (#149, REQ-LAT-001): read early at the top of each
+    // iteration, then late by the table presenter just before it encodes
+    // the playfield (after its acquire returned, and no earlier than
+    // `LATE_LATCH_MIN_LAG` after the previous playfield present; the render
+    // thread sleeps the rest). Only the triple-buffer reader is touched:
+    // the sim thread is never blocked (R4).
+    let mut latch =
+        super::present::SnapshotLatch::new(reader).with_min_lag(super::present::LATE_LATCH_MIN_LAG);
+    // Device-loss recovery (#133).
+    let mut rebuild = RebuildPolicy::default();
+    let mut pending: Option<PendingRebuild> = None;
+    // The menu state last shown, for a rebuilt menu overlay.
+    let mut last_menu: Option<crate::ui::MenuState> = None;
+    // GPU frame timing was on (its profiler writer cannot be moved to a
+    // rebuilt presenter; see DECISIONS "#133 KP-052 — device-loss rebuild").
+    let timed = profiling && matches!(presenter, Some(Presenter::Table(..)));
+    // A forced loss whose device-lost callback is not yet delivered (#239).
+    let mut forced_loss_pending = false;
     while !shutdown.load(Ordering::Acquire) {
-        if let Some(rx) = window_events.as_mut() {
-            while let Some(ev) = rx.pop() {
-                if ev.kind == WindowEventKind::CloseRequested && close_policy.quits(ev.window) {
-                    stats.close_requested.store(true, Ordering::Relaxed);
+        // Test hook: destroy the current device (then handled as a loss).
+        if let (Some(flag), Some(p)) = (force_loss.as_ref(), presenter.as_ref())
+            && flag.swap(false, Ordering::AcqRel)
+        {
+            force_device_loss(p.ctx());
+            forced_loss_pending = true;
+        }
+        // Keep polling a force-destroyed device until wgpu delivers the
+        // callback; the loss is still detected only through it (#239).
+        if forced_loss_pending {
+            match presenter.as_ref() {
+                Some(p) if !p.ctx().device_lost() => {
+                    let _ = p.ctx().device().poll(wgpu::PollType::Poll);
                 }
-                match presenter.as_mut() {
-                    Some(Presenter::Debug(_, set)) => set.handle_window_event(&ev),
-                    Some(Presenter::Table(_, s)) => s.handle_window_event(&ev),
-                    None => {}
+                _ => forced_loss_pending = false,
+            }
+        }
+        // Detection: a lost device is never drawn on.
+        if let Some(p) = presenter.take_if(|p| p.ctx().device_lost()) {
+            let reason = p.ctx().device_lost_reason().unwrap_or_default();
+            if rebuild.lost() {
+                stats.device_losses.fetch_add(1, Ordering::Relaxed);
+            }
+            debug_hooks = None;
+            debug_menu = None;
+            match p {
+                Presenter::Table(ctx, s) => {
+                    eprintln!("{}", device_lost_line(&reason));
+                    // Dead presenter first (renderers, timer, presenter
+                    // threads), then the dead context; the instance and
+                    // the surfaces it made stay.
+                    let recovery = s.into_sources();
+                    let instance = ctx.instance().clone();
+                    let recreation = SurfaceRecreation::new(ctx.adapter_info().backend);
+                    drop(ctx);
+                    pending = Some(PendingRebuild {
+                        instance,
+                        recovery,
+                        recreation,
+                    });
+                }
+                Presenter::Debug(ctx, set) => {
+                    eprintln!(
+                        "pin_app: GPU device lost ({reason}); the debug view cannot be \
+                         rebuilt, rendering disabled"
+                    );
+                    drop(set);
+                    drop(ctx);
+                    rebuild.state = RebuildState::Exhausted;
+                    stats.gpu_error.store(true, Ordering::Relaxed);
                 }
             }
         }
-        let snap = reader.read();
-        if snap.tick < last_tick {
-            stats.render_non_monotonic.fetch_add(1, Ordering::Relaxed);
+        // One rebuild attempt per iteration.
+        if let (Some(n), Some(p), Some(gi), Some(visuals)) = (
+            rebuild.next_attempt(),
+            pending.as_mut(),
+            inputs.as_ref(),
+            table.as_deref(),
+        ) {
+            let made = rebuild_table_presenter(p, gi, visuals, table_render);
+            let result = made.as_ref().map(|_| ()).map_err(Clone::clone);
+            eprintln!("{}", rebuild_attempt_line(n, &result));
+            match (rebuild.record(made.is_ok()), made) {
+                (AttemptOutcome::Rebuilt, Ok(mut np)) => {
+                    pending = None;
+                    if let Presenter::Table(ctx, s) = &mut np {
+                        if menu.is_some()
+                            && let Some(o) = crate::ui::menu_overlay_for(ctx, s.playfield_format())
+                        {
+                            s.set_menu_overlay(o);
+                        }
+                        if let Some(state) = last_menu.clone() {
+                            s.set_menu_state(state);
+                        }
+                        if timed {
+                            eprintln!(
+                                "pin_app: gpu frame timing: not resumed after the rebuild (the \
+                                 profiler's GPU writer stayed with the lost device)"
+                            );
+                        }
+                    }
+                    stats.device_rebuilds.fetch_add(1, Ordering::Relaxed);
+                    presenter = Some(np);
+                }
+                (AttemptOutcome::GiveUp, _) => {
+                    eprintln!(
+                        "pin_app: GPU rebuild failed {MAX_DEVICE_REBUILD_ATTEMPTS} times, \
+                         rendering disabled"
+                    );
+                    stats.gpu_error.store(true, Ordering::Relaxed);
+                    // The surfaces and window guards stay in `pending`
+                    // until the thread ends (dropped after the presenter,
+                    // as at a normal shutdown).
+                }
+                _ => {}
+            }
         }
-        last_tick = snap.tick;
-        stats.render_last_tick.store(last_tick, Ordering::Relaxed);
+        if let Some(rx) = window_events.as_mut() {
+            while let Some(ev) = rx.pop() {
+                record_close(&ev, close_policy, stats);
+                match presenter.as_mut() {
+                    Some(Presenter::Debug(_, set)) => set.handle_window_event(&ev),
+                    Some(Presenter::Table(_, s)) => s.handle_window_event(&ev),
+                    None => {
+                        if let Some(p) = pending.as_mut() {
+                            p.recovery.handle_window_event(&ev);
+                        }
+                    }
+                }
+            }
+        }
+        // The early latch. Display commands are drained up to its tick,
+        // which is never later than the snapshot the frame draws (the late
+        // latch reads the same or a newer snapshot), so a command never
+        // reaches a frame before the state it accompanies.
+        let last_tick = latch.latch().tick;
+        record_latch(stats, &mut latch);
         if let Some(rx) = displays.as_mut() {
-            let sink = match presenter.as_mut() {
-                Some(Presenter::Table(_, s)) => Some(s),
-                _ => None,
-            };
-            drain_display_commands(rx, sink, last_tick);
+            match (presenter.as_mut(), pending.as_mut()) {
+                (Some(Presenter::Table(_, s)), _) => {
+                    drain_display_commands(rx, Some(s), last_tick);
+                }
+                // While a rebuild is pending, the commands are remembered
+                // for the rebuilt presenter.
+                (None, Some(p)) => {
+                    drain_display_commands(rx, Some(&mut p.recovery.state.displays), last_tick);
+                }
+                _ => {
+                    drain_display_commands::<AppSurfaces>(rx, None, last_tick);
+                }
+            }
         }
         if let Some(state) = menu.as_ref().and_then(crate::ui::MenuShare::take) {
+            if inputs.is_some() {
+                // Kept for a menu overlay rebuilt after a device loss.
+                last_menu = Some(state.clone());
+            }
             match presenter.as_mut() {
                 Some(Presenter::Table(_, s)) => s.set_menu_state(state),
                 _ => {
@@ -1270,6 +1789,7 @@ fn render_thread(
                 for l in &table_lines {
                     lines.push(*l);
                 }
+                let snap = latch.drawn();
                 for st in snap.flippers() {
                     if let Some(f) = flippers.get(usize::from(st.id.0)) {
                         lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
@@ -1316,7 +1836,7 @@ fn render_thread(
                     // unit, so present_ns is sampled after the whole render
                     // call; the table presenter path stamps right after the
                     // playfield queue.present, before any reconfigure.
-                    t.presented(paced, snap);
+                    t.presented(paced, latch.drawn());
                 }
                 stats.record_statuses(&st, spawned);
             }
@@ -1330,18 +1850,22 @@ fn render_thread(
                 // backglass and score slots are drawn (REQ-LAT-003 present
                 // time).
                 let mut stamp = None;
+                // The late latch: the playfield re-reads the snapshot just
+                // before it encodes (#149); `latch.drawn()` is then the
+                // snapshot the presented playfield drew.
                 let st = match latency_trace.as_ref() {
-                    Some(t) => s.render_with_playfield_hook(snap, &mut |status| {
+                    Some(t) => s.render_latched(&mut latch, &mut |status| {
                         t.stamp_playfield(&mut stamp, status);
                     }),
-                    None => s.render(snap),
+                    None => s.render_latched(&mut latch, &mut |_| {}),
                 };
+                record_latch(stats, &mut latch);
                 paced = s.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {
                     // A trace frame only when the playfield presented (then
                     // the hook stamped it; the fallback read is unused).
                     let present_ns = stamp.unwrap_or_else(|| t.now_ns());
-                    t.presented_at(paced, snap, present_ns);
+                    t.presented_at(paced, latch.drawn(), present_ns);
                 }
                 stats.record_statuses(&st, spawned);
             }
@@ -1352,9 +1876,46 @@ fn render_thread(
             std::thread::park_timeout(idle_period);
         }
     }
+    // The loop stopped (a table swap or shutdown): a close request still
+    // queued in the window ring is recorded too, so once the main thread has
+    // joined this thread, `close_requested` reflects every close it pushed
+    // before stopping it, whatever this loop had popped (gate 163 round 9,
+    // review thread 4703749444). The other events are moot: the surfaces go
+    // now.
+    if let Some(rx) = window_events.as_mut() {
+        while let Some(ev) = rx.pop() {
+            record_close(&ev, close_policy, stats);
+        }
+    }
     // Surfaces drop here, on the render thread, before the main thread
     // destroys the windows (it joins this thread first).
     drop(presenter);
+    drop(pending);
+}
+
+/// Records a window `CloseRequested` that `policy` accepts
+/// ([`ClosePolicy::quits`]) in `stats` (the one place the close policy is
+/// applied).
+fn record_close(ev: &WindowEvent, policy: ClosePolicy, stats: &OrchestratorStats) {
+    if ev.kind == WindowEventKind::CloseRequested && policy.quits(ev.window) {
+        stats.close_requested.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Publishes the render latch's accounting (#149): the drawn snapshot's
+/// tick as `render_last_tick` and the non-monotonic latches counted since
+/// the last call into `render_non_monotonic`.
+fn record_latch<S: super::present::SnapshotSource + ?Sized>(
+    stats: &OrchestratorStats,
+    latch: &mut super::present::SnapshotLatch<S>,
+) {
+    let n = latch.take_non_monotonic();
+    if n > 0 {
+        stats.render_non_monotonic.fetch_add(n, Ordering::Relaxed);
+    }
+    stats
+        .render_last_tick
+        .store(latch.last_tick(), Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -1594,5 +2155,267 @@ mod tests {
         assert_eq!(drain_display_commands::<Recorder>(&mut rx, None, 78), 1);
         assert_eq!(drain_display_commands(&mut rx, Some(&mut table), 79), 0);
         assert_eq!(table.0.len(), 2);
+    }
+
+    /// Runs `render_thread` with shutdown already requested (its loop never
+    /// pops the window ring: the state a table swap leaves when it stops a
+    /// render thread that had not drained the ring yet) and returns whether
+    /// the stats then hold a close request.
+    fn close_after_stop(policy: ClosePolicy, events: &[WindowEvent]) -> bool {
+        let (mut tx, rx) = pin_core::spsc::channel(16);
+        for ev in events {
+            tx.push(*ev).unwrap();
+        }
+        let (_writer, reader) = TripleBuffer::new(FrameStateSnapshot::default());
+        let cfg = RenderConfig {
+            window_events: Some(rx),
+            close_policy: policy,
+            ..RenderConfig::default()
+        };
+        let stats = OrchestratorStats::default();
+        let shutdown = AtomicBool::new(true);
+        render_thread(cfg, reader, &shutdown, &stats, Instant::now());
+        stats.snapshot().close_requested
+    }
+
+    fn window_event(window: usize, kind: WindowEventKind) -> WindowEvent {
+        WindowEvent {
+            timestamp_ns: 1,
+            window,
+            kind,
+        }
+    }
+
+    /// Gate 163 round 9 #1 (review thread 4703749444, REQ-VIEW-006): a
+    /// close queued before the render thread was stopped is recorded once
+    /// the thread is joined, although its loop never popped it; the close
+    /// policy still decides (deterministic: the loop never runs).
+    #[test]
+    fn close_queued_before_stop_is_recorded() {
+        let close = |w| window_event(w, WindowEventKind::CloseRequested);
+        assert!(close_after_stop(ClosePolicy::PlayfieldOnly, &[close(0)]));
+        assert!(close_after_stop(
+            ClosePolicy::PlayfieldOnly,
+            &[
+                window_event(0, WindowEventKind::Resized { w: 8, h: 8 }),
+                close(0)
+            ]
+        ));
+        assert!(!close_after_stop(ClosePolicy::PlayfieldOnly, &[close(1)]));
+        assert!(close_after_stop(ClosePolicy::AnyWindow, &[close(2)]));
+        assert!(!close_after_stop(ClosePolicy::Ignore, &[close(0)]));
+        assert!(!close_after_stop(ClosePolicy::PlayfieldOnly, &[]));
+    }
+
+    // -----------------------------------------------------------------
+    // #133 (KP-052): device-loss rebuild policy (SPEC §4 Subphase 1.4,
+    // 6.0, 5.4 item 4)
+    // -----------------------------------------------------------------
+
+    /// SPEC §4 Subphase 6.0 / #133: a loss is counted once, then at most
+    /// `MAX_DEVICE_REBUILD_ATTEMPTS` attempts, then the policy gives up
+    /// for good (no further attempt, no further count).
+    #[test]
+    fn rebuild_policy_gives_up_after_three_failed_attempts() {
+        let mut p = RebuildPolicy::default();
+        assert_eq!(p.next_attempt(), None, "nothing pending before a loss");
+        assert!(p.lost(), "a new loss is counted");
+        assert!(!p.lost(), "the same loss is not counted twice");
+        let mut outcomes = Vec::new();
+        while let Some(n) = p.next_attempt() {
+            assert_eq!(n, outcomes.len() as u32 + 1);
+            outcomes.push(p.record(false));
+        }
+        assert_eq!(
+            outcomes,
+            [
+                AttemptOutcome::Retry,
+                AttemptOutcome::Retry,
+                AttemptOutcome::GiveUp
+            ]
+        );
+        assert_eq!(outcomes.len() as u32, MAX_DEVICE_REBUILD_ATTEMPTS);
+        assert_eq!(p.state, RebuildState::Exhausted);
+        assert_eq!(p.next_attempt(), None);
+        assert!(!p.lost(), "an exhausted policy counts no further loss");
+    }
+
+    /// A successful attempt ends the loss; a later loss gets a fresh
+    /// budget of three attempts.
+    #[test]
+    fn rebuild_policy_resets_after_a_success() {
+        let mut p = RebuildPolicy::default();
+        assert!(p.lost());
+        assert_eq!(p.next_attempt(), Some(1));
+        assert_eq!(p.record(false), AttemptOutcome::Retry);
+        assert_eq!(p.next_attempt(), Some(2));
+        assert_eq!(p.record(true), AttemptOutcome::Rebuilt);
+        assert_eq!(p.state, RebuildState::Idle);
+        assert_eq!(p.next_attempt(), None);
+        // The next loss: counted again, three attempts again.
+        assert!(p.lost());
+        for n in 1..MAX_DEVICE_REBUILD_ATTEMPTS {
+            assert_eq!(p.next_attempt(), Some(n));
+            assert_eq!(p.record(false), AttemptOutcome::Retry);
+        }
+        assert_eq!(p.next_attempt(), Some(MAX_DEVICE_REBUILD_ATTEMPTS));
+        assert_eq!(p.record(true), AttemptOutcome::Rebuilt);
+    }
+
+    /// #239 (KP-112): surfaces are recreated once per loss on DX12 and
+    /// Vulkan (a later attempt of the same loss reuses the recreated ones),
+    /// never on Metal or GL; a new loss starts a new recreation.
+    #[test]
+    fn surface_recreation_is_due_once_per_loss_on_dx12_and_vulkan() {
+        for backend in [wgpu::Backend::Dx12, wgpu::Backend::Vulkan] {
+            let mut r = SurfaceRecreation::new(backend);
+            assert!(r.due(), "{backend:?}: the first attempt recreates");
+            assert!(!r.due(), "{backend:?}: later attempts do not");
+            assert!(!r.due());
+            assert!(
+                SurfaceRecreation::new(backend).due(),
+                "a new loss recreates again"
+            );
+        }
+        for backend in [wgpu::Backend::Metal, wgpu::Backend::Gl, wgpu::Backend::Noop] {
+            let mut r = SurfaceRecreation::new(backend);
+            assert!(!r.due(), "{backend:?} reuses its surfaces");
+            assert!(!r.due());
+        }
+    }
+
+    /// #239 (KP-112): a source whose surface cannot be recreated moves to
+    /// the unrecovered windows with its guard (so every later attempt fails
+    /// cleanly on `unrecovered_note`); the others keep their order and the
+    /// error names each failed window.
+    #[test]
+    fn failed_surface_recreation_moves_the_window_to_unrecovered() {
+        let guard = pin_render::gpu::WindowGuard::new(());
+        let (kept, lost, note) = recreate_each(vec![0usize, 1, 2], |w| {
+            if w == 1 {
+                Err((
+                    UnrecoveredSurface {
+                        window: w,
+                        role: SurfaceRole::Backglass,
+                        keep_alive: Some(guard.clone()),
+                    },
+                    format!("window {w} (Backglass): refused"),
+                ))
+            } else {
+                Ok(w + 10)
+            }
+        });
+        assert_eq!(kept, [10, 12]);
+        assert_eq!(note.as_deref(), Some("window 1 (Backglass): refused"));
+        assert_eq!(guard.strong_count(), 2, "the failed window stays guarded");
+        let mut recovery = SurfaceRecovery {
+            sources: Vec::new(),
+            unrecovered: Vec::new(),
+            state: Default::default(),
+        };
+        recovery.unrecovered.extend(lost);
+        let n = recovery.unrecovered_note().expect("a window was lost");
+        assert!(n.contains("window 1 (Backglass)"), "{n}");
+        drop(recovery);
+        assert_eq!(guard.strong_count(), 1);
+        let (kept, lost, note) = recreate_each(vec![1u8, 2], Ok::<_, ((), String)>);
+        assert_eq!((kept, lost.len(), note), (vec![1, 2], 0, None));
+    }
+
+    proptest::proptest! {
+        /// Any sequence of attempt results: attempts per loss never exceed
+        /// the budget, every success returns to idle, and the counters the
+        /// render thread keeps (losses, rebuilds) match the sequence.
+        #[test]
+        fn rebuild_policy_bounds_attempts_per_loss(results in proptest::collection::vec(proptest::bool::ANY, 0..40)) {
+            let mut p = RebuildPolicy::default();
+            let (mut losses, mut rebuilds, mut attempts_this_loss) = (0u32, 0u32, 0u32);
+            for ok in results {
+                if p.state == RebuildState::Exhausted {
+                    break;
+                }
+                if p.lost() {
+                    losses += 1;
+                    attempts_this_loss = 0;
+                }
+                let n = p.next_attempt().expect("pending after a loss");
+                attempts_this_loss += 1;
+                proptest::prop_assert_eq!(n, attempts_this_loss);
+                proptest::prop_assert!(n <= MAX_DEVICE_REBUILD_ATTEMPTS);
+                match p.record(ok) {
+                    AttemptOutcome::Rebuilt => {
+                        proptest::prop_assert!(ok);
+                        rebuilds += 1;
+                        proptest::prop_assert_eq!(p.state, RebuildState::Idle);
+                    }
+                    AttemptOutcome::Retry => proptest::prop_assert!(!ok && n < MAX_DEVICE_REBUILD_ATTEMPTS),
+                    AttemptOutcome::GiveUp => proptest::prop_assert!(!ok && n == MAX_DEVICE_REBUILD_ATTEMPTS),
+                }
+            }
+            proptest::prop_assert!(rebuilds <= losses);
+            proptest::prop_assert!(losses <= rebuilds + 1);
+        }
+    }
+
+    /// The stderr lines the brief names, verbatim.
+    #[test]
+    fn device_loss_log_lines() {
+        assert_eq!(
+            device_lost_line("Destroyed"),
+            "pin_app: GPU device lost (Destroyed); rebuilding"
+        );
+        assert_eq!(
+            rebuild_attempt_line(1, &Ok(())),
+            "pin_app: GPU rebuild attempt 1 of 3: ok"
+        );
+        assert_eq!(
+            rebuild_attempt_line(3, &Err("no GPU adapter: none".into())),
+            "pin_app: GPU rebuild attempt 3 of 3: failed: no GPU adapter: none"
+        );
+    }
+
+    /// The hook is off by default, the counters start at zero and reach
+    /// the snapshot.
+    #[test]
+    fn device_loss_hook_and_counters_default_off() {
+        assert!(RenderConfig::default().force_device_loss.is_none());
+        assert_eq!(MAX_DEVICE_REBUILD_ATTEMPTS, 3);
+        assert_eq!(RenderConfig::MAX_DEVICE_REBUILD_ATTEMPTS, 3);
+        let d = StatsSnapshot::default();
+        assert_eq!((d.device_losses, d.device_rebuilds), (0, 0));
+        let st = OrchestratorStats::default();
+        assert_eq!(st.snapshot(), StatsSnapshot::default());
+        st.device_losses.fetch_add(2, Ordering::Relaxed);
+        st.device_rebuilds.fetch_add(1, Ordering::Relaxed);
+        let s = st.snapshot();
+        assert_eq!((s.device_losses, s.device_rebuilds), (2, 1));
+    }
+
+    /// While a rebuild is pending the sim's display commands are kept in
+    /// the carried display state (none is dropped).
+    #[test]
+    fn display_commands_are_remembered_while_no_presenter_exists() {
+        let (mut tx, mut rx) = pin_input::haptics::haptics_ring(8);
+        assert!(tx.push(DisplayCommand::Score {
+            player: 1,
+            score: 500
+        }));
+        assert!(tx.push(DisplayCommand::Scene(pin_core::SceneId(4))));
+        let mut mem = super::super::present::DisplayMemory::default();
+        assert_eq!(drain_display_commands(&mut rx, Some(&mut mem), 90), 2);
+        let replay: Vec<_> = mem.replay().collect();
+        assert_eq!(
+            replay,
+            [
+                (
+                    DisplayCommand::Score {
+                        player: 1,
+                        score: 500
+                    },
+                    90
+                ),
+                (DisplayCommand::Scene(pin_core::SceneId(4)), 90)
+            ]
+        );
     }
 }

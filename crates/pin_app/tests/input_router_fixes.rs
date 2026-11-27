@@ -375,3 +375,149 @@ fn a_later_neutral_replaces_an_earlier_pending_value() {
     assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, 0.0), "{ev:?}");
     assert_eq!(ev.len(), 1, "{ev:?}");
 }
+
+/// Issue #139: axis-as-button threshold boundary (SPEC §4 Subphase 3.2 and 6.0).
+mod threshold_boundary {
+    use pin_app::platform::{DIGITAL_NUDGE_MS, DIGITAL_NUDGE_STRENGTH, InputRouter};
+    use pin_core::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
+    use pin_input::{AXIS_BUTTON_THRESHOLD, GamepadAxis, ProfileMapper, parse_profile};
+    use proptest::prelude::*;
+
+    const PROFILE: &str = r#"
+id = "threshold_probe"
+name = "Threshold probe"
+[buttons]
+launch = [ "axis:left_trigger", "axis:right_y" ]
+[nudge]
+left = [ "axis:right_x" ]
+"#;
+
+    const PAD: u32 = 9;
+    const MS: u64 = 1_000_000;
+
+    fn router() -> InputRouter {
+        let p = parse_profile(PROFILE).expect("profile parses");
+        let mut r = InputRouter::new();
+        assert!(r.add_gamepad_with_profile(PAD, &p).is_some());
+        r
+    }
+
+    fn feed(r: &mut InputRouter, ts: u64, a: GamepadAxis, raw: i16) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        r.axis(ts, PAD, a, raw, &mut |e: InputEvent| out.push(e));
+        out
+    }
+
+    fn launch_edges(ev: &[InputEvent]) -> Vec<bool> {
+        ev.iter()
+            .filter_map(|e| match e.kind {
+                InputEventKind::Button {
+                    input: CabinetInput::Launch,
+                    pressed,
+                } => Some(pressed),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn mapper_pressed(m: &ProfileMapper, a: GamepadAxis, raw: i16) -> Option<bool> {
+        m.axis(7, a, raw).and_then(|e| match e.kind {
+            InputEventKind::Button {
+                input: CabinetInput::Launch,
+                pressed,
+            } => {
+                assert_eq!(e.timestamp_ns, 7);
+                Some(pressed)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn threshold_constant_is_exported_and_is_half_subphase_3_2() {
+        assert_eq!(pin_input::AXIS_BUTTON_THRESHOLD, 0.5);
+        assert_eq!(pin_input::profiles::AXIS_BUTTON_THRESHOLD, 0.5);
+    }
+
+    #[test]
+    fn mapper_axis_button_boundary_subphase_3_2() {
+        let m = ProfileMapper::new(&parse_profile(PROFILE).unwrap());
+        for a in [GamepadAxis::LeftTrigger, GamepadAxis::RightY] {
+            assert_eq!(mapper_pressed(&m, a, 16384), Some(true), "{a:?} 16384");
+            assert_eq!(mapper_pressed(&m, a, 16383), Some(false), "{a:?} 16383");
+            assert_eq!(mapper_pressed(&m, a, 0), Some(false), "{a:?} 0");
+            assert_eq!(mapper_pressed(&m, a, 32767), Some(true), "{a:?} max");
+        }
+    }
+
+    #[test]
+    fn router_axis_button_boundary_subphase_6_0() {
+        let mut r = router();
+        assert!(launch_edges(&feed(&mut r, MS, GamepadAxis::LeftTrigger, 16383)).is_empty());
+        let up = feed(&mut r, 2 * MS, GamepadAxis::LeftTrigger, 16384);
+        assert_eq!(launch_edges(&up), vec![true]);
+        assert!(launch_edges(&feed(&mut r, 3 * MS, GamepadAxis::LeftTrigger, 16384)).is_empty());
+        assert!(launch_edges(&feed(&mut r, 4 * MS, GamepadAxis::LeftTrigger, 20000)).is_empty());
+        let down = feed(&mut r, 5 * MS, GamepadAxis::LeftTrigger, 16383);
+        assert_eq!(launch_edges(&down), vec![false]);
+    }
+
+    fn router_pressed(raw: i16) -> bool {
+        let mut r = router();
+        launch_edges(&feed(&mut r, MS, GamepadAxis::LeftTrigger, raw)).contains(&true)
+    }
+
+    fn check_agree(raw: i16) {
+        let m = ProfileMapper::new(&parse_profile(PROFILE).unwrap());
+        let expect = GamepadAxis::LeftTrigger.normalise(raw) >= AXIS_BUTTON_THRESHOLD;
+        assert_eq!(
+            mapper_pressed(&m, GamepadAxis::LeftTrigger, raw),
+            Some(expect),
+            "mapper raw {raw}"
+        );
+        assert_eq!(router_pressed(raw), expect, "router raw {raw}");
+    }
+
+    #[test]
+    fn mapper_and_router_agree_fixed_set_subphase_3_2_6_0() {
+        for raw in (16382..=16386).chain([i16::MIN, -1, 0, 1, i16::MAX]) {
+            check_agree(raw);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        #[test]
+        fn mapper_and_router_agree_subphase_3_2_6_0(raw in any::<i16>()) {
+            check_agree(raw);
+        }
+    }
+
+    #[test]
+    fn router_axis_nudge_boundary_subphase_6_0() {
+        let mut r = router();
+        let nudge = |ev: &[InputEvent]| -> Vec<f32> {
+            ev.iter()
+                .filter_map(|e| match e.kind {
+                    InputEventKind::Axis {
+                        axis: CabinetAxis::NudgeX,
+                        value,
+                    } => Some(value),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(nudge(&feed(&mut r, MS, GamepadAxis::RightX, 16383)).is_empty());
+        assert!(nudge(&feed(&mut r, 2 * MS, GamepadAxis::RightX, 0)).is_empty());
+        let t = 3 * MS;
+        let fired = nudge(&feed(&mut r, t, GamepadAxis::RightX, 16384));
+        assert_eq!(fired, vec![-DIGITAL_NUDGE_STRENGTH]);
+        assert!(nudge(&feed(&mut r, t + MS, GamepadAxis::RightX, 16384)).is_empty());
+        let mut out = Vec::new();
+        r.poll(
+            t + u64::from(DIGITAL_NUDGE_MS) * MS,
+            &mut |e: InputEvent| out.push(e),
+        );
+        assert_eq!(nudge(&out), vec![0.0]);
+    }
+}

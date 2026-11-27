@@ -7,7 +7,7 @@ use super::plan::{
 };
 use super::select::FallbackReason;
 use super::{RAY_QUERY_FEATURE, RayQueryConfig, ReflectionQuality, TRACE_SOURCE, validate_config};
-use crate::gpu::{GpuContext, GpuError};
+use crate::gpu::{GpuContext, GpuError, LossFlag};
 use crate::pbr::{
     FrameDesc, HDR_FORMAT, HdrImage, MAX_LIGHTS, MeshGeometry, MeshId, PbrRenderer,
     ReflectionBinding,
@@ -16,9 +16,8 @@ use crate::reflections::{
     MAX_PROBES, OctahedralProbes, ProbeStats, ReflectionSource, ReflectiveBall,
 };
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// Jobs per dispatch (one per atlas layer); equals `TRACE_MAX_JOBS` in the
 /// WGSL.
@@ -201,21 +200,28 @@ struct StaticMesh {
 ///
 /// # Device loss
 ///
-/// [`new`](Self::new) registers a device-lost callback
-/// (`wgpu::Device::set_device_lost_callback`). Once the device is lost
-/// (any [`wgpu::DeviceLostReason`]: `Unknown` for a driver loss,
-/// `Destroyed` after an explicit `Device::destroy`; wgpu 30 does not call
-/// the callback when the device is merely dropped, so normal teardown
-/// raises no false alarm), [`ReflectionSource::prepare`] records the
-/// permanent fallback, no longer touches the GPU (not even the inner
-/// probes, which would run on the dead device) and returns
-/// `Err(GpuError::RequestDevice("device lost: <reason>"))` every frame.
-/// Rebuilding the context and the renderers is the application's job.
+/// The source shares the loss state of the [`GpuContext`] it was built on
+/// ([`GpuContext::device_lost`], set by the device-lost callback the
+/// context registered when it was created); it registers no callback of
+/// its own, so it never displaces the context's (wgpu keeps one per
+/// device). Once the device is lost (any [`wgpu::DeviceLostReason`]:
+/// `Unknown` for a driver loss, `Destroyed` after an explicit
+/// `Device::destroy`; wgpu 30 does not call the callback when the device
+/// is merely dropped, so normal teardown raises no false alarm),
+/// [`device_lost`](Self::device_lost) is true with no polling by the
+/// caller, and [`ReflectionSource::prepare`],
+/// [`add_mesh`](Self::add_mesh) and [`read_layer`](Self::read_layer)
+/// check the loss before any other work and return
+/// `Err(GpuError::DeviceLost(reason))` (the reason only, e.g.
+/// `"Destroyed"`) without touching a GPU object. `prepare` also records
+/// the permanent fallback to probes once ([`fallback_reason`] then starts
+/// with `"device lost"`) and never runs the inner probes on the dead
+/// device. An application that learns of a loss another way can forward
+/// it to one source with [`mark_device_lost`](Self::mark_device_lost).
+/// Rebuilding the context and the renderers is the application's job
+/// (SPEC §4 Subphase 5.4 item 4).
 ///
-/// wgpu keeps one device-lost callback per device: a callback registered
-/// later (by the application or by another `RayQueryReflections` on the
-/// same device) replaces this one. An application that registers its own
-/// should forward the loss with [`mark_device_lost`](Self::mark_device_lost).
+/// [`fallback_reason`]: Self::fallback_reason
 pub struct RayQueryReflections {
     config: RayQueryConfig,
     quality: ReflectionQuality,
@@ -244,7 +250,10 @@ pub struct RayQueryReflections {
     plan_draws: Vec<PlanDraw>,
     probes_bound: bool,
     failure: Option<String>,
+    /// The context's loss state (shared with its device-lost callback).
     loss: Arc<LossFlag>,
+    /// A loss forwarded to this source alone ([`Self::mark_device_lost`]).
+    marked: LossFlag,
     stats: ProbeStats,
     ray_stats: RayStats,
 }
@@ -266,48 +275,6 @@ fn create_tlas(device: &wgpu::Device, capacity: u32) -> wgpu::Tlas {
             | wgpu::AccelerationStructureFlags::ALLOW_UPDATE,
         update_mode: wgpu::AccelerationStructureUpdateMode::PreferUpdate,
     })
-}
-
-/// Device-loss state shared between a [`RayQueryReflections`] and the
-/// wgpu device-lost callback it registers (called from wgpu threads).
-#[derive(Debug, Default)]
-pub(crate) struct LossFlag {
-    lost: AtomicBool,
-    reason: OnceLock<String>,
-}
-
-impl LossFlag {
-    /// Records the loss: the first reason wins, the flag is set after the
-    /// reason so a reader that sees the flag also sees a reason.
-    pub(crate) fn set(&self, reason: &str) {
-        let _ = self.reason.set(reason.to_owned());
-        self.lost.store(true, Ordering::Release);
-    }
-
-    /// `true` once the device is known to be lost.
-    pub(crate) fn is_set(&self) -> bool {
-        self.lost.load(Ordering::Acquire)
-    }
-
-    /// The first recorded reason (empty before a loss).
-    pub(crate) fn reason(&self) -> &str {
-        self.reason.get().map_or("", String::as_str)
-    }
-
-    /// The error [`ReflectionSource::prepare`] returns on a lost device
-    /// (message starts with `"device lost"`).
-    pub(crate) fn error(&self) -> GpuError {
-        GpuError::RequestDevice(format!("device lost: {}", self.reason()))
-    }
-}
-
-/// The reason string recorded for a wgpu device-lost callback.
-pub(crate) fn device_lost_reason(reason: wgpu::DeviceLostReason, message: &str) -> String {
-    if message.is_empty() {
-        format!("{reason:?}")
-    } else {
-        format!("{reason:?}: {message}")
-    }
 }
 
 /// What [`ReflectionSource::prepare`] does after the trace attempt of a
@@ -551,7 +518,8 @@ impl RayQueryReflections {
             plan_draws: Vec::new(),
             probes_bound: true,
             failure: None,
-            loss: Arc::new(LossFlag::default()),
+            loss: Arc::clone(ctx.loss_flag()),
+            marked: LossFlag::default(),
             stats: ProbeStats {
                 budget: RAY_ATLAS_LAYERS,
                 ..ProbeStats::default()
@@ -564,22 +532,25 @@ impl RayQueryReflections {
                 e => RayQueryError::Gpu(e),
             })?;
         }
-        let loss = Arc::clone(&rq.loss);
-        device.set_device_lost_callback(move |reason, message| {
-            loss.set(&device_lost_reason(reason, &message));
-        });
         Ok(rq)
     }
 
     /// Registers static mesh `id` (the same id the PBR renderer uses) and
     /// builds its bottom-level structure (once: registering an id again is
     /// a no-op). Draws of unregistered meshes are invisible to rays.
+    ///
+    /// On a lost device ([`device_lost`](Self::device_lost)) it returns
+    /// [`GpuError::DeviceLost`] first, before any other check, without
+    /// touching a GPU object.
     pub fn add_mesh(
         &mut self,
         ctx: &GpuContext,
         id: MeshId,
         mesh: &MeshGeometry,
     ) -> Result<(), GpuError> {
+        if let Some(e) = self.loss_error() {
+            return Err(e);
+        }
         if self.mesh_index.contains_key(&id) {
             return Ok(());
         }
@@ -708,36 +679,65 @@ impl RayQueryReflections {
         }
     }
 
-    /// Marks the device as lost (for an application that learns of the
-    /// loss itself, e.g. through its own device-lost callback, which
-    /// replaces the one [`new`](Self::new) registered). From the next
-    /// [`prepare`](ReflectionSource::prepare) on the source falls back for
-    /// good and returns the loss without touching the GPU. The first
-    /// reason (from here or the callback) is kept.
+    /// Marks the device as lost for this source alone (for an application
+    /// that learns of the loss another way; the context's own loss is seen
+    /// without it). From then on [`device_lost`](Self::device_lost) is
+    /// true, and [`prepare`](ReflectionSource::prepare),
+    /// [`add_mesh`](Self::add_mesh) and [`read_layer`](Self::read_layer)
+    /// return the loss without touching the GPU (`prepare` also falls back
+    /// for good). The first reason is kept.
     pub fn mark_device_lost(&mut self, reason: &str) {
-        self.loss.set(reason);
+        self.marked.set(reason);
     }
 
-    /// `true` once the device is known to be lost (device-lost callback or
-    /// [`mark_device_lost`](Self::mark_device_lost)).
+    /// `true` once the device is known to be lost: the context's
+    /// device-lost callback ran ([`GpuContext::device_lost`]) or
+    /// [`mark_device_lost`](Self::mark_device_lost) was called.
     pub fn device_lost(&self) -> bool {
-        self.loss.is_set()
+        self.marked.is_set() || self.loss.is_set()
     }
 
-    /// Records the device-loss fallback and returns the error for the
-    /// caller (no GPU access).
-    fn lost_frame(&mut self) -> GpuError {
-        if self.failure.is_none() {
-            let reason = format!("device lost: {}", self.loss.reason());
-            self.fall_back_because(FallbackReason::DeviceLost, &reason);
+    /// The first known loss reason (a forwarded one first), `None` on a
+    /// live device.
+    fn loss_reason(&self) -> Option<&str> {
+        if self.marked.is_set() {
+            Some(self.marked.reason())
+        } else if self.loss.is_set() {
+            Some(self.loss.reason())
+        } else {
+            None
         }
-        self.loss.error()
+    }
+
+    /// [`GpuError::DeviceLost`] with [`Self::loss_reason`], `None` on a
+    /// live device. No GPU access.
+    fn loss_error(&self) -> Option<GpuError> {
+        self.loss_reason()
+            .map(|r| GpuError::DeviceLost(r.to_owned()))
+    }
+
+    /// Records the device-loss fallback (once) and returns the error for
+    /// the caller (no GPU access). Called only when [`Self::device_lost`].
+    fn lost_frame(&mut self) -> GpuError {
+        let reason = self.loss_reason().unwrap_or_default().to_owned();
+        if self.failure.is_none() {
+            self.fall_back_because(
+                FallbackReason::DeviceLost,
+                &format!("device lost: {reason}"),
+            );
+        }
+        GpuError::DeviceLost(reason)
     }
 
     /// Reads atlas layer `layer` back
     /// ([`RayQueryConfig::map_resolution`]², linear; the
     /// octahedral layout of [`oct_decode`](crate::reflections::oct_decode)).
+    /// On a lost device it returns [`GpuError::DeviceLost`] first, before
+    /// any other check, without touching a GPU object.
     pub fn read_layer(&self, ctx: &GpuContext, layer: u32) -> Result<HdrImage, GpuError> {
+        if let Some(e) = self.loss_error() {
+            return Err(e);
+        }
         if layer >= RAY_ATLAS_LAYERS {
             return Err(GpuError::InvalidArgument(format!(
                 "ray atlas layer {layer} (max {})",
@@ -951,7 +951,7 @@ impl ReflectionSource for RayQueryReflections {
         frame: &FrameDesc<'_>,
         balls: &[ReflectiveBall],
     ) -> Result<(), GpuError> {
-        if self.loss.is_set() {
+        if self.device_lost() {
             self.probes_bound = true;
             return Err(self.lost_frame());
         }
@@ -977,7 +977,7 @@ impl ReflectionSource for RayQueryReflections {
         let trace = self.trace(ctx, frame);
         // Re-check the loss after the trace: the device may have been lost
         // during it (wgpu drops the errors raised on a lost device).
-        if frame_outcome(self.loss.is_set(), &trace) == FrameOutcome::Lost {
+        if frame_outcome(self.device_lost(), &trace) == FrameOutcome::Lost {
             self.probes_bound = true;
             return Err(self.lost_frame());
         }

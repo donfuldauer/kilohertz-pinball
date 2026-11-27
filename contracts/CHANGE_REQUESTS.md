@@ -180,7 +180,7 @@ unchanged):
 
 ### CR-010: `pin_core::fmath` portable `min`/`max`
 - **Requested by:** work item #159 / KP-065 (task executor)
-- **Status:** pending
+- **Status:** merged (7e1ddbf, via merge c20bbea, PR #189; additive. It landed under the [#159] work-item prefix instead of a separate [cr 010] commit: the commit changes only pin_core and this file, no sim crate adopts it in that commit, and the sim crates adopt `pin_core::fmath` in later commits)
 - **Kind:** additive
 - **Items:** new module `crates/pin_core/src/fmath.rs`, one `pub mod fmath;` line in `crates/pin_core/src/lib.rs` (plus a doc bullet), unit and property tests.
 - **Change:** `min_f32`, `max_f32`, `min_f64`, `max_f64` (`(a, b)` in the order of `a.min(b)`), implemented with plain comparisons only, so the bits are identical on x86_64, aarch64 and wasm32 and equal std on x86_64. Rules: a tie, including +0 against -0 in either order, returns the second operand `b`; a NaN operand yields the other operand; both NaN returns the FIRST operand `a`, bits unchanged (no quieting). Measured std on x86_64 (rustc 1.97.0; debug, release and `target-cpu=native` agree), f32 bits, f64 analogous: min/max(+0,-0) = `80000000`; min/max(-0,+0) = `00000000`; (NaN, 1.0) and (1.0, NaN) for NaN payloads `7fc00000`, `7fa00001` (signalling), `ffc00000`, `7fc00005`, `ffa00002` = `3f800000` for both; (NaN_a, NaN_b) over those payloads = bits of NaN_a for both min and max (the brief assumed the second operand; the measurement shows the first, so the measurement was followed).
@@ -190,7 +190,7 @@ unchanged):
 
 ### CR-011: Lamp scene positions and the `dynamic_meshes` slot convention
 - **Requested by:** work item #88 / KP-008 (task executor)
-- **Status:** pending (merges with the PR for #88)
+- **Status:** merged (88cd024, via merge e3f01d3, PR #202; additive)
 - **Kind:** additive
 - **Items:** `LampDef::position`, `LampDef::radius` (`crates/pin_core/src/schema/table.rs`); TOML keys `lamps[*].position` and `lamps[*].radius`; documentation of the `FrameStateSnapshot::dynamic_meshes` / `dynamic_mesh_count` / `MeshTransform` slot convention and the new constant `snapshot::NEWTON_SWING_RANGE_RAD` (`crates/pin_core/src/snapshot.rs`); SPEC Appendix A.1.
 - **Change:** `LampDef` gains `pub position: Option<[f32; 3]>` (mm, playfield coordinates) and `pub radius: Option<f32>` (mm, flashers only), both `#[serde(default, skip_serializing_if = "Option::is_none")]`; existing fields, keys and order unchanged, `deny_unknown_fields` unchanged, no new validation. Convention: `dynamic_meshes[i]` is the world transform (SI, quaternion `[x, y, z, w]`) of the moving part of the i-th `[[mechs]]` entry, one slot per mech, at most 64 published; per-kind meaning and the Newton cradle swing range (±π/2 rad) documented. `FrameStateSnapshot` layout, size (4000 bytes) and capacities unchanged.
@@ -200,7 +200,7 @@ unchanged):
 
 ### CR-012: cabinet.toml schema, presets and playfield attitude
 - **Requested by:** work item #89 / KP-009 (task executor)
-- **Status:** pending (merges with the PR for #89)
+- **Status:** merged (7533378, via merge 2ea3bba, PR #207; additive)
 - **Kind:** additive
 - **Items:** new module `crates/pin_core/src/schema/cabinet.rs` (`CabinetManifest`, the `*Override` partial types, `CabinetGeometry` and its section types, `Legs`, enums, `Grille`, `Attitude`, `TableEnvelope`, `playfield_attitude`, `preset_ids`, `rad_to_deg`, `deg_to_rad`, constants `CABINET_FILE`, `CABINET_PRESETS_TOML`, `DEFAULT_PRESET`, `MAX_GRILLES`, `MAX_ART_ENTRIES`, `MOUNT_ANGLE_LIMIT_DEG`, `PITCH_AGREEMENT_DEG`, `PITCH_ROUNDING_SLACK_DEG`); new data file `crates/pin_core/data/cabinet_presets.toml`; `crates/pin_core/src/schema/mod.rs` gains `pub mod cabinet;` and `pub use cabinet::{Attitude, CABINET_FILE, CabinetGeometry, CabinetManifest, TableEnvelope, playfield_attitude};`; SPEC Appendix A.4; `libm.workspace = true` in `crates/pin_core/Cargo.toml` (workspace pin `=0.2.16`, Cargo.lock updated); tests `crates/pin_core/tests/kp009_cabinet.rs`, `kp009_attitude_alloc.rs`, fixture `crates/pin_core/tests/fixtures/cabinet.toml`.
 - **Change:** a new optional bundle file `cabinet.toml` (`schema_version = 1`, `preset = "<id>"`, per-field overrides in mm and degrees, unknown keys rejected; SPEC A.4) with three presets (Appendix E). `CabinetManifest::resolve() -> Result<CabinetGeometry, SchemaError>`; `CabinetGeometry::{preset, default_preset, check_consistency, validate(&TableEnvelope), body_bottom_height_mm, floor_height_mm, lockdown_bar_top_height_mm, backbox_top_height_mm}`; `pub fn playfield_attitude(&CabinetGeometry) -> Attitude { pitch_rad: f64, roll_rad: f64 }` (pure, libm, no allocation). No existing type, field, file or behaviour changes; `table.toml` `meta.pitch_deg` stays required; the simulation does not read the attitude.

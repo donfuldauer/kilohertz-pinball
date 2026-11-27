@@ -281,7 +281,7 @@ fn same_settings(a: &AppConfig, b: &AppConfig) -> bool {
 ///   simulation applies them on the same tick as the `Esc` press;
 /// * [`UiCommand::ConfigChanged`] saves `config.toml` atomically
 ///   ([`AppConfig::save`]) on the calling (main) thread unless the settings
-///   equal the saved ones, and keeps the change for
+///   equal the saved ones, and always keeps the change for
 ///   [`take_config_change`](Self::take_config_change);
 /// * [`UiCommand::MenuOpened`] / [`UiCommand::MenuClosed`] pause nothing:
 ///   the game keeps running under the overlay;
@@ -304,7 +304,7 @@ fn same_settings(a: &AppConfig, b: &AppConfig) -> bool {
 /// | display mode (and monitors) | next start | the windows and surfaces are planned and created once at start-up from [`AppConfig::topology_mode`] |
 /// | PiP placement | next start | part of the same start-up topology plan (the PiP viewports are fixed per surface) |
 /// | score display (DMD / LCD) | no consumer yet | the table's own `backglass.toml` picks the display kind; nothing in the app reads the preference |
-/// | input profile | live | the main thread replaces the keyboard router ([`keyboard_router`]); the menu is open, so nothing is held for the simulation |
+/// | input profile | live | the main thread replaces the keyboard router ([`keyboard_router`]) after releasing everything the old one holds |
 /// | staging mode | no consumer yet | the table loader does not apply a staging override yet |
 /// | debug wireframe | next table load | it is a table-renderer option ORed into `TableRenderOptions::debug_overlay` when the renderer is built for a table (at start-up, and when the table browser swaps in a table) |
 ///
@@ -507,8 +507,18 @@ impl MenuController {
     /// [`take_rescan_request`](Self::take_rescan_request). Disabled (the
     /// default), a load fails at once with [`LOAD_NOT_WIRED`] and a rescan
     /// scans `tables_dir` here when it is set.
+    ///
+    /// Disabling drops a queued rescan and completes a queued, untaken load
+    /// with [`LOAD_NOT_WIRED`] (the menu shows `Failed` and is republished),
+    /// so no request outlives the browser.
     pub fn set_browser_enabled(&mut self, on: bool) {
         self.browser = on;
+        if !on {
+            self.rescan_request = false;
+            if let Some((id, _)) = self.load_request.take() {
+                self.finish_load(id, Err(LOAD_NOT_WIRED.to_owned()));
+            }
+        }
     }
 
     /// The menu's table load request since the previous call, once: its id
@@ -598,9 +608,15 @@ impl MenuController {
         }
     }
 
-    /// Saves `cfg` unless it equals the saved settings.
+    /// Keeps `cfg` for [`take_config_change`](Self::take_config_change)
+    /// (always: after a failed save the app may run settings other than the
+    /// saved ones, so a revert to them is a change too) and saves it unless
+    /// it equals the saved settings, in which case the file already matches
+    /// and any earlier save error no longer applies.
     fn persist(&mut self, cfg: AppConfig) {
         if same_settings(&cfg, &self.saved) {
+            self.last_save_error = None;
+            self.change = Some(cfg);
             return;
         }
         match cfg.save(&self.path) {
@@ -883,6 +899,62 @@ mod tests {
         assert_eq!(c.saves(), 0);
         assert_eq!(c.reported_errors.len(), 1, "one line per distinct error");
         assert!(c.take_config_change().unwrap().wireframe);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    /// PR #197 finding 2 (issue #84 live input-profile change): when saving
+    /// profile B fails, the app still applies B; reverting to the saved
+    /// profile A must then be reported too, or the menu shows A while the
+    /// app keeps B's router. A later successful save still works.
+    #[test]
+    fn persist_reports_change_when_save_failed_then_reverted() {
+        let d = dir("revert");
+        // The config's parent is a regular file: every save fails.
+        let blocker = d.join("not_a_dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let path = blocker.join("config.toml");
+        let (mut c, _) = MenuController::load(&path);
+        let a = c.config().clone();
+        let b_id = "xarcade_keyboard";
+        assert_ne!(a.input_profile, b_id);
+        collect(&mut c, |c, mut o| c.toggle(1, &mut o));
+        collect(&mut c, |c, mut o| {
+            c.apply(
+                MenuInput::Set(SettingChange::InputProfile(b_id.into())),
+                2,
+                &mut o,
+            )
+        });
+        assert!(c.last_save_error().is_some());
+        assert_eq!(c.saves(), 0);
+        assert!(same_settings(&c.saved, &a), "saved stays A");
+        let b = c.take_config_change().expect("change = Some(B)");
+        assert_eq!(b.input_profile, b_id);
+        // Back to A: equal to the saved settings, still a change.
+        collect(&mut c, |c, mut o| {
+            c.apply(
+                MenuInput::Set(SettingChange::InputProfile(a.input_profile.clone())),
+                3,
+                &mut o,
+            )
+        });
+        let back = c.take_config_change().expect("revert to A is reported");
+        assert!(same_settings(&back, &a));
+        assert!(c.last_save_error().is_none(), "the file matches A");
+        assert_eq!(c.saves(), 0, "no write for the saved settings");
+        // The path becomes writable: B saves.
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir_all(&blocker).unwrap();
+        collect(&mut c, |c, mut o| {
+            c.apply(
+                MenuInput::Set(SettingChange::InputProfile(b_id.into())),
+                4,
+                &mut o,
+            )
+        });
+        assert_eq!(c.saves(), 1);
+        assert!(c.last_save_error().is_none());
+        assert_eq!(c.take_config_change().unwrap().input_profile, b_id);
+        assert_eq!(AppConfig::load(&path).config.input_profile, b_id);
         let _ = std::fs::remove_dir_all(&d);
     }
 

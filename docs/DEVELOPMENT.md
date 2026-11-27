@@ -17,11 +17,25 @@ Any issue whose change makes a section here stale updates it in its own PR.
   `license = "MIT OR Apache-2.0"`, `publish = false`; members `crates/*` and
   `crates/pin_script/guest-sdk`; `spikes/` is a separate workspace and excluded.
 - Dependency pins: `versions.toml` `[crates]` holds the exact versions that passed the Subphase
-  0.1 spikes and stays unchanged (`spikes/dep_smoke/tests/versions.rs` asserts it agrees with
-  `spikes/Cargo.toml` and `spikes/Cargo.lock`). The root `[workspace.dependencies]` copies them
+  0.1 spikes, extended only by units whose brief owns it (#164 KP-070 added the web engine pins:
+  wasmi 2.0.2, wasmparser and wasm-encoder 0.261.0, wasm-smith 0.261.0 with arbitrary 1.5.0, and
+  the wasm-bindgen family wasm-bindgen 0.2.130, js-sys 0.3.107, web-sys 0.3.107,
+  wasm-bindgen-futures 0.4.80), each with a compile and trivial-use check in `spikes/dep_smoke`
+  (`spikes/dep_smoke/tests/versions.rs` asserts it agrees with `spikes/Cargo.toml` and
+  `spikes/Cargo.lock`, features included). The root `[workspace.dependencies]` copies them
   with their feature sets; later pins are exact (`=x.y.z`), one line per crate, under a comment
   naming the work item that added them (for example `# Wave 3 additions …`; from now on
-  `# #<N> KP-NNN additions`). Crates use `<name>.workspace = true`.
+  `# #<N> KP-NNN additions`). Crates use `<name>.workspace = true`. The wasm-bindgen family is
+  pinned at the root without features; the crates that use it declare it under
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]` and choose the web-sys features.
+- `pin_script` backend features (D10, REQ-WEB-001): `lua` (mlua, libm), `wasmtime` (wasmtime,
+  wat, notify; hot reload needs `lua` and `wasmtime`) and `wasmi` (the web Wasm engine, default
+  features off with `std`, `validate`, `auto-dispatch`, `deterministic`); the default is `lua` +
+  `wasmtime`, so native builds are unchanged. With `--no-default-features` only the engine-neutral
+  modules build (`config`, `rng`, `budget`, the Wasm pre-scan in `wasm/limits.rs`, the name
+  tables), and the crate must stay clean for the web target (the `wasm32-unknown-unknown` std is
+  added with `rustup target add wasm32-unknown-unknown`):
+  `cargo clippy --target wasm32-unknown-unknown -p pin_script --no-default-features -- -D warnings`.
 - Vendored and patched: `third_party/lua-src` (Lua 5.4.9 build crate), `third_party/lewton`
   (Ogg Vorbis) and `third_party/sdl3-sys` (SDL3 bindings; the patch lets SDL3 build from checkout
   paths with spaces), each with its patches in `KHZ_PATCHES.md`, wired through
@@ -124,7 +138,7 @@ kilohertz-pinball/
 │   │                   # telemetry, materials, schema/, snapshot, triple_buffer, spsc
 │   ├── pin_physics/    # world/ · ball/ · ball_ext/ (Magnus, remanence) · flipper/ · flipper_banana/ · mech/ · debug/
 │   ├── pin_input/      # events/ · staging/ · profiles/ · calibration/ · haptics/
-│   ├── pin_script/     # lua/ (Lua 5.4, sandbox, hot reload) · wasm/ (wasmtime) · guest_sdk/ (host side)
+│   ├── pin_script/     # lua/ (Lua 5.4, sandbox, hot reload) · wasm/ (wasmtime; pre-scan) · config · rng · budget · guest_sdk/ (host side)
 │   │   └── guest-sdk/  # crate pin_guest_sdk: no_std Rust SDK for Wasm table rules
 │   ├── pin_assets/     # vfs/ · zip/ · gltf/ · validate/
 │   ├── pin_tablegen/   # layout/ → .glb · clearance/ · backbox/ (binary pin_tablegen)
@@ -155,7 +169,7 @@ kilohertz-pinball/
 | `pin_core` | yes | 85 % | — | Contracts only; changes through `contracts/CHANGE_REQUESTS.md` (R2). Clippy bans std transcendentals (CR-009). Fixtures in `crates/pin_core/fixtures/`; `tests/schema_fixtures.rs` reads SPEC Appendix A verbatim. |
 | `pin_physics` | yes | 85 % | — | Module-level ownership (D3): one owner per module directory. |
 | `pin_input` | yes | 85 % | — | |
-| `pin_script` | yes | 85 % | — | Sandbox and budgets (R11); `tests/attack_corpus/`. |
+| `pin_script` | yes | 85 % | features `lua`, `wasmtime` (default), `wasmi` | Sandbox and budgets (R11); `tests/attack_corpus/`. Engine-neutral `config` (limits), `rng` (both backends' random helpers), `budget` (per-tick budget, D45) and the Wasm pre-scan build with `--no-default-features` (wasm32). |
 | `pin_assets` | yes | 85 % | — | VFS, zip hardening, glTF loader, validation and lints. |
 | `pin_tablegen` | yes | 85 % | `pin_tablegen` | `<layout.toml> --table <table.toml> --out <dir>`; `validate <bundle>`. |
 | `pin_sim` | yes | 85 % | `pin_sim` | Headless simulation, replay, state hash, autoplay and soak. |
@@ -282,31 +296,44 @@ Workflows live in `.github/workflows/`. The single required status check on `mai
 **`pr-checks`** (PROCESS.md P6 routine step 3); changing that set is a repository setting (P8).
 
 **D40 split.** Pull requests run the Linux set only: `fmt`, `clippy` (Linux), `core-tests`
-(Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe) and `dof-bridge` only when their paths
-change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
+(Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe), `dof-bridge` and `replay-hash-aarch64`
+(qemu-user) only when their paths change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
 `*-cross` jobs), all GPU adapters and coverage. A red `main` stops merges until a fix or revert
-lands (P6 routine step 3). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
-and complete.
+lands (P6 routine step 3). Pull-request runs are cancelled when superseded. An active `main` or dispatch run is never
+cancelled (`cancel-in-progress` is false for those events); a pending one waiting behind it is
+replaced by a newer run in the same group (workflow, ref and event), so only the newest queued
+run is guaranteed to run.
 
 | Workflow / job | Runs | What it does |
 |---|---|---|
-| `ci.yml` `changes` | always | Lists changed files (merge base, `--no-renames`, fail closed). Outputs `code` (false only when every file is `*.md` or `.coderabbit.yaml`, except `docs/SPEC.md`, which a compiled test reads), `gpu` (`crates/pin_render/*`, `crates/pin_app/*`, `*.wgsl`) and `dof` (`tools/dof_bridge/*`); all true on push and dispatch. |
+| `ci.yml` `changes` | always | Lists changed files (merge base, `--no-renames`, fail closed). Outputs `code` (false only when every file is `*.md` or `.coderabbit.yaml`, except `docs/SPEC.md`, which a compiled test reads), `gpu` (`crates/pin_render/*`, `crates/pin_app/*`, `*.wgsl`), `dof` (`tools/dof_bridge/*`) and `aarch64` (`crates/pin_core`, `pin_physics`, `pin_input`, `pin_sim`, `pin_script`, `pin_assets`, `third_party/lua-src`, `tables`, `Cargo.toml`, `Cargo.lock`, `versions.toml`, `ci.yml`, `scripts/ci/replay_hash_assert.sh`); all true on push and dispatch. |
 | `ci.yml` `fmt` | code | `cargo fmt --all --check`, and for `tests/spec_ci`. |
 | `ci.yml` `clippy` / `clippy-cross` | code; cross on main | `cargo clippy --workspace --all-targets -- -D warnings` on Linux; Windows MSVC and macOS arm64 on main. |
 | `ci.yml` `core-tests` / `core-tests-cross` | code; cross on main | GPU-free crates `cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app`; on Linux also `tests/spec_ci` clippy and tests. |
 | `ci.yml` `gpu-tests` / `gpu-tests-cross` | code and gpu; cross on main | `cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app` with `PIN_REQUIRE_GPU=1`: lavapipe under Xvfb on Linux; WARP (Windows) and Metal (macOS) on main. |
-| `ci.yml` `replay-hash` / `replay-hash-cross` | code; cross on main | Record the fixture for 10 000 ticks, replay it 10 times, fail on any mismatch on that machine; print the seam digests (cross-OS report only, D9). |
+| `ci.yml` `replay-hash` / `replay-hash-cross` | code; cross on main | `scripts/ci/replay_hash_assert.sh`: record the fixture for 10 000 ticks, replay it 10 times, fail on any mismatch on that machine and unless the recorded `state_hash` equals the committed x86_64-linux golden `crates/pin_sim/tests/fixtures/replay_table.golden`; `ball_seam_bitident` with its printed `[seam digest]` lines checked (all five `same`). Gates x86_64 Linux on PRs, Windows x86_64 and macOS arm64 on main (D9 reference set). |
+| `ci.yml` `replay-hash-aarch64` | PRs touching the `aarch64` paths; every push to `main`; dispatch | pin_sim and `ball_seam_bitident` cross-built for `aarch64-unknown-linux-gnu` and run under qemu-user on the Linux runner: the same assert script (golden) and the seam test asserting its EXPECTED digests. About 2-4 min warm, 8-12 min cold (the cross build; emulated runs about 20 s). |
 | `ci.yml` `dof-bridge` | code and dof | `dotnet build` and every `tools/dof_bridge/tests/*/*.csproj` on Windows; .NET coverage reported. |
 | `ci.yml` `coverage` | push and dispatch | `cargo llvm-cov --summary-only` over the seven core crates; non-gating (`continue-on-error`); floors are enforced by the work-verifier. |
 | `ci.yml` `gate-a1` | dispatch only | `scripts/gate_a1.sh`, soak reports uploaded. |
-| `ci.yml` `pr-checks` | always | Aggregates `changes`, `fmt`, `clippy`, `core-tests`, `replay-hash`, `gpu-tests`, `dof-bridge`: fails if `changes` did not succeed or any needed job failed or was cancelled (success and skipped pass). The required check. |
-| `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64), `package`, and on a tag a draft prerelease. Never publishes (P8). |
+| `ci.yml` `pr-checks` | always | Aggregates `changes`, `fmt`, `clippy`, `core-tests`, `replay-hash`, `replay-hash-aarch64`, `gpu-tests`, `dof-bridge`: fails if `changes` did not succeed or any needed job failed or was cancelled (success and skipped pass). The required check. |
+| `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64; the x86_64 macOS leg also runs `scripts/ci/replay_hash_assert.sh` under Rosetta 2 and asserts the replay-hash golden), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
-| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
+| `windowed.yml` | PRs touching `crates/`, `Cargo.toml`, `Cargo.lock`, `tables/`, `scripts/windowed/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
+
+**Replay-hash golden (D9, R3).** `crates/pin_sim/tests/fixtures/replay_table.golden` holds the
+x86_64-linux `state_hash=<16 hex digits>` of the replay-hash fixture at 10 000 ticks, and
+`ball_seam_bitident`'s `EXPECTED` holds the seam digests. x86_64 Linux, aarch64 (qemu-user and
+macOS arm64), Windows x86_64 and x86_64 macOS under Rosetta 2 must reproduce both; other cross-OS
+hashes (`soak.yml`) stay report-only. A later unit that changes simulation output for every table
+re-baselines the golden and `EXPECTED` once, in its own PR (R3); the assert script strips `\r`, so
+a CRLF checkout compares equal. Updating the hashes does not replace the validation: the same PR
+reruns Gate A1 (`GAMES=1000 scripts/gate_a1.sh`) and Gate A2 (`scripts/gate_a2.sh`), as described
+under "Gate scripts" below.
 
 ## Coverage floors
 
@@ -367,15 +394,26 @@ rest screenshot; one more rest screenshot comes first. A step that runs late (a 
 shifts every later step by its delay, so holds keep their planned length.
 
 **Driver hygiene.** Every helper process (`xdotool`, `xwd`, `convert`) runs through one bounded
-runner (polled `try_wait`, killed and reaped at a 5 s deadline; at the end of the presses a
-key whose key-up failed stays marked held and is retried within a 400 ms budget, and one still
-held is reported); the screenshot pipes `nice -n 10
+runner (polled `try_wait`, killed and reaped at a 5 s deadline). At the end of the presses the
+cleanup key-ups share one 400 ms deadline: each `xdotool keyup` is bounded by the budget left
+(never above 5 s; a first attempt never below 50 ms, so both held keys get one), a key whose key-up
+failed stays marked held and is retried only while budget remains (a retry of a key that already
+had an attempt is skipped once the budget is spent; a retry is bounded by the budget left, with no minimum), and one still held is reported. The screenshot pipes `nice -n 10
 xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
-`MAGICK_THREAD_LIMIT=1`, no shell. A run first removes the previous run's `latency_trace.csv`,
-`pin_app_stderr.log`, `summary.txt` and `frame_*.png` from the artifact directory. Every exit path
+`MAGICK_THREAD_LIMIT=1`, no shell. A run first creates the artifact directory and removes the
+previous run's `latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png` from it,
+before the tool, binary and bundle checks; a failed check, or a startup failure after them (Xvfb
+or the app cannot start), writes a fresh `summary.txt` (`verdict: FAIL (windowed driver:
+<what>)`) and no `pin_app_stderr.log`. The app's stderr is decoded lossily (a non-UTF-8 line does
+not stop the capture) and a read error is logged as `windowed: stderr read failed: <error>`. Every exit path
 after the app started (window focus, key injection, first-frame timeout, a hang) kills the app if
-it still runs, completes the stderr capture and writes `pin_app_stderr.log`; a failure also writes
-`summary.txt` (`verdict: FAIL (windowed driver: <what>)` and the stderr tail). The run fails when
+it still runs, waits at most 5 s for the stderr capture to reach its end (a process the app
+started may hold the pipe: then the log keeps what was captured and ends with `windowed: stderr
+drain timed out after 5 s`) and writes `pin_app_stderr.log`; a failure also writes
+`summary.txt` (`verdict: FAIL (windowed driver: <what>)` and the stderr tail). When the app exits
+with a failure status, `summary.txt` keeps the measurement report (its own verdict line reads
+`measurements verdict: ...`) and its overall line is `verdict: FAIL (app exit status <status>)`,
+so the artifact agrees with the job. The run fails when
 fewer than 3 screenshots were captured or none was taken with a flipper held. Code:
 `crates/pin_app/tests/windowed/` (`verdict.rs`: the pure checks, unit-tested in plain `cargo test`;
 `driver.rs`: Xvfb, the app, xdotool, screenshots, the press plan). DECISIONS.md "#82 — Windowed
@@ -404,7 +442,10 @@ none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the
 presented at or before it; a press before the first presented frame counts from frame index 0,
 so the count is `frame + 1`), and `move_tick` only selects the earliest candidate frame. For a press
 with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
-difference is the stall). On the table presenter path `present_ns` is the SDL clock read
+difference is the stall); a tick of the same catch-up batch that is itself late again (the sim
+thread preempted between two catch-up ticks) extends the stall to its own drain and keeps the
+stall's start, so a delay inside the batch never erases the original window, while a stall that
+starts outside a batch replaces the record. On the table presenter path `present_ns` is the SDL clock read
 immediately after the playfield `queue.present` returned, before a suboptimal surface is
 reconfigured and before the backglass and score surfaces are drawn. The windowed harness runs a
 table, so it uses that path; `--debug-overlay` only draws the debug lines over the PBR image
@@ -413,13 +454,22 @@ table, so it uses that path; `--debug-overlay` only draws the debug lines over t
 used (the playfield offers no 8-bit format); it lives in `pin_render`, so there `present_ns` is read
 after the whole render call, late by that frame's remaining work and, on a suboptimal surface, one
 reconfigure. The trace is written to a sibling temp
-file and renamed over the destination at shutdown; the destination is never truncated, so a
+file (`.kp-trace.<pid>.<n>.part`, created exclusively; the name never contains the destination's and never ends in `.tmp`, the config save scratch suffix,
+so a destination name at the file-name limit works) and renamed over the destination at shutdown; the destination is never truncated, so a
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
 missing path ending in a separator and an existing FIFO are refused before anything is opened). On
-Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
-destination's permission bits, so the rename never widens access (a new destination stays
-`0600`). It is written on the main thread after every
+Unix the temp file is created with mode `0600`, never chmod-ed, and renamed over the
+destination, so every committed trace has owner-only mode bits, whether or not a destination existed; the existing
+destination's permissions, owner, group and ACL are not read or preserved (overwriting a trace that
+others could read gives it mode `0600`; a device written directly keeps its own permissions). The
+guarantee is the Unix mode bits only: on Linux a directory default ACL gets the mask `---` and grants
+nothing; on macOS extended ACL entries inherited from the directory are not removed and can grant
+other accounts access; on Windows no mode is set, so the trace takes the DACL inherited from its
+directory (std's default file creation) and there is no owner-only guarantee. Directory-inherited ACLs are accepted as
+the directory owner's choice (owner decision "Accept folder ACLs", DECISIONS "#163 gate review
+round 6 — directory-inherited ACLs on macOS and Windows"). It
+is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
 error after the trace file was prepared, a panic or an early return) removes the temp file and
@@ -444,25 +494,35 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   pops every ring event stamped at or before the tick end up to the per-tick input buffer of 256
   events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in a later executed
   tick (the next one, or later ones when more than 256 remain; the app input ring holds 1,024).
+  A press whose timestamp is later than the trace's `run_end_ns` marker is a failure and gets
+  neither the end-of-run excuse nor the end exclusion.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
   last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first
-  presented frame: the count starts at frame index 0), must be `<= 2`, with one allowance: when the frame
-  in flight at the press (the first presented after it) presented by `sdl_ts_ns` + check a's bound
-  + `8` ticks, the count may start after it (`n_adj = frame - in_flight <= 2`; never for a
-  press that failed check a). The summary prints the raw and adjusted max and p99 and how many
-  presses were "in-flight shifted". A press with no move, or no frame that showed the bat raised
-  while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
+  presented frame: the count starts at frame index 0), must be `<= 2`. The raw count is the only
+  gate (#149: no in-flight allowance); the summary and check b's line print its max and p99. A
+  press with no move, or no frame that showed the bat raised while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
   file); the verdict checks it exists, matches the frame table and is a candidate. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
-  second); key-to-photon p50/p99 in ms is printed as information.
+  second); key-to-photon p50/p99 in ms is printed as information. A selected response frame
+  presented before the press's input drain (`drain_sdl_ns`) fails; equal times pass.
+  The render thread latches its snapshot late (#149): it reads the triple buffer once at the top of
+  each iteration and again just before it encodes the playfield, after the playfield's acquire
+  returned and no earlier than 11 ms (`LATE_LATCH_MIN_LAG`: check a's press-to-raise bound) after
+  the previous playfield present, and that second snapshot is the one drawn and traced. lavapipe's
+  acquire returns at once, so without the lag a press just before a present returned was shown
+  only by the frame after next. The playfield still queues at most one frame ahead
+  (`desired_maximum_frame_latency` 1); on lavapipe the lag costs about a fifth of the frame rate.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
   is printed. On lavapipe the app now starts lean (REQ-LAT-006, #83: MSAA, bloom and motion blur
-  off, one warning line on stderr), and the worker-thread cap also applies. The full Low preset
-  (render scale, probe captures) arrives with KP-035.
+  off, one warning line on stderr naming only those three), and the worker-thread cap also
+  applies. The full Low preset (render scale, probe captures) arrives with KP-035; until then the
+  warning does not claim them.
 - **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
   driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
-  trace row; a shutdown line without the field is malformed).
+  trace row; a shutdown line without the field is malformed). The number of frame rows in the
+  trace equals the `F frames` of the shutdown line (the windowed run drives one playfield
+  surface, so both count the same presents).
 
 **The lavapipe cap.** lavapipe's worker threads are capped with `LP_NUM_THREADS=2` (the workflow
 env and `run.sh`'s default), so on a 4-vCPU GitHub runner the sim thread keeps a core next to the
@@ -470,9 +530,10 @@ render, main and audio threads and lavapipe's two workers. Measured on the 4-cor
 60 s run each (dropped ticks of about 60 000 / presented frames / check a): 1 thread 30
 (0.050 %) / 277 / pass; 2 threads 8 (0.013 %) / 526 / pass; 3 threads 20 (0.033 %) / 734 / fail
 (one press 4 ms late: the main thread starved). To measure: `LP_NUM_THREADS=<n>
-scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, and read the `dropped ratio` row of
-`summary.txt`; choose the value whose ratio stays well under 0.1 % (DECISIONS.md "#82 —
-LP_NUM_THREADS cap").
+scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, discard every setting whose
+`summary.txt` does not pass checks a to d, then among the passing settings choose the one whose
+`dropped ratio` row stays well under 0.1 % (use the ratio only to compare settings that pass;
+DECISIONS.md "#82 — LP_NUM_THREADS cap").
 
 **Running it locally** (from the repository root, with the agent environment):
 
@@ -480,15 +541,18 @@ LP_NUM_THREADS cap").
 # Prerequisites: mesa-vulkan-drivers libvulkan1 xvfb xauth xdotool x11-apps imagemagick
 scripts/windowed/run.sh                     # builds the bundle and the release app, runs 60 s
 scripts/windowed/run.sh --print-paths       # prints the resolved paths, builds nothing
-# or, with the bundle and the release app already built:
-LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
+# or, with the bundle and the release app already built (DISPLAY unset, as run.sh does, so the
+# driver starts its own Xvfb; a set DISPLAY makes it inject keys into and capture that X server):
+env -u DISPLAY LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
   WGPU_BACKEND=vulkan cargo test --release -p pin_app --test windowed -- --ignored --nocapture
 cargo test -p pin_app --test windowed       # the verdict, parser, property and allocation tests
 python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure
 ```
 
-The bundle defaults to `<target>/greybox` after `tables/greybox/build.sh <target>/greybox`;
-set `KP_GREYBOX_BUNDLE` only to use another bundle. The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
+The bundle defaults to `<target>/greybox` (`run.sh` builds it with `tables/greybox/build.sh`);
+both `scripts/windowed/run.sh` and the direct `cargo test` command honour `KP_GREYBOX_BUNDLE` to
+use another bundle (`run.sh` builds that path, resolves a relative one against the repository root,
+and `--print-paths` shows the effective `bundle=`). The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
 `KP_GREYBOX_BUNDLE` (default `<target>/greybox`), `KP_WINDOWED_OUT` (default
 `<target>/windowed`), `KP_WINDOWED_RUN_MS` (default 60000), `KP_WINDOWED_SEED`,
 `KP_WINDOWED_FRAME_MS` (default 125), `KP_PIN_APP`, `LP_NUM_THREADS` (default 2). `run.sh` takes a
@@ -499,12 +563,13 @@ absolute `CARGO_TARGET_DIR` before Cargo runs.
 `latency_trace.csv` (the trace), `summary.txt` (verdicts and summary table), `pin_app_stderr.log`
 (the app's stderr, with the adapter line and the shutdown line), `frame_0_rest.png`,
 `frame_1_left_held.png`, `frame_2_right_held.png`, `frame_3_rest.png`. Every file is from the
-current run: older ones are removed when a run starts, and a failed run still writes
-`pin_app_stderr.log` and a failure `summary.txt`.
+current run: older ones are removed when a run starts (a failed removal leaves a
+`windowed setup: cleanup` summary), and a failed run still writes `pin_app_stderr.log` and a
+failure `summary.txt`.
 
 ## Owned paths and shared files
 
-Each issue lists its owned paths (PROCESS.md R1); change nothing outside them. The shared
+Each issue lists its owned paths (PROCESS.md R1); change nothing outside them. A gate-review fix brief may own paths outside the gate issue's owned paths; the Orchestrator records them as `fix paths` in the gate's `docs/RUN_LOG.md` round rows, and the owned-path check of the gate's verifier runs allows them (P5 unit gate item 8). The shared
 append-only files are `docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`, `docs/RUN_LOG.md` and
 `contracts/CHANGE_REQUESTS.md`; every issue may append to them (P5 unit gate item 8), and a merge
 conflict in one of them is resolved by keeping both sides in order. New exact pins go in the root

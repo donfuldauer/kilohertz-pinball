@@ -369,3 +369,114 @@ fn a_ball_served_on_the_start_timeout_tick_is_not_no_ball() {
         "{ends:?}"
     );
 }
+
+/// Closes and reopens switch `name` (forced), observing after each tick,
+/// with every ball in `pins` held at its position.
+fn pulse_pinned(
+    sim: &mut Simulation,
+    mon: &mut GameMonitor<'_>,
+    pins: &[(pin_sim::BallHandle, [f32; 3])],
+    name: &str,
+) {
+    for closed in [true, false] {
+        sim.set_switch(name, closed).unwrap();
+        for &(h, p) in pins {
+            assert!(sim.set_ball_state(h, &at_rest(p)));
+        }
+        sim.advance(1);
+        mon.observe(sim);
+    }
+    sim.release_switch(name).unwrap();
+}
+
+/// Issue #138 acceptance 2 (SPEC §4 Subphase 2.9 detectors, EndlessBall
+/// subject): `bumper_ring` has no zone of its own (its mech `bumper` has
+/// a position). Ball A sits beside the bumper and hits `bumper_ring` ten
+/// times; ball B, the other endless ball, hits `top_rollover` three times.
+/// Each ball's EndlessBall finding names the switch that ball hit most:
+/// B's is `top_rollover`, never `bumper_ring` (before #138 every
+/// positionless hit was credited to every ball, so B was named after A's
+/// switch).
+#[test]
+fn a_positionless_mech_switch_endless_ball_names_the_right_subject() {
+    let (mut sim, info) = load("clean");
+    assert!(
+        info.switches
+            .iter()
+            .any(|s| s.name == "bumper_ring" && s.position_m.is_none()),
+        "the fixture's bumper ring is positionless"
+    );
+    // A: 50 mm below the bumper (237, 700) mm; B: 52 mm from
+    // top_rollover (257, 880) mm and 160 mm from the bumper.
+    let pa = [0.237, 0.650, BALL_Z];
+    let pb = [0.300, 0.850, BALL_Z];
+    let a = sim.spawn_ball("standard_steel", pa, [0.0; 3]).unwrap();
+    let b = sim.spawn_ball("standard_steel", pb, [0.0; 3]).unwrap();
+    let pins = [(a, pa), (b, pb)];
+    let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX).with_endless_ticks(100);
+    mon.observe(&sim);
+    for _ in 0..3 {
+        pulse_pinned(&mut sim, &mut mon, &pins, "top_rollover");
+    }
+    for _ in 0..10 {
+        pulse_pinned(&mut sim, &mut mon, &pins, "bumper_ring");
+    }
+    for _ in 0..150 {
+        for &(h, p) in &pins {
+            assert!(sim.set_ball_state(h, &at_rest(p)));
+        }
+        sim.advance(1);
+        mon.observe(&sim);
+    }
+    let out = mon.finish(&sim);
+    // Totals still count each closing once.
+    let hits = |n: &str| {
+        let i = info.coverage_switches().position(|s| s.name == n).unwrap();
+        out.switch_hits[i]
+    };
+    assert_eq!((hits("top_rollover"), hits("bumper_ring")), (3, 10));
+    let endless = |slot: u8| {
+        out.findings
+            .iter()
+            .find(|f| {
+                f.kind == FindingKind::EndlessBall
+                    && f.detail.starts_with(&format!("ball in slot {slot} "))
+            })
+            .unwrap_or_else(|| panic!("no endless finding for slot {slot}: {:?}", out.findings))
+    };
+    let fb = endless(b.slot());
+    assert_eq!(fb.subject, "top_rollover", "{fb:?}");
+    assert!(!fb.detail.contains("bumper_ring"), "{}", fb.detail);
+    let fa = endless(a.slot());
+    assert_eq!(fa.subject, "bumper_ring", "{fa:?}");
+}
+
+/// Issue #138 deliverable 1, in-ball credit unchanged (SPEC §4 Subphase
+/// 2.9 shot coverage): the `drop_lane` shot (`top_rollover` then
+/// `bumper_ring` within 2 s) completed on one ball counts once; the same
+/// two switches split across a drain and the next ball do not.
+#[test]
+fn a_shot_on_a_single_ball_still_counts() {
+    let (mut sim, info) = load("clean");
+    let i = info
+        .shots
+        .iter()
+        .position(|s| s.name == "drop_lane")
+        .unwrap();
+    let p = [0.300, 0.850, BALL_Z];
+    let h = sim.spawn_ball("standard_steel", p, [0.0; 3]).unwrap();
+    let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+    mon.observe(&sim);
+    pulse_pinned(&mut sim, &mut mon, &[(h, p)], "top_rollover");
+    pulse_pinned(&mut sim, &mut mon, &[(h, p)], "bumper_ring");
+    // Half the shot, then the ball drains and the next one finishes it.
+    pulse_pinned(&mut sim, &mut mon, &[(h, p)], "top_rollover");
+    assert!(sim.remove_ball(h));
+    sim.advance(1);
+    mon.observe(&sim);
+    let h2 = sim.spawn_ball("standard_steel", p, [0.0; 3]).unwrap();
+    mon.observe(&sim);
+    pulse_pinned(&mut sim, &mut mon, &[(h2, p)], "bumper_ring");
+    let out = mon.finish(&sim);
+    assert_eq!(out.shot_counts[i], 1, "{:?}", out.shot_counts);
+}

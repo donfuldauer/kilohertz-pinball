@@ -801,23 +801,22 @@ proptest! {
 // Device loss (CodeRabbit PR #22 finding 3)
 // ---------------------------------------------------------------------
 
-use super::source::{FrameOutcome, LossFlag, device_lost_reason, frame_outcome};
+use super::source::{FrameOutcome, frame_outcome};
+use crate::gpu::{LossFlag, device_lost_reason};
 
+/// SPEC §4 Subphase 5.4 item 4: the loss state keeps the first reason, and
+/// a reader that sees the flag sees a reason.
 #[test]
 fn loss_flag_starts_clear_and_keeps_the_first_reason() {
     let f = LossFlag::default();
     assert!(!f.is_set());
     assert_eq!(f.reason(), "");
+    assert_eq!(f.lost_reason(), None);
     f.set("Unknown: driver reset");
     f.set("Destroyed");
     assert!(f.is_set());
     assert_eq!(f.reason(), "Unknown: driver reset");
-    match f.error() {
-        crate::gpu::GpuError::RequestDevice(m) => {
-            assert_eq!(m, "device lost: Unknown: driver reset");
-        }
-        e => panic!("wrong error variant: {e:?}"),
-    }
+    assert_eq!(f.lost_reason().as_deref(), Some("Unknown: driver reset"));
 }
 
 #[test]
@@ -873,4 +872,206 @@ proptest! {
         prop_assert_eq!(out == FrameOutcome::Continue, !lost && trace_ok);
         prop_assert_eq!(out == FrameOutcome::FallBackToProbes, !lost && !trace_ok);
     }
+}
+
+// ---------------------------------------------------------------------
+// #133 (KP-052): one device request path, device-loss state
+// ---------------------------------------------------------------------
+
+use crate::gpu::{GpuError, device_features, device_request};
+
+/// SPEC §4 Subphase 5.4 item 4: the loss variant carries the reason only.
+#[test]
+fn device_lost_error_display() {
+    let e = GpuError::DeviceLost("Destroyed".into());
+    assert_eq!(e.to_string(), "GPU device lost: Destroyed");
+    let _: &dyn std::error::Error = &e;
+}
+
+/// Timestamp-query bits [`device_features`] adds when offered.
+const TS: wgpu::Features =
+    wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+
+/// SPEC §4 Subphase 5.4 item 4, §4 Subphase 1.4: the requested features are
+/// `(wanted | timestamps) & adapter`; ray queries only when wanted and
+/// offered, timestamps only when offered.
+#[test]
+fn device_features_spot_checks() {
+    use wgpu::Features as F;
+    let rq = F::EXPERIMENTAL_RAY_QUERY;
+    assert_eq!(device_features(F::empty(), F::empty()), F::empty());
+    assert_eq!(device_features(F::empty(), rq | TS), F::empty());
+    assert_eq!(device_features(TS, F::empty()), TS);
+    assert_eq!(
+        device_features(F::TIMESTAMP_QUERY, F::empty()),
+        F::TIMESTAMP_QUERY
+    );
+    assert_eq!(
+        device_features(TS | rq, F::empty()),
+        TS,
+        "ray query not wanted"
+    );
+    assert_eq!(device_features(TS | rq, rq), TS | rq);
+    assert_eq!(device_features(rq, rq), rq, "no timestamps offered");
+    assert_eq!(
+        device_features(F::DEPTH_CLIP_CONTROL, F::DEPTH_CLIP_CONTROL | rq),
+        F::DEPTH_CLIP_CONTROL
+    );
+}
+
+/// SPEC §4 Subphase 5.4 item 4 (unit test "headless and windowed contexts
+/// request features through the same path"): `with_instance` and
+/// `new_headless_with_features` both build through [`device_request`],
+/// whose result depends only on the adapter and `wanted`: no ray query →
+/// no experimental opt-in and plain limits; ray query wanted and offered →
+/// the opt-in and the adapter's acceleration-structure limits.
+#[test]
+fn device_request_is_shared_and_depends_only_on_adapter_and_wanted() {
+    use wgpu::Features as F;
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_texture_dimension_2d = 16384;
+    adapter_limits.max_blas_geometry_count = 1 << 20;
+    adapter_limits.max_tlas_instance_count = 1 << 16;
+    let plain = wgpu::Limits::downlevel_defaults().using_resolution(adapter_limits.clone());
+    let offered = TS | F::EXPERIMENTAL_RAY_QUERY;
+
+    // What `with_instance` (wanted = empty) asks for.
+    let windowed = device_request(offered, &adapter_limits, F::empty());
+    assert_eq!(windowed.features, TS);
+    assert_eq!(windowed.limits, plain);
+    assert!(!windowed.experimental);
+    // `new_headless_with_features(.., empty)` asks for exactly the same.
+    assert_eq!(
+        windowed,
+        device_request(offered, &adapter_limits, F::empty())
+    );
+
+    // Ray queries wanted and offered: opt-in plus acceleration limits.
+    let rq = device_request(offered, &adapter_limits, F::EXPERIMENTAL_RAY_QUERY);
+    assert_eq!(rq.features, offered);
+    assert!(rq.experimental);
+    assert_eq!(
+        rq.limits,
+        plain
+            .clone()
+            .using_acceleration_structure_values(adapter_limits.clone())
+    );
+    assert_eq!(rq.limits.max_tlas_instance_count, 1 << 16);
+
+    // Wanted but not offered: silently left out, no opt-in.
+    let absent = device_request(TS, &adapter_limits, F::EXPERIMENTAL_RAY_QUERY);
+    assert_eq!(absent.features, TS);
+    assert!(!absent.experimental);
+    assert_eq!(absent.limits, plain);
+}
+
+/// SPEC §4 Subphase 5.4 item 4: the loss reason text of a device-lost
+/// callback, and the loss state set from another thread (the callback runs
+/// on a wgpu thread) is seen with its reason.
+#[test]
+fn loss_flag_set_from_another_thread_is_seen_with_its_reason() {
+    assert_eq!(
+        device_lost_reason(wgpu::DeviceLostReason::Destroyed, ""),
+        "Destroyed"
+    );
+    let flag = std::sync::Arc::new(LossFlag::default());
+    assert!(!flag.is_set());
+    assert_eq!(flag.lost_reason(), None);
+    let cb = std::sync::Arc::clone(&flag);
+    std::thread::spawn(move || {
+        cb.set(&device_lost_reason(
+            wgpu::DeviceLostReason::Unknown,
+            "reset",
+        ));
+    })
+    .join()
+    .unwrap();
+    assert!(flag.is_set());
+    assert_eq!(flag.lost_reason().as_deref(), Some("Unknown: reset"));
+    flag.set("Destroyed");
+    assert_eq!(flag.reason(), "Unknown: reset", "the first reason wins");
+}
+
+/// Many threads race to report a loss: exactly one reason is kept, and it
+/// is one of theirs; every reader that sees the flag sees that reason.
+#[test]
+fn loss_flag_first_reason_wins_under_contention() {
+    let flag = std::sync::Arc::new(LossFlag::default());
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let f = std::sync::Arc::clone(&flag);
+            std::thread::spawn(move || {
+                f.set(&format!("reason {i}"));
+                f.lost_reason().expect("flag set after the reason")
+            })
+        })
+        .collect();
+    let seen: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let kept = flag.lost_reason().unwrap();
+    assert!(kept.starts_with("reason "));
+    assert!(seen.iter().all(|r| *r == kept), "{seen:?} vs {kept}");
+}
+
+/// Feature bits the property test draws from (both timestamp bits, ray
+/// queries, other experimental and plain native features).
+const FEATURE_POOL: [wgpu::Features; 12] = [
+    wgpu::Features::TIMESTAMP_QUERY,
+    wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
+    wgpu::Features::EXPERIMENTAL_RAY_QUERY,
+    wgpu::Features::EXPERIMENTAL_MESH_SHADER,
+    wgpu::Features::DEPTH_CLIP_CONTROL,
+    wgpu::Features::TEXTURE_COMPRESSION_BC,
+    wgpu::Features::SHADER_F16,
+    wgpu::Features::IMMEDIATES,
+    wgpu::Features::POLYGON_MODE_LINE,
+    wgpu::Features::MULTI_DRAW_INDIRECT_COUNT,
+    wgpu::Features::FLOAT32_FILTERABLE,
+];
+
+/// The union of the [`FEATURE_POOL`] entries whose bit is set in `mask`.
+fn features_of(mask: u32) -> wgpu::Features {
+    FEATURE_POOL
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask & (1 << i) != 0)
+        .fold(wgpu::Features::empty(), |acc, (_, f)| acc | *f)
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+    /// SPEC §4 Subphase 5.4 item 4: for arbitrary feature bit sets the
+    /// request never exceeds the adapter, keeps every wanted feature the
+    /// adapter has, adds only timestamp queries beyond `wanted`, and is
+    /// idempotent.
+    #[test]
+    fn device_features_is_bounded_by_the_adapter(a in 0u32..(1 << FEATURE_POOL.len()), w in 0u32..(1 << FEATURE_POOL.len())) {
+        let adapter = features_of(a);
+        let wanted = features_of(w);
+        let got = device_features(adapter, wanted);
+        proptest::prop_assert!(adapter.contains(got));
+        proptest::prop_assert!(got.contains(wanted & adapter));
+        proptest::prop_assert!((wanted | TS).contains(got));
+        proptest::prop_assert_eq!(got & TS, adapter & TS);
+        proptest::prop_assert_eq!(device_features(adapter, got), got);
+        proptest::prop_assert_eq!(device_features(got, wanted), got);
+    }
+}
+
+/// gpu-tests, non-destructive on the shared lib context: a live context is
+/// not lost, and its device enabled exactly [`device_features`] of its
+/// adapter for `wanted = empty` (the `with_instance` path).
+#[cfg(feature = "gpu-tests")]
+#[test]
+fn live_context_is_not_lost_and_enables_the_requested_features() {
+    let Some(ctx) = crate::gpu::shared_context_for_tests("device_loss_live_context") else {
+        return;
+    };
+    assert!(!ctx.device_lost());
+    assert_eq!(ctx.device_lost_reason(), None);
+    assert!(!crate::raytrace::RayCapability::device_lost(ctx));
+    assert_eq!(
+        ctx.device().features(),
+        device_features(ctx.adapter().features(), wgpu::Features::empty())
+    );
 }

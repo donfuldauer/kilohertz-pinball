@@ -1,13 +1,34 @@
 //! Shared helpers of the Feature Lab (6.4) tests: the bundle (built once
-//! per test binary by the build example itself, included below), scratch
-//! directories, a big-stack thread, persist-key lookup and small
-//! state-injection helpers.
+//! per test binary through `pin_tablegen::backbox::build_from`, the
+//! implementation `tables/feature_lab/build.sh` runs as `pin_tablegen
+//! build`), scratch directories, a big-stack thread, persist-key lookup and
+//! small state-injection helpers.
 #![allow(dead_code)]
 
-/// The build implementation: `crates/pin_app/examples/build_feature_lab.rs`
-/// (one implementation; `tables/feature_lab/build.sh` runs the same file).
-#[path = "../../examples/build_feature_lab.rs"]
-pub mod build;
+/// The Feature Lab build: the `pin_tablegen` library items the tests use
+/// (one implementation; `tables/feature_lab/build.sh` runs the same code
+/// through the `pin_tablegen build` command).
+pub mod build {
+    #[allow(unused_imports)]
+    pub use pin_tablegen::backbox::{
+        VUK_LATERAL_M_S, VUK_RISE_M_S, build_from, parse_hex, vuk_eject,
+    };
+    use std::path::{Path, PathBuf};
+
+    /// `tables/feature_lab` (the sources).
+    #[must_use]
+    pub fn feature_lab_src() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tables/feature_lab")
+    }
+
+    /// Builds the bundle from `tables/feature_lab` into `out_dir`.
+    ///
+    /// # Errors
+    /// As [`build_from`].
+    pub fn build_feature_lab_bundle(out_dir: &Path) -> Result<Vec<String>, String> {
+        build_from(&feature_lab_src(), out_dir)
+    }
+}
 
 #[allow(unused_imports)]
 pub use build::{build_feature_lab_bundle, feature_lab_src};

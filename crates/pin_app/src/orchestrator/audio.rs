@@ -14,7 +14,11 @@
 //!   the device's channel layout). No device, or `--headless`, falls back
 //!   to [`NullSink`].
 //! * [`table_samples`]: decodes the table's `[[sounds]]` from the validated
-//!   bundle snapshot for [`Mixer::register`].
+//!   bundle snapshot for [`Mixer::register`]; [`table_audio`] does the same
+//!   but opens music-bus sounds as streamed tracks
+//!   ([`Mixer::register_stream`], [`AudioEngine::with_streams`]), so a
+//!   music track costs one ring of the decoded-audio budget instead of its
+//!   decoded length.
 //! * UDP telemetry (SPEC §4 3.4, `docs/TELEMETRY_PROTOCOL.md`, KP-006):
 //!   [`TelemetryFeed`] runs on the sim thread inside
 //!   [`TableSim`](super::TableSim): each tick it fills a [`TelemetryState`]
@@ -27,8 +31,8 @@
 use super::table::ValidatedTable;
 use pin_assets::IdKind;
 use pin_audio::mixer::{
-    Bus, DecodeBudget, DecodeError, Mixer, MixerConfig, Sample, SoundReceiver, decode_with_budget,
-    trigger_ring,
+    Bus, DecodeBudget, DecodeError, Mixer, MixerConfig, STREAM_RING_FRAMES, Sample, SoundReceiver,
+    StreamedTrack, decode_with_budget, open_stream, trigger_ring,
 };
 use pin_audio::ssf::{CHANNELS, SsfConfig, SsfMixer};
 use pin_audio::telemetry::{
@@ -104,6 +108,88 @@ pub fn table_samples(
     (out, errors)
 }
 
+/// The table's sounds as [`table_audio`] loads them: resident samples,
+/// streamed music tracks and one message per sound that failed.
+// Not yet re-exported or called by the loader (#130 follow-up: route
+// table.rs / threads.rs through `table_audio` and `with_streams`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct TableAudio {
+    /// Decoded (resident) sounds of the callout and sfx buses, in id order.
+    pub samples: Vec<RegisteredSound>,
+    /// Music-bus sounds, streamed from their compressed bytes
+    /// ([`open_stream`]), in manifest order.
+    pub streams: Vec<(SoundId, StreamedTrack)>,
+    /// One message per sound that could not be read, opened or decoded, in
+    /// manifest order (same wording as [`table_samples`]).
+    pub errors: Vec<String>,
+}
+
+/// [`table_samples`], except that sounds on the music bus are opened as
+/// streamed tracks (`open_stream(bytes, sample_rate, STREAM_RING_FRAMES,
+/// budget)`) instead of being decoded whole. One shared
+/// [`DecodeBudget::new`]`(decoded_budget_bytes)` covers the table: each
+/// streamed track is charged its ring
+/// ([`StreamedTrack::ring_bytes`]), each resident sound its
+/// [`Sample::bytes`]. Sounds are processed in manifest order; errors use
+/// the same strings as [`table_samples`] (`sound <id> (<file>): ...`, the
+/// budget message naming `audio.decoded_budget_mib`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn table_audio(
+    checked: &ValidatedTable,
+    sample_rate: u32,
+    decoded_budget_bytes: u64,
+) -> TableAudio {
+    let budget = Arc::new(DecodeBudget::new(decoded_budget_bytes));
+    let message = |e: DecodeError| match e {
+        DecodeError::BudgetExhausted => format!(
+            "decoded-audio budget of {} MiB exhausted; raise audio.decoded_budget_mib",
+            decoded_budget_bytes >> 20
+        ),
+        other => format!("{other:?}"),
+    };
+    let mut audio = TableAudio {
+        samples: Vec::new(),
+        streams: Vec::new(),
+        errors: Vec::new(),
+    };
+    for def in &checked.table.manifest.sounds {
+        let Some(id) = checked
+            .table
+            .ids
+            .entries(IdKind::Sound)
+            .iter()
+            .find(|(n, _)| *n == def.id)
+            .map(|&(_, i)| SoundId(i))
+        else {
+            audio.errors.push(format!("sound {}: no id", def.id));
+            continue;
+        };
+        let bus = Bus::from(def.bus);
+        let loaded = checked
+            .snapshot
+            .read(&def.file)
+            .map_err(|e| e.to_string())
+            .and_then(|b| {
+                if bus == Bus::Music {
+                    open_stream(b, sample_rate, STREAM_RING_FRAMES, &budget)
+                        .map(|t| audio.streams.push((id, t)))
+                        .map_err(message)
+                } else {
+                    decode_with_budget(&b, sample_rate, &budget)
+                        .map(|s| audio.samples.push((id, Arc::new(s), bus)))
+                        .map_err(message)
+                }
+            });
+        if let Err(e) = loaded {
+            audio
+                .errors
+                .push(format!("sound {} ({}): {e}", def.id, def.file));
+        }
+    }
+    audio.samples.sort_by_key(|(id, _, _)| id.0);
+    audio
+}
+
 /// The audio thread's mixing state: the 3.3 mixer and the SSF exciter
 /// mixer combined into interleaved 7.1 blocks of [`AUDIO_BLOCK_FRAMES`].
 /// All buffers are allocated in [`new`](Self::new);
@@ -137,6 +223,18 @@ impl AudioEngine {
             block: vec![0.0; AUDIO_BLOCK_FRAMES * CHANNELS],
             peak_voices: 0,
         }
+    }
+
+    /// Registers each streamed track ([`table_audio`]) on [`Bus::Music`]
+    /// (load time only: allocates). Call before the first
+    /// [`render_block`](Self::render_block).
+    #[must_use]
+    pub fn with_streams(mut self, streams: Vec<(SoundId, StreamedTrack)>) -> AudioEngine {
+        for (id, track) in streams {
+            // Music is the one bus `register_stream` accepts.
+            let _ = self.mixer.register_stream(id, track, Bus::Music);
+        }
+        self
     }
 
     /// Registers the playfield position `[x, y]` (mm, the
@@ -779,6 +877,11 @@ mod tests {
     /// Builds the grey-box bundle (as `tests/support` and
     /// `tables/greybox/build.sh` do) into a fresh temporary directory.
     fn greybox_bundle(tag: &str) -> std::path::PathBuf {
+        greybox_bundle_with(tag, "")
+    }
+
+    /// [`greybox_bundle`] with `extra` appended to its `table.toml`.
+    fn greybox_bundle_with(tag: &str, extra: &str) -> std::path::PathBuf {
         use pin_assetgen::{TableMeta, generate_kit};
         use pin_tablegen::layout::parse_layout;
         use pin_tablegen::{generate, write_bundle};
@@ -788,7 +891,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let layout_text = std::fs::read_to_string(src.join("layout.toml")).unwrap();
-        let table_text = std::fs::read_to_string(src.join("table.toml")).unwrap();
+        let table_text = std::fs::read_to_string(src.join("table.toml")).unwrap() + extra;
         let layout = parse_layout(&layout_text).unwrap();
         let base = TableManifest::from_toml_str(&table_text).unwrap();
         write_bundle(&generate(&layout, &base).unwrap(), &out).unwrap();
@@ -909,13 +1012,13 @@ mod tests {
                 let first_bytes = all
                     .iter()
                     .find(|(id, _, _)| Some(*id) == first)
-                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .map(|(_, s, _)| s.bytes())
                     .unwrap();
                 let budget = (1 << 20).max(first_bytes);
                 let (some, errors) = table_samples(&checked, rate, budget);
                 let fit: u64 = some
                     .iter()
-                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .map(|(_, s, _)| s.bytes())
                     .sum();
                 assert!(fit <= budget);
                 assert_eq!(some.len() + errors.len(), manifest_len);
@@ -932,6 +1035,136 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    /// The grey box plus its generated music loop on the music bus.
+    const MUSIC_SOUND: &str =
+        "\n[[sounds]]\nid = \"music_main\"\nfile = \"audio/music_main.wav\"\nbus = \"music\"\n";
+
+    /// Runs `f` on a thread with room for table validation.
+    fn on_big_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// SPEC §4 3.3 / 4.4, D25 (#130): `table_audio` streams the music-bus
+    /// sound and decodes the others resident (bit-identical to
+    /// `table_samples`); the shared budget holds exactly the music ring
+    /// plus the resident bytes (the load fits a budget of exactly that sum
+    /// and not one byte less); errors keep `table_samples`' wording.
+    #[test]
+    fn table_audio_streams_music_and_charges_its_ring() {
+        let dir = greybox_bundle_with("stream", MUSIC_SOUND);
+        on_big_stack(move || {
+            let checked = super::super::table::validate_table(&dir).unwrap();
+            let rate = MixerConfig::default().sample_rate;
+            let music = checked.table.ids.sound("music_main").unwrap();
+            let manifest = &checked.table.manifest.sounds;
+            let a = table_audio(&checked, rate, DecodeBudget::DEFAULT_BYTES);
+            assert!(a.errors.is_empty(), "{:?}", a.errors);
+            assert_eq!(a.streams.len(), 1);
+            assert_eq!(a.streams[0].0, music);
+            assert_eq!(a.samples.len(), manifest.len() - 1);
+            assert!(
+                a.samples
+                    .iter()
+                    .all(|(id, _, bus)| *id != music && *bus != Bus::Music)
+            );
+            assert!(a.samples.windows(2).all(|w| w[0].0.0 < w[1].0.0));
+            let (resident, _) = table_samples(&checked, rate, DecodeBudget::DEFAULT_BYTES);
+            for (id, s, bus) in &a.samples {
+                let r = resident.iter().find(|(i, _, _)| i == id).unwrap();
+                assert_eq!((&**s, *bus), (&*r.1, r.2));
+            }
+            let music_full = resident.iter().find(|(i, _, _)| *i == music).unwrap();
+            let ring = a.streams[0].1.ring_bytes();
+            assert!(ring < music_full.1.bytes(), "the ring, not the decode");
+            let total = ring + a.samples.iter().map(|(_, s, _)| s.bytes()).sum::<u64>();
+            drop(a);
+            let exact = table_audio(&checked, rate, total);
+            assert!(exact.errors.is_empty(), "{:?}", exact.errors);
+            assert_eq!(exact.streams.len(), 1);
+            drop(exact);
+            let short = table_audio(&checked, rate, total - 1);
+            assert_eq!(short.errors.len(), 1, "{:?}", short.errors);
+            let last = manifest.last().unwrap();
+            assert_eq!(last.id, "music_main");
+            assert_eq!(
+                short.errors[0],
+                format!(
+                    "sound {} ({}): decoded-audio budget of {} MiB exhausted; \
+                     raise audio.decoded_budget_mib",
+                    last.id,
+                    last.file,
+                    (total - 1) >> 20
+                )
+            );
+            // A zero budget: every sound fails with the same message as
+            // `table_samples`.
+            let none = table_audio(&checked, rate, 0);
+            let (_, want) = table_samples(&checked, rate, 0);
+            assert!(none.samples.is_empty() && none.streams.is_empty());
+            assert_eq!(none.errors, want);
+            assert_eq!(none.errors.len(), manifest.len());
+        });
+    }
+
+    /// SPEC §4 3.3, D31 (#130): `AudioEngine::with_streams` plays a
+    /// triggered streamed music sound through the offline sink, frame for
+    /// frame the full decode on the front channels.
+    #[test]
+    fn engine_plays_a_streamed_music_sound() {
+        let dir = greybox_bundle_with("engine", MUSIC_SOUND);
+        on_big_stack(move || {
+            use pin_audio::ssf::{CH_FL, CH_FR};
+            let checked = super::super::table::validate_table(&dir).unwrap();
+            let rate = MixerConfig::default().sample_rate;
+            let music = checked.table.ids.sound("music_main").unwrap();
+            let full = pin_audio::mixer::decode(
+                &checked.snapshot.read("audio/music_main.wav").unwrap(),
+                rate,
+            )
+            .unwrap();
+            let audio = table_audio(&checked, rate, DecodeBudget::DEFAULT_BYTES);
+            let handle = audio.streams[0].1.handle();
+            let (mut tx, rx) = trigger_ring(4);
+            let mut e = AudioEngine::new(
+                SsfConfig::default(),
+                MixerConfig::default(),
+                Some(rx),
+                &audio.samples,
+            )
+            .with_streams(audio.streams);
+            let blocks = 8;
+            let (mut sink, rec) = OfflineSink::new(blocks * AUDIO_BLOCK_FRAMES);
+            assert!(tx.send(SoundTrigger {
+                sound: music,
+                gain: 1.0
+            }));
+            for _ in 0..blocks {
+                handle.wait_filled();
+                sink.write(e.render_block(), CHANNELS);
+            }
+            assert_eq!(e.mixer().active_voices(Bus::Music), 1);
+            assert_eq!(e.mixer().stream_underruns(), 0);
+            let got = rec.samples();
+            assert_eq!(got.len(), blocks * AUDIO_BLOCK_FRAMES * CHANNELS);
+            let mut loud = false;
+            for (k, frame) in got.chunks(CHANNELS).enumerate() {
+                let (l, r) = full.frame(k);
+                assert_eq!(
+                    (frame[CH_FL], frame[CH_FR]),
+                    (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)),
+                    "frame {k}"
+                );
+                loud |= l != 0.0;
+            }
+            assert!(loud, "the music is not silent");
+        });
     }
 
     #[test]

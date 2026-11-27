@@ -31,6 +31,7 @@ use pin_sim::{SimConfig, Simulation};
 use pin_tablegen::clearance::{
     ClearanceError, load_backbox_colliders, validate_clearance_with_backbox,
 };
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -812,28 +813,122 @@ fn serve(req: IoRequest, mixer: MixerConfig, budget: &AtomicU64) -> IoReply {
 /// [`IoReply::LoadFailed`] with the panic message). The main thread only
 /// posts requests and applies replies.
 ///
+/// Rescans from the table browser go through
+/// [`request_scan`](Self::request_scan), which coalesces them: while one
+/// such scan is in flight, at most one follow-up scan is held back (the
+/// latest folder asked for) and submitted when the in-flight scan's reply
+/// is received, so a burst of rescans costs at most two scans and a load
+/// submitted meanwhile waits behind at most the scan in flight (gate 163
+/// round 9, review thread 4703749467). [`request`](Self::request) and
+/// [`try_request`](Self::try_request) never coalesce: one reply per
+/// request.
+///
 /// Loads use the decoded-audio budget last set with
 /// [`set_decoded_budget_bytes`](Self::set_decoded_budget_bytes)
 /// ([`DecodeBudget::DEFAULT_BYTES`] until then), read when each load starts.
 ///
 /// Dropping the worker stops it: the request in flight completes, requests
-/// still queued are skipped, and the thread is joined.
+/// still queued are skipped (never handed to the handler), and the thread is
+/// joined.
 pub struct IoWorker {
-    requests: Option<mpsc::Sender<IoRequest>>,
-    replies: mpsc::Receiver<IoReply>,
+    /// Requests, each with whether it is a coalesced scan
+    /// ([`request_scan`](Self::request_scan)); `None` when the thread never
+    /// started.
+    requests: Option<mpsc::Sender<(IoRequest, bool)>>,
+    /// Replies, each with the coalesced flag of its request.
+    replies: mpsc::Receiver<(IoReply, bool)>,
     stop: Arc<AtomicBool>,
     decoded_budget: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
+    /// A coalesced scan was submitted and its reply not yet received.
+    scan_in_flight: Cell<bool>,
+    /// The follow-up scan held back while one is in flight (the latest
+    /// folder asked for).
+    scan_follow_up: Cell<Option<PathBuf>>,
 }
+
+/// What a request submission error says when the worker never started.
+pub const IO_WORKER_NOT_RUNNING: &str = "the I/O worker is not running";
+/// What a request submission error says when the worker has stopped.
+pub const IO_WORKER_STOPPED: &str = "the I/O worker has stopped";
 
 impl IoWorker {
     /// Starts the worker; loads decode sounds at `mixer.sample_rate`. If the
     /// thread cannot be spawned, a line is printed on stderr and the worker
-    /// answers nothing ([`recv`](Self::recv) returns `None`).
+    /// answers nothing: every submission fails
+    /// ([`try_request`](Self::try_request)) and [`recv`](Self::recv)
+    /// returns `None`.
     #[must_use]
     pub fn spawn(mixer: MixerConfig) -> IoWorker {
-        let (req_tx, req_rx) = mpsc::channel::<IoRequest>();
-        let (rep_tx, rep_rx) = mpsc::channel::<IoReply>();
+        Self::spawn_with_budget(move |req, budget| serve(req, mixer, budget))
+    }
+
+    /// [`spawn`](Self::spawn) with a check run on the worker before each
+    /// load: when `guard(path)` returns `Err(e)` the bundle is not loaded and
+    /// the reply is [`IoReply::LoadFailed`] with `e` (a panic in the guard
+    /// fails the load the same way). The app uses it to refuse a browser
+    /// selection that is the `--latency-trace` destination (gate 163 round
+    /// 9, review thread 4703749453), keeping that file check on the worker
+    /// (R4).
+    #[must_use]
+    pub fn spawn_guarded<G>(mixer: MixerConfig, guard: G) -> IoWorker
+    where
+        G: Fn(&Path) -> Result<(), String> + Send + 'static,
+    {
+        Self::spawn_with_budget(move |req, budget| {
+            if let IoRequest::Load { id, path } = &req {
+                use std::panic::{AssertUnwindSafe, catch_unwind};
+                let checked = catch_unwind(AssertUnwindSafe(|| guard(path)))
+                    .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
+                if let Err(error) = checked {
+                    return IoReply::LoadFailed {
+                        id: *id,
+                        path: path.clone(),
+                        error,
+                    };
+                }
+            }
+            serve(req, mixer, budget)
+        })
+    }
+
+    /// A worker whose thread never started (what [`spawn`](Self::spawn)
+    /// returns when the thread cannot be spawned): every submission fails
+    /// with [`IO_WORKER_NOT_RUNNING`] and [`recv`](Self::recv) returns
+    /// `None`.
+    #[must_use]
+    pub fn not_running() -> IoWorker {
+        let (_, rep_rx) = mpsc::channel();
+        IoWorker {
+            requests: None,
+            replies: rep_rx,
+            stop: Arc::new(AtomicBool::new(false)),
+            decoded_budget: Arc::new(AtomicU64::new(DecodeBudget::DEFAULT_BYTES)),
+            handle: None,
+            scan_in_flight: Cell::new(false),
+            scan_follow_up: Cell::new(None),
+        }
+    }
+
+    /// The worker loop around `handler` (one call per request, in order;
+    /// the test seam for the shutdown and coalescing contracts).
+    #[cfg(test)]
+    pub(crate) fn spawn_with<H>(mut handler: H) -> IoWorker
+    where
+        H: FnMut(IoRequest) -> IoReply + Send + 'static,
+    {
+        Self::spawn_with_budget(move |req, _| handler(req))
+    }
+
+    /// The worker loop around `handler` (one call per request, in order),
+    /// which also gets the worker's decoded-audio budget, read by a load
+    /// when it starts ([`set_decoded_budget_bytes`](Self::set_decoded_budget_bytes)).
+    fn spawn_with_budget<H>(mut handler: H) -> IoWorker
+    where
+        H: FnMut(IoRequest, &AtomicU64) -> IoReply + Send + 'static,
+    {
+        let (req_tx, req_rx) = mpsc::channel::<(IoRequest, bool)>();
+        let (rep_tx, rep_rx) = mpsc::channel::<(IoReply, bool)>();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let decoded_budget = Arc::new(AtomicU64::new(DecodeBudget::DEFAULT_BYTES));
@@ -841,29 +936,39 @@ impl IoWorker {
         let spawned = std::thread::Builder::new()
             .name("io-worker".to_owned())
             .spawn(move || {
-                while let Ok(req) = req_rx.recv() {
+                while let Ok((req, coalesced)) = req_rx.recv() {
                     if flag.load(Ordering::Acquire) {
                         break;
                     }
-                    if rep_tx.send(serve(req, mixer, &budget)).is_err() {
+                    if rep_tx.send((handler(req, &budget), coalesced)).is_err() {
                         break;
                     }
                 }
             });
-        let handle = match spawned {
-            Ok(h) => Some(h),
+        match spawned {
+            Ok(h) => IoWorker {
+                requests: Some(req_tx),
+                replies: rep_rx,
+                stop,
+                decoded_budget,
+                handle: Some(h),
+                scan_in_flight: Cell::new(false),
+                scan_follow_up: Cell::new(None),
+            },
             Err(e) => {
                 eprintln!("pin_app: spawning the io-worker thread: {e}");
-                None
+                Self::not_running()
             }
-        };
-        IoWorker {
-            requests: handle.as_ref().map(|_| req_tx),
-            replies: rep_rx,
-            stop,
-            decoded_budget,
-            handle,
         }
+    }
+
+    fn send(&self, req: IoRequest, coalesced: bool) -> Result<(), String> {
+        let tx = self
+            .requests
+            .as_ref()
+            .ok_or_else(|| IO_WORKER_NOT_RUNNING.to_owned())?;
+        tx.send((req, coalesced))
+            .map_err(|_| IO_WORKER_STOPPED.to_owned())
     }
 
     /// Sets the decoded-audio budget, in bytes, of the loads that start
@@ -878,22 +983,66 @@ impl IoWorker {
         self.decoded_budget.load(Ordering::Acquire)
     }
 
-    /// Queues `req` (never blocks).
+    /// Queues `req` (never blocks); one reply follows, in request order.
+    ///
+    /// # Errors
+    /// [`IO_WORKER_NOT_RUNNING`] when the thread never started,
+    /// [`IO_WORKER_STOPPED`] when it has stopped: no reply will come, so a
+    /// caller waiting for one (the menu's `Loading`) must give up (gate 163
+    /// round 9, review thread 4703749471).
+    pub fn try_request(&self, req: IoRequest) -> Result<(), String> {
+        self.send(req, false)
+    }
+
+    /// [`try_request`](Self::try_request) for callers that do not need to
+    /// know whether the request was queued (a failed submission is
+    /// dropped silently and no reply follows).
     pub fn request(&self, req: IoRequest) {
-        if let Some(tx) = &self.requests {
-            let _ = tx.send(req);
+        let _ = self.try_request(req);
+    }
+
+    /// Asks for a scan of `dir`, coalesced: with no coalesced scan in
+    /// flight it is queued now; otherwise it becomes the one follow-up scan
+    /// (replacing an earlier follow-up, also for another folder), queued
+    /// when the in-flight scan's reply is received through
+    /// [`try_recv`](Self::try_recv) or [`recv`](Self::recv). Loads
+    /// ([`try_request`](Self::try_request)) are never held back by it.
+    ///
+    /// # Errors
+    /// As [`try_request`](Self::try_request), for a scan queued now.
+    pub fn request_scan(&self, dir: PathBuf) -> Result<(), String> {
+        if self.scan_in_flight.get() {
+            self.scan_follow_up.set(Some(dir));
+            return Ok(());
         }
+        self.send(IoRequest::Scan(dir), true)?;
+        self.scan_in_flight.set(true);
+        Ok(())
+    }
+
+    /// Applies the bookkeeping of a received reply: a coalesced scan's
+    /// reply ends it and queues the held-back follow-up, if any.
+    fn received(&self, (reply, coalesced): (IoReply, bool)) -> IoReply {
+        if coalesced {
+            self.scan_in_flight.set(false);
+            if let Some(dir) = self.scan_follow_up.take()
+                && let Err(e) = self.request_scan(dir)
+            {
+                eprintln!("pin_app: table browser: rescan not submitted: {e}");
+            }
+        }
+        reply
     }
 
     /// The next reply if one is ready (never blocks).
     pub fn try_recv(&self) -> Option<IoReply> {
-        self.replies.try_recv().ok()
+        self.replies.try_recv().ok().map(|r| self.received(r))
     }
 
     /// Blocks for the next reply; `None` once the worker has stopped (or
     /// never started).
     pub fn recv(&self) -> Option<IoReply> {
-        self.replies.recv().ok()
+        self.replies.recv().ok().map(|r| self.received(r))
     }
 }
 
@@ -978,8 +1127,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Dropping the worker with requests queued joins it without serving
-    /// them all.
+    /// Dropping the worker with requests queued joins it (a smoke test of the real
+    /// handler; the shutdown contract itself is
+    /// `io_worker_drop_completes_in_flight_and_skips_queued`).
     #[test]
     fn io_worker_drop_joins() {
         let d = temp("drop");
@@ -989,6 +1139,269 @@ mod tests {
                 id: i,
                 path: d.join(format!("missing{i}")),
             });
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A test handler: counts entries and completions, reports each entry
+    /// on `entered`, then holds the request until `release` delivers (or
+    /// is closed), and answers a scan with an empty list and a load with a
+    /// failure.
+    fn held_handler(
+        entered_tx: mpsc::Sender<IoRequest>,
+        release: mpsc::Receiver<()>,
+        entries: Arc<std::sync::atomic::AtomicUsize>,
+        completions: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> impl FnMut(IoRequest) -> IoReply + Send + 'static {
+        move |req| {
+            entries.fetch_add(1, Ordering::SeqCst);
+            let _ = entered_tx.send(req.clone());
+            let _ = release.recv();
+            completions.fetch_add(1, Ordering::SeqCst);
+            match req {
+                IoRequest::Scan(root) => IoReply::Scanned {
+                    root,
+                    tables: Vec::new(),
+                },
+                IoRequest::Load { id, path } => IoReply::LoadFailed {
+                    id,
+                    path,
+                    error: "held".to_owned(),
+                },
+            }
+        }
+    }
+
+    type Counter = Arc<std::sync::atomic::AtomicUsize>;
+
+    fn counters() -> (Counter, Counter) {
+        (Counter::default(), Counter::default())
+    }
+
+    /// Gate 163 round 9 #8 (review body nitpick, table.rs:779): dropping
+    /// the worker lets the request in flight complete, never hands a queued
+    /// request to the handler, and joins. The first request is held in the
+    /// handler until the drop has begun (its stop flag is set), with a
+    /// second request queued behind it. No sleeps, no elapsed-time
+    /// assertions.
+    #[test]
+    fn io_worker_drop_completes_in_flight_and_skips_queued() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let (entries, completions) = counters();
+        let w = IoWorker::spawn_with(held_handler(
+            entered_tx,
+            release,
+            Arc::clone(&entries),
+            Arc::clone(&completions),
+        ));
+        // Re-bound after `w` so it drops first on unwind: if an assertion
+        // fails before `w` moves to the drop thread, the release channel
+        // closes before `IoWorker::drop` joins, and a handler held on
+        // `release.recv()` returns instead of hanging the join (gate 163
+        // round 12, review 6076344934 finding 8). The normal flow still
+        // holds the request until the stop flag is set.
+        let release_tx = release_tx;
+        w.try_request(IoRequest::Load {
+            id: 1,
+            path: PathBuf::from("first"),
+        })
+        .unwrap();
+        // The first request is inside the handler.
+        assert_eq!(
+            entered.recv().unwrap(),
+            IoRequest::Load {
+                id: 1,
+                path: PathBuf::from("first")
+            }
+        );
+        w.try_request(IoRequest::Load {
+            id: 2,
+            path: PathBuf::from("second"),
+        })
+        .unwrap();
+        let stop = Arc::clone(&w.stop);
+        let dropper = std::thread::spawn(move || drop(w));
+        // Shutdown has begun once the drop stored the stop flag (its first
+        // statement); the drop then blocks on the join.
+        while !stop.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+        dropper.join().expect("drop joins the worker");
+        assert_eq!(completions.load(Ordering::SeqCst), 1, "the first completed");
+        assert_eq!(
+            entries.load(Ordering::SeqCst),
+            1,
+            "the queued request never entered the handler"
+        );
+        assert!(entered.try_recv().is_err(), "no second entry was reported");
+    }
+
+    /// Gate 163 round 9 #5 (review thread 4703749467, REQ-VIEW-006): any
+    /// number of rescans while one is in flight costs exactly one
+    /// follow-up scan (of the latest folder asked for); a load submitted
+    /// meanwhile is queued at once, ahead of the follow-up.
+    #[test]
+    fn io_worker_rescans_coalesce_to_one_follow_up() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let (entries, completions) = counters();
+        let w = IoWorker::spawn_with(held_handler(
+            entered_tx,
+            release,
+            Arc::clone(&entries),
+            Arc::clone(&completions),
+        ));
+        // Re-bound after `w` so it drops first on every exit path: a failed
+        // assertion below closes the release channel before `IoWorker::drop`
+        // joins the worker, and a handler held on `release.recv()` returns
+        // instead of hanging the join (gate 163 round 11, review
+        // 6070807835).
+        let release_tx = release_tx;
+        let (a, b) = (PathBuf::from("dir_a"), PathBuf::from("dir_b"));
+        w.request_scan(a.clone()).unwrap();
+        assert_eq!(entered.recv().unwrap(), IoRequest::Scan(a.clone()));
+        for _ in 0..10 {
+            w.request_scan(a.clone()).unwrap();
+        }
+        // A request for another folder replaces the held-back follow-up.
+        w.request_scan(b.clone()).unwrap();
+        // A load is never held back by the rescan state.
+        w.try_request(IoRequest::Load {
+            id: 7,
+            path: PathBuf::from("t.zip"),
+        })
+        .unwrap();
+        release_tx.send(()).unwrap();
+        match w.recv() {
+            Some(IoReply::Scanned { root, .. }) => assert_eq!(root, a),
+            other => panic!("{other:?}"),
+        }
+        // Receiving the first scan's reply queued the follow-up behind the
+        // load, which the worker serves next.
+        assert_eq!(
+            entered.recv().unwrap(),
+            IoRequest::Load {
+                id: 7,
+                path: PathBuf::from("t.zip")
+            }
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(w.recv(), Some(IoReply::LoadFailed { id: 7, .. })));
+        assert_eq!(entered.recv().unwrap(), IoRequest::Scan(b.clone()));
+        release_tx.send(()).unwrap();
+        match w.recv() {
+            Some(IoReply::Scanned { root, .. }) => assert_eq!(root, b),
+            other => panic!("{other:?}"),
+        }
+        drop(release_tx);
+        drop(w);
+        assert_eq!(entries.load(Ordering::SeqCst), 3, "2 scans and the load");
+        assert_eq!(completions.load(Ordering::SeqCst), 3);
+        assert!(entered.try_recv().is_err());
+    }
+
+    /// Gate 163 round 9 #5: a coalesced scan with nothing in flight is
+    /// queued at once, and plain `request` scans are never coalesced (one
+    /// reply per request).
+    #[test]
+    fn io_worker_plain_scans_are_not_coalesced() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let (entries, _) = counters();
+        let w = IoWorker::spawn_with(held_handler(
+            entered_tx,
+            release,
+            Arc::clone(&entries),
+            Counter::default(),
+        ));
+        for _ in 0..3 {
+            release_tx.send(()).unwrap();
+            w.request(IoRequest::Scan(PathBuf::from("d")));
+        }
+        for _ in 0..3 {
+            assert!(matches!(w.recv(), Some(IoReply::Scanned { .. })));
+        }
+        // Nothing in flight: a coalesced scan goes out at once, and a
+        // second one after its reply too.
+        for _ in 0..2 {
+            release_tx.send(()).unwrap();
+            w.request_scan(PathBuf::from("d")).unwrap();
+            assert!(matches!(w.recv(), Some(IoReply::Scanned { .. })));
+        }
+        drop(release_tx);
+        drop(w);
+        assert_eq!(entries.load(Ordering::SeqCst), 5);
+        assert_eq!(entered.try_iter().count(), 5);
+    }
+
+    /// Gate 163 round 9 #6 (review thread 4703749471): a worker without a
+    /// thread refuses every submission with an error (no reply would come),
+    /// and a stopped worker's channel refuses too.
+    #[test]
+    fn io_worker_submission_errors() {
+        let w = IoWorker::not_running();
+        let load = IoRequest::Load {
+            id: 1,
+            path: PathBuf::from("t"),
+        };
+        assert_eq!(
+            w.try_request(load.clone()).unwrap_err(),
+            IO_WORKER_NOT_RUNNING
+        );
+        assert_eq!(
+            w.request_scan(PathBuf::from("d")).unwrap_err(),
+            IO_WORKER_NOT_RUNNING
+        );
+        w.request(load.clone());
+        assert!(w.try_recv().is_none());
+        assert!(w.recv().is_none());
+        // A worker whose thread ended: the channel is closed.
+        let w = IoWorker::spawn_with(|_| panic!("stops the worker thread"));
+        w.try_request(load.clone()).unwrap();
+        assert!(w.recv().is_none(), "the thread ended without a reply");
+        assert_eq!(w.try_request(load).unwrap_err(), IO_WORKER_STOPPED);
+    }
+
+    /// Gate 163 round 9 #2 (review thread 4703749453): a guarded worker
+    /// refuses a load the guard rejects with `LoadFailed` and the guard's
+    /// text, and loads (or fails normally) otherwise.
+    #[test]
+    fn io_worker_load_guard_refuses_before_loading() {
+        let d = temp("guard");
+        let w = IoWorker::spawn_guarded(MixerConfig::default(), |p: &Path| {
+            if p.ends_with("trace.zip") {
+                Err("--latency-trace: trace.zip is the selected table bundle".to_owned())
+            } else {
+                Ok(())
+            }
+        });
+        w.try_request(IoRequest::Load {
+            id: 1,
+            path: d.join("trace.zip"),
+        })
+        .unwrap();
+        w.try_request(IoRequest::Load {
+            id: 2,
+            path: d.join("other.zip"),
+        })
+        .unwrap();
+        match w.recv() {
+            Some(IoReply::LoadFailed { id: 1, error, .. }) => {
+                assert_eq!(
+                    error,
+                    "--latency-trace: trace.zip is the selected table bundle"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        match w.recv() {
+            Some(IoReply::LoadFailed { id: 2, error, .. }) => {
+                assert!(!error.contains("--latency-trace"), "{error}");
+            }
+            other => panic!("{other:?}"),
         }
         drop(w);
         let _ = std::fs::remove_dir_all(&d);

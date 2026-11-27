@@ -602,6 +602,38 @@ fn check_fit(g: &CabinetGeometry) -> Result<(), GenError> {
     Ok(())
 }
 
+/// Panel-room checks: the depth holds the front plate and the rear panel,
+/// the width the two side panels, the height the bottom panel and the top
+/// (each `body.wall_thickness` thick), so no panel pokes out of the volume.
+fn check_panel_room(g: &CabinetGeometry) -> Result<(), GenError> {
+    let bb = &g.backbox;
+    let t = f64::from(g.body.wall_thickness);
+    let (w, h, d) = (
+        f64::from(bb.width),
+        f64::from(bb.height),
+        f64::from(bb.depth),
+    );
+    if d < 2.0 * t {
+        return Err(err(
+            "backbox.depth",
+            format!("depth {d} mm is less than two {t} mm panels (front plate and rear panel)"),
+        ));
+    }
+    if w < 2.0 * t {
+        return Err(err(
+            "backbox.width",
+            format!("width {w} mm is less than two {t} mm panels (the two side panels)"),
+        ));
+    }
+    if h < 2.0 * t {
+        return Err(err(
+            "backbox.height",
+            format!("height {h} mm is less than two {t} mm panels (bottom and top panels)"),
+        ));
+    }
+    Ok(())
+}
+
 /// Profile checks (sections A and B of the backbox contract).
 fn check_profiles(g: &CabinetGeometry) -> Result<(), GenError> {
     let f = Face::new(g);
@@ -696,6 +728,7 @@ fn check_blades(g: &CabinetGeometry) -> Result<(), GenError> {
 pub(crate) fn check(g: &CabinetGeometry) -> Result<(), GenError> {
     check_values(g)?;
     check_fit(g)?;
+    check_panel_room(g)?;
     check_profiles(g)?;
     check_blades(g)
 }

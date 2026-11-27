@@ -34,8 +34,12 @@
 //!   ball hit most often (ties to the lowest switch id), or the nearest
 //!   feature and position when it hit none. The detail lists the switches
 //!   it hit in the last 60 s with their counts (most hits first, ties to the
-//!   lowest id). A switch closing is credited to the nearest ball when the
-//!   switch has a position, else to every ball on the table.
+//!   lowest id). A switch closing is credited to the nearest ball (plane
+//!   distance, ties to the lowest slot) when the switch has a position:
+//!   its own zone centre, else, for a switch declared without a zone, the
+//!   position of the mech it belongs to (a bumper ring, a VUK switch). Only
+//!   a switch with neither is credited to every ball on the table. Either
+//!   way a closing counts once in [`GameOutcome::switch_hits`].
 //! * **Long ball:** a ball past the age limit is not reported at once. The
 //!   finding it would raise (same tick, subject and detail) is held for its
 //!   ball slot together with a verdict on the 60 s window at that tick:
@@ -60,6 +64,17 @@
 //! * **Non-finite:** NaN or infinity in a ball's position, orientation,
 //!   velocity or angular velocity, or a flipper's angle, angular velocity or
 //!   zipper offset. (Scores are integers.)
+//!
+//! # Shots
+//!
+//! Each `[[shots]]` entry is credited when its switches close in order
+//! within its window (`window_ticks` from the first to the last). Partial
+//! progress belongs to one ball: it is cleared for every shot whenever a
+//! ball leaves the table (drained or escaped) and whenever a new ball
+//! appears (a serve or a multiball add), so a sequence is never completed
+//! across two balls. In multiball this also drops the partial progress of
+//! the balls still in play (the monitor cannot tell which ball closed a
+//! positionless switch); completed shots stay counted.
 //!
 //! # Allocation
 //!
@@ -238,7 +253,9 @@ pub struct GameMonitor<'t> {
     findings: Vec<Finding>,
     ball_times: Vec<i64>,
     endless_ticks: u64,
-    /// Coverage switches by ascending id: (bit index, plane position).
+    /// Coverage switches by ascending id: (bit index, plane position; the
+    /// switch's own zone, else its mech's position, see
+    /// [`TableInfo::switch_position_m`]).
     hit_switches: Vec<(usize, Option<[f32; 2]>)>,
     /// Hit-count row length: the largest coverage switch index + 1.
     hit_row: usize,
@@ -277,7 +294,12 @@ impl<'t> GameMonitor<'t> {
         let mut hit_switches: Vec<(usize, Option<[f32; 2]>)> = info
             .coverage_switches()
             .filter(|s| s.id.index() < 256)
-            .map(|s| (s.id.index(), s.position_m.map(|p| [p[0], p[1]])))
+            .map(|s| {
+                (
+                    s.id.index(),
+                    info.switch_position_m(s.id).map(|p| [p[0], p[1]]),
+                )
+            })
             .collect();
         hit_switches.sort_unstable_by_key(|h| h.0);
         hit_switches.dedup_by_key(|h| h.0);
@@ -377,6 +399,11 @@ impl<'t> GameMonitor<'t> {
                 self.tracks[slot] = None;
             }
         }
+        if !vanished.is_empty() {
+            // A ball left the table (drained or escaped): no shot sequence
+            // carries over to the next ball.
+            self.clear_shot_progress();
+        }
         let escaped = sim.counters().balls_escaped;
         let mut new_escapes = escaped.saturating_sub(self.escaped_seen) as usize;
         self.escaped_seen = escaped;
@@ -429,6 +456,8 @@ impl<'t> GameMonitor<'t> {
                 _ => {
                     self.flush_pending(slot);
                     self.reset_hits(slot, tick);
+                    // A ball was served: shot sequences start afresh.
+                    self.clear_shot_progress();
                     Track {
                         handle: h,
                         first_tick: tick,
@@ -623,6 +652,13 @@ impl<'t> GameMonitor<'t> {
         }
     }
 
+    /// Forgets every partly completed shot sequence (a ball drained,
+    /// escaped or was served; see the module docs, "Shots"). Completed
+    /// shots stay counted.
+    fn clear_shot_progress(&mut self) {
+        self.shots.fill(ShotProgress::default());
+    }
+
     /// Clears slot `slot`'s hit counts for a new ball seen at `tick`.
     fn reset_hits(&mut self, slot: usize, tick: u64) {
         let row = self.hit_row;
@@ -663,7 +699,8 @@ impl<'t> GameMonitor<'t> {
 
     /// Credits the rising coverage switches in `rising` to the balls on
     /// the table: to the nearest ball (ties to the lowest slot) when the
-    /// switch has a position, else to every ball.
+    /// switch has a position (its own zone, else the position of the mech
+    /// it belongs to), else to every ball.
     fn credit_hits(&mut self, rising: &[u64; 4], tick: u64) {
         for k in 0..self.hit_switches.len() {
             let (sw, pos) = self.hit_switches[k];
@@ -1076,6 +1113,193 @@ mod tests {
         let seven: Vec<(usize, u64)> = (0..7).map(|i| (i, 5)).collect();
         assert!(!GameMonitor::window_verdict(&seven).0);
         assert!(!GameMonitor::window_verdict(&[]).0);
+    }
+
+    use crate::{SimConfig, Simulation};
+
+    const BALL_Z: f32 = 0.0135;
+
+    fn clean_bundle() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/autoplay/clean")
+    }
+
+    /// The `clean` fixture with one three-switch shot
+    /// (`top_rollover`, `bumper_ring`, `action`) in a 2 s window.
+    fn three_switch_table() -> (Simulation, TableInfo) {
+        let b = clean_bundle();
+        let sim = Simulation::load(&b, SimConfig::default()).unwrap();
+        let mut info = TableInfo::load(&b).unwrap();
+        let id = |n: &str| sim.switch_id(n).unwrap();
+        info.shots = vec![super::super::table::ShotInfo {
+            name: "three".into(),
+            sequence: vec![id("top_rollover"), id("bumper_ring"), id("action")],
+            window_ticks: 2000,
+        }];
+        (sim, info)
+    }
+
+    /// Closes and reopens switch `name`, observing after each tick.
+    fn pulse(sim: &mut Simulation, mon: &mut GameMonitor<'_>, name: &str) {
+        sim.set_switch(name, true).unwrap();
+        sim.advance(1);
+        mon.observe(sim);
+        sim.set_switch(name, false).unwrap();
+        sim.advance(1);
+        mon.observe(sim);
+        sim.release_switch(name).unwrap();
+    }
+
+    fn spawn(sim: &mut Simulation, mon: &mut GameMonitor<'_>, x: f32, y: f32) -> BallHandle {
+        let h = sim
+            .spawn_ball("standard_steel", [x, y, BALL_Z], [0.0; 3])
+            .unwrap();
+        mon.observe(sim);
+        h
+    }
+
+    fn drain(sim: &mut Simulation, mon: &mut GameMonitor<'_>, h: BallHandle) {
+        assert!(sim.remove_ball(h));
+        sim.advance(1);
+        mon.observe(sim);
+    }
+
+    /// Issue #138 acceptance 1 (SPEC Subphase 2.9 shot coverage): all
+    /// three switches on one ball credit the shot once.
+    #[test]
+    fn shot_on_one_ball_counts() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        spawn(&mut sim, &mut mon, 0.30, 0.85);
+        for n in ["top_rollover", "bumper_ring", "action"] {
+            pulse(&mut sim, &mut mon, n);
+        }
+        assert_eq!(mon.finish(&sim).shot_counts, [1]);
+    }
+
+    /// Issue #138 acceptance 1: switches 1 and 2 on one ball, a drain and
+    /// a serve, switch 3 on the next ball: no credit (credited on main).
+    #[test]
+    fn shot_progress_is_cleared_on_drain_and_serve() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        let a = spawn(&mut sim, &mut mon, 0.30, 0.85);
+        pulse(&mut sim, &mut mon, "top_rollover");
+        pulse(&mut sim, &mut mon, "bumper_ring");
+        drain(&mut sim, &mut mon, a);
+        spawn(&mut sim, &mut mon, 0.30, 0.85);
+        pulse(&mut sim, &mut mon, "action");
+        // The next ball still completes the whole sequence on its own.
+        for n in ["top_rollover", "bumper_ring", "action"] {
+            pulse(&mut sim, &mut mon, n);
+        }
+        assert_eq!(mon.finish(&sim).shot_counts, [1]);
+    }
+
+    /// The drain alone clears the progress (no ball between).
+    #[test]
+    fn shot_progress_is_cleared_on_drain() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        let a = spawn(&mut sim, &mut mon, 0.30, 0.85);
+        pulse(&mut sim, &mut mon, "top_rollover");
+        pulse(&mut sim, &mut mon, "bumper_ring");
+        drain(&mut sim, &mut mon, a);
+        pulse(&mut sim, &mut mon, "action");
+        assert_eq!(mon.finish(&sim).shot_counts, [0]);
+    }
+
+    /// The serve alone clears the progress (multiball: a ball added while
+    /// another is in play; DECISIONS.md "#138 KP-057 — shot progress").
+    #[test]
+    fn shot_progress_is_cleared_on_serve() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        spawn(&mut sim, &mut mon, 0.30, 0.85);
+        pulse(&mut sim, &mut mon, "top_rollover");
+        pulse(&mut sim, &mut mon, "bumper_ring");
+        spawn(&mut sim, &mut mon, 0.12, 0.60);
+        pulse(&mut sim, &mut mon, "action");
+        assert_eq!(mon.finish(&sim).shot_counts, [0]);
+    }
+
+    /// An escape clears the progress like a drain.
+    #[test]
+    fn shot_progress_is_cleared_on_escape() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        let a = spawn(&mut sim, &mut mon, 0.30, 0.85);
+        spawn(&mut sim, &mut mon, 0.12, 0.60);
+        pulse(&mut sim, &mut mon, "top_rollover");
+        pulse(&mut sim, &mut mon, "bumper_ring");
+        // Flung out through the left wall: removed as escaped in the tick.
+        let s = BallState {
+            position_m: [-0.04, 0.5, BALL_Z],
+            velocity_m_s: [-100.0, 0.0, 0.0],
+            ..BallState::default()
+        };
+        assert!(sim.set_ball_state(a, &s));
+        sim.advance(1);
+        mon.observe(&sim);
+        assert_eq!(sim.counters().balls_escaped, 1);
+        pulse(&mut sim, &mut mon, "action");
+        assert_eq!(mon.finish(&sim).shot_counts, [0]);
+    }
+
+    /// The window still expires within one ball, and a completed shot is
+    /// never taken back by a later drain.
+    #[test]
+    fn shot_window_expiry_still_works() {
+        let (mut sim, info) = three_switch_table();
+        let mut mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        let p = [0.30, 0.85, BALL_Z];
+        let a = spawn(&mut sim, &mut mon, p[0], p[1]);
+        pulse(&mut sim, &mut mon, "top_rollover");
+        pulse(&mut sim, &mut mon, "bumper_ring");
+        let rest = BallState {
+            position_m: p,
+            ..BallState::default()
+        };
+        for _ in 0..2_100 {
+            assert!(sim.set_ball_state(a, &rest));
+            sim.advance(1);
+            mon.observe(&sim);
+        }
+        pulse(&mut sim, &mut mon, "action");
+        assert_eq!(mon.shot_counts, [0], "expired after the 2 s window");
+        for n in ["top_rollover", "bumper_ring", "action"] {
+            pulse(&mut sim, &mut mon, n);
+        }
+        drain(&mut sim, &mut mon, a);
+        assert_eq!(mon.finish(&sim).shot_counts, [1]);
+    }
+
+    /// A positionless switch takes its mech's position for attribution.
+    #[test]
+    fn positionless_mech_switch_uses_the_mech_position() {
+        let b = clean_bundle();
+        let sim = Simulation::load(&b, SimConfig::default()).unwrap();
+        let info = TableInfo::load(&b).unwrap();
+        let ring = sim.switch_id("bumper_ring").unwrap();
+        assert_eq!(
+            info.switches
+                .iter()
+                .find(|s| s.id == ring)
+                .unwrap()
+                .position_m,
+            None
+        );
+        let mon = GameMonitor::new(&info, &sim, 0, u64::MAX);
+        let (_, pos) = mon
+            .hit_switches
+            .iter()
+            .find(|h| h.0 == ring.index())
+            .copied()
+            .unwrap();
+        let q = pos.unwrap();
+        assert!(
+            (q[0] - 0.237).abs() < 1e-6 && (q[1] - 0.700).abs() < 1e-6,
+            "{q:?}"
+        );
     }
 
     #[test]

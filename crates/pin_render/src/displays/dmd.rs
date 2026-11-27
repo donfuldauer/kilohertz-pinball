@@ -532,9 +532,13 @@ pub(super) fn dmd_shader_source() -> String {
     )
 }
 
-/// Draws [`DmdFrame`]s as a procedural dot grid.
+/// Draws [`DmdFrame`]s as a procedural dot grid. Its dot texture lives on
+/// the device of the context it was created with, and every frame upload
+/// goes through that context's queue (kept here), never a caller's (#163
+/// round 12, finding 21).
 pub struct DmdRenderer {
     device: wgpu::Device,
+    queue: wgpu::Queue,
     spec: DmdSpec,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -616,6 +620,7 @@ impl DmdRenderer {
         let dots_view = dots.create_view(&Default::default());
         DmdRenderer {
             device: device.clone(),
+            queue: ctx.queue().clone(),
             spec,
             pipeline,
             layout,
@@ -642,7 +647,12 @@ impl DmdRenderer {
     /// changed or [`mark_dirty`](Self::mark_dirty) was called since the last
     /// call (the display then needs a redraw). A frame of another size is
     /// cropped / padded with off dots.
+    ///
+    /// `queue` must belong to the context the renderer was created with. The
+    /// upload always uses the queue of that creating context (kept by the
+    /// renderer), so another queue can neither panic wgpu nor lose the frame.
     pub fn set_frame(&mut self, queue: &wgpu::Queue, frame: &DmdFrame) -> bool {
+        let _ = queue; // the owning queue is used (see above)
         let dirty = core::mem::take(&mut self.dirty);
         if self.frame.as_ref() == Some(frame) {
             return dirty;
@@ -657,7 +667,7 @@ impl DmdRenderer {
                 data[o + 3] = 255;
             }
         }
-        write_rgba8(queue, &self.dots, &data);
+        write_rgba8(&self.queue, &self.dots, &data);
         self.frame = Some(frame.clone());
         true
     }

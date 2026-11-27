@@ -95,6 +95,106 @@ impl Tri {
     pub fn closest(&self, q: DVec3) -> DVec3 {
         closest_on_triangle(q, self.p[0], self.p[1], self.p[2])
     }
+
+    /// Bounds `(lo, hi)` on the value [`Tri::z_at`] computes (f64, rounding
+    /// included) at any finite plan point inside the triangle's plan
+    /// bounding box. NaN results (overflow) are outside the claim.
+    ///
+    /// * Level plane (`n.x` and `n.y` both zero): `z_at` multiplies the
+    ///   zeros by finite offsets and returns `p[0].z` exactly, so the
+    ///   bounds are `(p[0].z, p[0].z)`, with no margin.
+    /// * Otherwise: the plane is linear, so over the box it lies between
+    ///   its values at the four box corners. With `T = (|n.x| w + |n.y| h)
+    ///   / |n.z|` (`w`, `h` the box size), `z_at` is within `3 ε (|p[0].z| +
+    ///   T)` of the exact plane value anywhere in the box (four roundings
+    ///   on the offset term, one on the subtraction); the corners are
+    ///   evaluated with the same error, so a `16 ε (|p[0].z| + T)` margin
+    ///   (plus the smallest normal number, for subnormal offsets) around
+    ///   the computed corner values covers both, and the rounding of the
+    ///   margin itself.
+    /// * Anything not finite gives `(-inf, +inf)`.
+    pub fn z_at_bounds(&self) -> (f64, f64) {
+        let a = self.p[0];
+        if self.n.x == 0.0 && self.n.y == 0.0 {
+            return (a.z, a.z);
+        }
+        let (lo, hi) = (self.min, self.max);
+        let mut z_lo = f64::INFINITY;
+        let mut z_hi = f64::NEG_INFINITY;
+        for (x, y) in [(lo.x, lo.y), (hi.x, lo.y), (lo.x, hi.y), (hi.x, hi.y)] {
+            let z = self.z_at(DVec2::new(x, y));
+            if !z.is_finite() {
+                return (f64::NEG_INFINITY, f64::INFINITY);
+            }
+            z_lo = min_f64(z_lo, z);
+            z_hi = max_f64(z_hi, z);
+        }
+        let t = (self.n.x.abs() * (hi.x - lo.x) + self.n.y.abs() * (hi.y - lo.y)) / self.n.z.abs();
+        let margin = 16.0 * f64::EPSILON * (a.z.abs() + t) + f64::MIN_POSITIVE;
+        if !margin.is_finite() {
+            return (f64::NEG_INFINITY, f64::INFINITY);
+        }
+        (z_lo - margin, z_hi + margin)
+    }
+
+    /// The height of a level triangle (all three vertex heights equal),
+    /// else `None`. For a level triangle, every point
+    /// [`closest_on_triangle`] computes has exactly this height or is NaN:
+    /// each branch returns a vertex or adds products of a zero height
+    /// difference (`b.z - a.z` and `c.z - a.z` round to exactly zero) to
+    /// `a.z`.
+    pub fn level_z(&self) -> Option<f64> {
+        let [a, b, c] = self.p;
+        (a.z == b.z && b.z == c.z).then_some(a.z)
+    }
+
+    /// For a level triangle ([`Tri::level_z`]) and the plan box `lo..=hi`:
+    /// per-axis lower bounds `(gx, gy)` on `|cp.x - q.x|` and `|cp.y -
+    /// q.y|`, as f64 computes them, where `cp` is the point
+    /// [`closest_on_triangle`] computes for any query point above a plan
+    /// point `q` of the box. `(0, 0)` when it cannot tell (a sloped
+    /// triangle, the box near or over the triangle, or anything not
+    /// finite).
+    ///
+    /// For a level triangle the computation is the planar one (every `z`
+    /// product is with an exact zero). A vertex or edge branch returns a
+    /// vertex or `x + e·t` with `t` in `[0, 1]`, inside the plan bounding
+    /// box up to a few roundings of the coordinates; the bounds subtract a
+    /// `16 ε` margin on the coordinate magnitudes, which covers those and
+    /// the rounding of `cp - q`. The interior branch would return the
+    /// projection of the query point (near `q` itself), so the bounds hold
+    /// only when it cannot be taken: when the box is farther than `g0` from
+    /// the bounding box, where `g0 = 4096 ε L² (D + L)² / (l · 2A)` (`L`,
+    /// `l` the longest and shortest edges, `2A` twice the plan area, `D` the
+    /// size of the box and the triangle together). See DECISIONS.md
+    /// "#231 — headroom prune" for the argument.
+    pub fn level_plan_clearance(&self, lo: DVec2, hi: DVec2) -> (f64, f64) {
+        const NONE: (f64, f64) = (0.0, 0.0);
+        if self.level_z().is_none() {
+            return NONE;
+        }
+        let (cmin, cmax) = (self.min.truncate(), self.max.truncate());
+        let gx = max_f64(max_f64(cmin.x - hi.x, lo.x - cmax.x), 0.0);
+        let gy = max_f64(max_f64(cmin.y - hi.y, lo.y - cmax.y), 0.0);
+        let [a, b, c] = self.p.map(|v| v.truncate());
+        let (ab, ac, bc) = (b - a, c - a, c - b);
+        let (lab, lac, lbc) = (ab.length(), ac.length(), bc.length());
+        let long = max_f64(max_f64(lab, lac), lbc);
+        let short = min_f64(min_f64(lab, lac), lbc);
+        let area2 = cross2(ab, ac).abs();
+        let d = (max_f64(hi.x, cmax.x) - min_f64(lo.x, cmin.x))
+            + (max_f64(hi.y, cmax.y) - min_f64(lo.y, cmin.y));
+        let g0 = 4096.0 * f64::EPSILON * long * long * (d + long) * (d + long) / (short * area2);
+        let scale = cmin.abs() + cmax.abs() + lo.abs() + hi.abs();
+        let round = scale * (16.0 * f64::EPSILON) + DVec2::splat(f64::MIN_POSITIVE);
+        let (gx, gy) = (gx - round.x, gy - round.y);
+        if !(g0.is_finite() && gx.is_finite() && gy.is_finite() && round.is_finite())
+            || max_f64(gx, gy) <= g0
+        {
+            return NONE;
+        }
+        (max_f64(gx, 0.0), max_f64(gy, 0.0))
+    }
 }
 
 fn cross2(a: DVec2, b: DVec2) -> f64 {
@@ -197,7 +297,8 @@ pub(super) fn append_collider_triangles(
     }
 }
 
-/// Uniform plan-view grid over triangle bounding boxes.
+/// Uniform plan-view grid over triangle bounding boxes (cells of at
+/// least 50 mm): the reference index ([`super::SpatialIndex::Legacy`]).
 pub(super) struct TriGrid {
     origin: DVec2,
     cell: f64,
@@ -276,10 +377,300 @@ impl TriGrid {
         }
         out.sort_unstable();
         out.dedup();
-        out.retain(|&i| {
+        out.retain(|&i| plan_overlaps(&tris[i as usize], lo, hi));
+    }
+}
+
+/// Which triangles a filtered index query asks for. Every field only
+/// narrows the plan-box query; the callers' narrow phases apply the same
+/// conditions again (exactly), so a filter is a verdict-preserving early
+/// reject and [`TriGrid`] (the reference) may ignore it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Filter {
+    /// Layer selection.
+    pub layer: LayerSel,
+    /// Accepted [`Slope`] classes ([`Slope::bit`] mask).
+    pub slopes: u8,
+    /// Lowest `Tri::max.z` accepted (inclusive).
+    pub z_lo: f64,
+    /// Highest `Tri::min.z` accepted (inclusive).
+    pub z_hi: f64,
+}
+
+/// Layer part of a [`Filter`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LayerSel {
+    /// Every layer.
+    Any,
+    /// Only this layer.
+    Only(u8),
+    /// Every layer but this one.
+    Except(u8),
+}
+
+impl LayerSel {
+    fn accepts(self, layer: u8) -> bool {
+        match self {
+            LayerSel::Any => true,
+            LayerSel::Only(l) => layer == l,
+            LayerSel::Except(l) => layer != l,
+        }
+    }
+}
+
+/// Slope class of a triangle by `|n·z|` ([`Tri::nz`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Slope {
+    /// Steeper than 60° (`|n·z| <` [`CEILING_NZ`]): a wall.
+    Wall,
+    /// A ceiling that is not walkable (`CEILING_NZ <= |n·z| <`
+    /// [`WALKABLE_NZ`]).
+    Ceiling,
+    /// Walkable (and a ceiling): `|n·z| >=` [`WALKABLE_NZ`].
+    Walkable,
+}
+
+impl Slope {
+    /// Every class.
+    pub const ALL: u8 = 0b111;
+    /// Ceilings (walkable ones included): `|n·z| >=` [`CEILING_NZ`].
+    pub const CEILINGS: u8 = 0b110;
+
+    /// The class of `t`.
+    pub fn of(t: &Tri) -> Slope {
+        let nz = t.nz();
+        if nz >= WALKABLE_NZ {
+            Slope::Walkable
+        } else if nz >= CEILING_NZ {
+            Slope::Ceiling
+        } else {
+            Slope::Wall
+        }
+    }
+
+    /// This class's bit in [`Filter::slopes`].
+    pub const fn bit(self) -> u8 {
+        match self {
+            Slope::Wall => 0b001,
+            Slope::Ceiling => 0b010,
+            Slope::Walkable => 0b100,
+        }
+    }
+}
+
+impl Filter {
+    /// No narrowing: the plain plan-box query.
+    pub const ANY: Filter = Filter {
+        layer: LayerSel::Any,
+        slopes: Slope::ALL,
+        z_lo: f64::NEG_INFINITY,
+        z_hi: f64::INFINITY,
+    };
+
+    /// Whether `t` passes (layer, slope and `z_lo..=z_hi` overlap).
+    pub fn accepts(&self, t: &Tri) -> bool {
+        self.layer.accepts(t.layer)
+            && self.slopes & Slope::of(t).bit() != 0
+            && t.max.z >= self.z_lo
+            && t.min.z <= self.z_hi
+    }
+}
+
+/// Whether the plan bounding box of `t` overlaps the box `lo..hi` (the
+/// exact test of [`TriGrid::query`]).
+fn plan_overlaps(t: &Tri, lo: DVec2, hi: DVec2) -> bool {
+    t.min.x <= hi.x && t.max.x >= lo.x && t.min.y <= hi.y && t.max.y >= lo.y
+}
+
+/// Most triangles in a [`TriBvh`] leaf.
+const BVH_LEAF: usize = 4;
+
+/// One node of a [`Bvh`]: the bounding box of its triangles; a leaf holds
+/// `items[a..b]`, an inner node has children `a` and `b`.
+#[derive(Clone, Debug)]
+struct BvhNode {
+    min: DVec3,
+    max: DVec3,
+    a: u32,
+    b: u32,
+    leaf: bool,
+}
+
+/// A bounding-volume hierarchy over the 3D bounding boxes of some
+/// triangles: median splits along the longest axis of the centroid
+/// bounds, at most [`BVH_LEAF`] triangles per leaf (so `O(n log n)` to
+/// build, fewer than `n` nodes, depth at most `log2 n + 1`).
+#[derive(Clone, Debug)]
+struct Bvh {
+    nodes: Vec<BvhNode>,
+    items: Vec<u32>,
+}
+
+impl Bvh {
+    fn new(tris: &[Tri], mut items: Vec<u32>) -> Bvh {
+        let mut nodes = Vec::with_capacity(items.len());
+        if !items.is_empty() {
+            Self::build(tris, &mut items, 0, &mut nodes);
+        }
+        Bvh { nodes, items }
+    }
+
+    /// Builds the subtree over `items` (at `offset` in the item list);
+    /// returns its node index.
+    fn build(tris: &[Tri], items: &mut [u32], offset: usize, nodes: &mut Vec<BvhNode>) -> u32 {
+        let mut min = DVec3::splat(f64::INFINITY);
+        let mut max = DVec3::splat(f64::NEG_INFINITY);
+        let mut c_min = DVec3::splat(f64::INFINITY);
+        let mut c_max = DVec3::splat(f64::NEG_INFINITY);
+        for &i in items.iter() {
             let t = &tris[i as usize];
-            t.min.x <= hi.x && t.max.x >= lo.x && t.min.y <= hi.y && t.max.y >= lo.y
+            min = vmin(min, t.min);
+            max = vmax(max, t.max);
+            let c = t.min + t.max;
+            c_min = vmin(c_min, c);
+            c_max = vmax(c_max, c);
+        }
+        let me = nodes.len() as u32;
+        nodes.push(BvhNode {
+            min,
+            max,
+            a: offset as u32,
+            b: (offset + items.len()) as u32,
+            leaf: true,
         });
+        if items.len() <= BVH_LEAF {
+            return me;
+        }
+        let ext = c_max - c_min;
+        let axis = if ext.x >= ext.y && ext.x >= ext.z {
+            0
+        } else if ext.y >= ext.z {
+            1
+        } else {
+            2
+        };
+        let key = |i: u32| {
+            let t = &tris[i as usize];
+            t.min[axis] + t.max[axis]
+        };
+        let mid = items.len() / 2;
+        items.select_nth_unstable_by(mid, |&p, &q| key(p).total_cmp(&key(q)).then(p.cmp(&q)));
+        let (left, right) = items.split_at_mut(mid);
+        let a = Self::build(tris, left, offset, nodes);
+        let b = Self::build(tris, right, offset + mid, nodes);
+        let node = &mut nodes[me as usize];
+        node.a = a;
+        node.b = b;
+        node.leaf = false;
+        me
+    }
+
+    /// Appends (unordered) the triangles whose plan boxes overlap
+    /// `lo..hi` and which `f` accepts.
+    fn query(&self, tris: &[Tri], lo: DVec2, hi: DVec2, f: &Filter, out: &mut Vec<u32>) {
+        if !self.nodes.is_empty() {
+            self.visit(0, tris, lo, hi, f, out);
+        }
+    }
+
+    fn visit(&self, n: u32, tris: &[Tri], lo: DVec2, hi: DVec2, f: &Filter, out: &mut Vec<u32>) {
+        let node = &self.nodes[n as usize];
+        let hit = node.min.x <= hi.x
+            && node.max.x >= lo.x
+            && node.min.y <= hi.y
+            && node.max.y >= lo.y
+            && node.max.z >= f.z_lo
+            && node.min.z <= f.z_hi;
+        if !hit {
+            return;
+        }
+        if node.leaf {
+            for &i in &self.items[node.a as usize..node.b as usize] {
+                let t = &tris[i as usize];
+                if plan_overlaps(t, lo, hi) && f.accepts(t) {
+                    out.push(i);
+                }
+            }
+        } else {
+            self.visit(node.a, tris, lo, hi, f, out);
+            self.visit(node.b, tris, lo, hi, f, out);
+        }
+    }
+}
+
+fn vmin(a: DVec3, b: DVec3) -> DVec3 {
+    DVec3::new(min_f64(a.x, b.x), min_f64(a.y, b.y), min_f64(a.z, b.z))
+}
+
+fn vmax(a: DVec3, b: DVec3) -> DVec3 {
+    DVec3::new(max_f64(a.x, b.x), max_f64(a.y, b.y), max_f64(a.z, b.z))
+}
+
+/// The finer spatial index ([`super::SpatialIndex::Fine`]): one [`Bvh`]
+/// per (layer, [`Slope`]) bucket, so a filtered query only walks the
+/// buckets its [`Filter`] selects and prunes by height in the tree.
+#[derive(Clone, Debug)]
+pub(super) struct TriBvh {
+    /// Non-empty buckets in (layer, slope) order.
+    buckets: Vec<(u8, Slope, Bvh)>,
+}
+
+impl TriBvh {
+    pub fn new(tris: &[Tri]) -> TriBvh {
+        let mut order: Vec<(u8, Slope, u32)> = tris
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.layer, Slope::of(t), i as u32))
+            .collect();
+        order.sort_unstable();
+        let mut buckets = Vec::new();
+        for group in order.chunk_by(|p, q| p.0 == q.0 && p.1 == q.1) {
+            let items = group.iter().map(|g| g.2).collect();
+            buckets.push((group[0].0, group[0].1, Bvh::new(tris, items)));
+        }
+        TriBvh { buckets }
+    }
+
+    /// Indices of the triangles whose plan bounding boxes overlap the box
+    /// `lo..hi` (`lo <= hi`) and which `f` accepts, ascending and without
+    /// duplicates (into `out`).
+    pub fn query(&self, tris: &[Tri], lo: DVec2, hi: DVec2, f: &Filter, out: &mut Vec<u32>) {
+        out.clear();
+        for (layer, slope, bvh) in &self.buckets {
+            if f.layer.accepts(*layer) && f.slopes & slope.bit() != 0 {
+                bvh.query(tris, lo, hi, f, out);
+            }
+        }
+        // Each triangle is in exactly one leaf of one bucket: no
+        // duplicates to remove.
+        out.sort_unstable();
+    }
+}
+
+/// The spatial index a validation run uses ([`super::SpatialIndex`]).
+pub(super) enum TriIndex {
+    /// The reference uniform grid: ignores [`Filter`]s.
+    Legacy(TriGrid),
+    /// The finer index: applies [`Filter`]s.
+    Fine(TriBvh),
+}
+
+impl TriIndex {
+    pub fn new(tris: &[Tri], kind: super::SpatialIndex) -> TriIndex {
+        match kind {
+            super::SpatialIndex::Legacy => TriIndex::Legacy(TriGrid::new(tris)),
+            super::SpatialIndex::Fine => TriIndex::Fine(TriBvh::new(tris)),
+        }
+    }
+
+    /// Indices, ascending and without duplicates, of the triangles whose
+    /// plan bounding boxes overlap `lo..hi`; the fine index also drops
+    /// those `f` rejects (the legacy grid returns them all).
+    pub fn query(&self, tris: &[Tri], lo: DVec2, hi: DVec2, f: &Filter, out: &mut Vec<u32>) {
+        match self {
+            TriIndex::Legacy(g) => g.query(tris, lo, hi, out),
+            TriIndex::Fine(b) => b.query(tris, lo, hi, f, out),
+        }
     }
 }
 
@@ -463,6 +854,7 @@ pub(super) fn sample_params(s: &CubicSpline, step: f64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn v(x: f64, y: f64, z: f64) -> DVec3 {
         DVec3::new(x, y, z)
@@ -514,6 +906,343 @@ mod tests {
         let empty = TriGrid::new(&[]);
         empty.query(&[], DVec2::ZERO, DVec2::ONE, &mut out);
         assert!(out.is_empty());
+    }
+
+    /// SPEC 2.8, 6.0 (#231): `Tri::z_at_bounds` holds every value `z_at`
+    /// computes in the triangle's plan box, exactly (no margin) for a level
+    /// triangle; `Tri::level_z` gives the height every computed closest
+    /// point of a level triangle has.
+    #[test]
+    fn level_triangles_give_exact_heights() {
+        for z in [0.0, -0.0, 0.06, 1.0e-3, -12.5, 0.1 + 0.2] {
+            let t = Tri::new([v(0.1, 0.2, z), v(0.3, 0.25, z), v(0.15, 0.4, z)], 1, 0).unwrap();
+            assert_eq!(t.level_z(), Some(z));
+            assert_eq!(t.z_at_bounds(), (z, z));
+            for (x, y) in [(0.1, 0.2), (0.3, 0.4), (0.21, 0.33), (0.123456789, 0.25)] {
+                assert_eq!(t.z_at(DVec2::new(x, y)), z);
+                for pz in [-1.0, 0.0, z + 0.0397, 3.0] {
+                    for (px, py) in [(x, y), (x - 0.5, y), (x, y + 0.7), (0.2, 0.3)] {
+                        let cp = t.closest(v(px, py, pz));
+                        assert_eq!(cp.z, z, "{px} {py} {pz}");
+                    }
+                }
+            }
+        }
+        let tilted = Tri::new(
+            [v(0.0, 0.0, 0.0), v(1.0, 0.0, 1.0e-9), v(0.0, 1.0, 0.0)],
+            0,
+            0,
+        );
+        assert_eq!(tilted.unwrap().level_z(), None);
+        // A non-finite plane gives unbounded bounds.
+        let huge = Tri::new(
+            [
+                v(-1.0e308, 0.0, 0.0),
+                v(1.0e308, 0.0, 1.0e307),
+                v(0.0, 1.0e308, 0.0),
+            ],
+            0,
+            0,
+        );
+        if let Some(t) = huge {
+            let (lo, hi) = t.z_at_bounds();
+            assert!(lo <= -1.0e300 && hi >= 1.0e300, "{lo} {hi}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// SPEC 2.8 (#231): over random walkable triangles (tilted, far
+        /// from the origin or tiny), every computed `z_at` in the plan box
+        /// lies inside `z_at_bounds`.
+        #[test]
+        fn z_at_bounds_hold_in_the_plan_box(
+            x in -3.0f64..3.0,
+            y in -3.0f64..3.0,
+            z in -2.0f64..2.0,
+            s in proptest::array::uniform6(-0.2f64..0.2),
+            scale in prop_oneof![Just(1.0f64), Just(1.0e-4), Just(1.0e3)],
+            u in proptest::collection::vec((0.0f64..=1.0, 0.0f64..=1.0), 32),
+        ) {
+            let p = [
+                v(x, y, z),
+                v(x + s[0] * scale, y + s[1] * scale, z + s[2] * scale * 0.5),
+                v(x + s[3] * scale, y + s[4] * scale, z + s[5] * scale * 0.5),
+            ];
+            let Some(t) = Tri::new(p, 0, 0) else { return Ok(()) };
+            prop_assume!(t.nz() >= WALKABLE_NZ);
+            let (lo, hi) = t.z_at_bounds();
+            let corners = [0.0, 1.0];
+            let pts = u
+                .iter()
+                .copied()
+                .chain(corners.iter().flat_map(|&a| corners.iter().map(move |&b| (a, b))));
+            for (a, b) in pts {
+                let q = DVec2::new(
+                    min_f64(t.min.x + a * (t.max.x - t.min.x), t.max.x),
+                    min_f64(t.min.y + b * (t.max.y - t.min.y), t.max.y),
+                );
+                let zq = t.z_at(q);
+                prop_assert!(lo <= zq && zq <= hi, "{lo} <= {zq} <= {hi}");
+            }
+        }
+
+        /// SPEC 2.8 (#231): for random level triangles (well shaped, thin
+        /// or far from the origin) and plan boxes around them, every
+        /// computed closest point of a query point above the box is at
+        /// least `level_plan_clearance` away from it on each axis, as f64
+        /// computes the offset; boxes far from the triangle get a non-zero
+        /// bound.
+        #[test]
+        fn level_plan_clearance_bounds_computed_offsets(
+            x in -2.0f64..2.0,
+            y in -2.0f64..2.0,
+            z in -1.0f64..1.0,
+            s in proptest::array::uniform4(-0.05f64..0.05),
+            thin in prop_oneof![Just(1.0f64), Just(1.0e-3), Just(1.0e-7)],
+            off in (-0.08f64..0.08, -0.08f64..0.08),
+            size in (0.0f64..0.03, 0.0f64..0.03),
+            u in proptest::collection::vec((0.0f64..=1.0, 0.0f64..=1.0, -0.2f64..0.2), 24),
+        ) {
+            let p = [
+                v(x, y, z),
+                v(x + s[0], y + s[1], z),
+                v(x + s[0] * 0.5 + s[2] * thin, y + s[1] * 0.5 + s[3] * thin, z),
+            ];
+            let Some(t) = Tri::new(p, 0, 0) else { return Ok(()) };
+            let lo = DVec2::new(x + off.0, y + off.1);
+            let hi = lo + DVec2::new(size.0, size.1);
+            let (gx, gy) = t.level_plan_clearance(lo, hi);
+            prop_assert!(gx >= 0.0 && gy >= 0.0);
+            let corners = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.1), (0.0, 1.0, -0.1), (1.0, 1.0, 0.0)];
+            for (a, b, dz) in u.iter().copied().chain(corners) {
+                let q = DVec2::new(
+                    min_f64(lo.x + a * (hi.x - lo.x), hi.x),
+                    min_f64(lo.y + b * (hi.y - lo.y), hi.y),
+                );
+                let cp = t.closest(v(q.x, q.y, z + dz));
+                prop_assert_eq!(cp.z, z);
+                let (dx, dy) = ((cp.x - q.x).abs(), (cp.y - q.y).abs());
+                prop_assert!(dx >= gx && dy >= gy, "{dx} >= {gx}, {dy} >= {gy}");
+            }
+            // A box clearly beside a well-shaped triangle is bounded.
+            if thin == 1.0 && s[0].abs() > 0.01 && s[3].abs() > 0.01 {
+                let far = DVec2::new(t.max.x + 0.02, y);
+                let (fx, _) = t.level_plan_clearance(far, far + DVec2::splat(0.01));
+                prop_assert!(fx > 0.019, "{fx}");
+            }
+        }
+
+        /// SPEC 2.8 (#231): near-boundary query points just outside a
+        /// level triangle (the hard case for the branch decisions): the
+        /// computed closest point stays on the triangle's plan bounding box
+        /// up to rounding whenever `level_plan_clearance` claims a gap.
+        #[test]
+        fn level_plan_clearance_holds_next_to_edges_and_vertices(
+            s in proptest::array::uniform6(-1.0f64..1.0),
+            scale in prop_oneof![Just(1.0e-3f64), Just(1.0e-2), Just(0.3)],
+            edge in 0usize..3,
+            along in -0.2f64..1.2,
+            out in prop_oneof![Just(1.0e-15f64), Just(1.0e-12), Just(1.0e-9), Just(1.0e-6)],
+        ) {
+            let base = v(0.37, -0.21, 0.06);
+            let p = [
+                base + v(s[0], s[1], 0.0) * scale,
+                base + v(s[2], s[3], 0.0) * scale,
+                base + v(s[4], s[5], 0.0) * scale,
+            ];
+            let Some(t) = Tri::new(p, 1, 0) else { return Ok(()) };
+            let (a, b) = (p[edge].truncate(), p[(edge + 1) % 3].truncate());
+            let e = b - a;
+            let mut normal = DVec2::new(e.y, -e.x).normalize_or_zero();
+            let third = p[(edge + 2) % 3].truncate();
+            if normal.dot(third - a) > 0.0 {
+                normal = -normal;
+            }
+            let q = a + e * along + normal * out;
+            let (gx, gy) = t.level_plan_clearance(q, q);
+            let cp = t.closest(v(q.x, q.y, 0.1));
+            let (dx, dy) = ((cp.x - q.x).abs(), (cp.y - q.y).abs());
+            prop_assert!(dx >= gx && dy >= gy, "{dx} >= {gx}, {dy} >= {gy}");
+        }
+    }
+
+    /// Every triangle whose plan box overlaps `lo..hi` and which `f`
+    /// accepts, ascending: the brute-force reference.
+    fn brute(tris: &[Tri], lo: DVec2, hi: DVec2, f: &Filter) -> Vec<u32> {
+        (0..tris.len() as u32)
+            .filter(|&i| {
+                let t = &tris[i as usize];
+                plan_overlaps(t, lo, hi) && f.accepts(t)
+            })
+            .collect()
+    }
+
+    /// A small random triangle near `(x, y, z)` (sizes from `s`), or `None`
+    /// when degenerate.
+    fn tri_at(x: f64, y: f64, z: f64, s: [f64; 6], layer: u8, steep: bool) -> Option<Tri> {
+        let a = v(x, y, z);
+        let b = v(x + s[0], y + s[1], z + s[2] * 0.1);
+        let c = if steep {
+            v(x + s[3] * 0.1, y + s[4] * 0.1, z + s[5].abs() + 0.01)
+        } else {
+            v(x + s[3], y + s[4], z + s[5] * 0.1)
+        };
+        Tri::new([a, b, c], layer, usize::from(layer))
+    }
+
+    fn filters() -> impl Strategy<Value = Filter> {
+        (0u8..5, 0u8..3, 1u8..8, -0.2f64..0.3, 0.0f64..0.4).prop_map(|(l, sel, slopes, z, dz)| {
+            Filter {
+                layer: match sel {
+                    0 => LayerSel::Any,
+                    1 => LayerSel::Only(l),
+                    _ => LayerSel::Except(l),
+                },
+                slopes,
+                z_lo: z,
+                z_hi: z + dz,
+            }
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// SPEC 2.8 (#135): the fine index answers every plan-box query
+        /// exactly as the legacy grid and a brute-force scan (ascending, no
+        /// duplicates), and a filtered query exactly as the filtered scan.
+        #[test]
+        fn fine_index_matches_legacy_and_brute_force(
+            raw in prop::collection::vec(
+                (0.0f64..1.0, 0.0f64..2.0, -0.1f64..0.2, prop::array::uniform6(-0.08f64..0.08), 0u8..4, any::<bool>()),
+                0..400,
+            ),
+            boxes in prop::collection::vec((-0.2f64..1.2, -0.2f64..2.2, 0.0f64..0.3, 0.0f64..0.3), 1..24),
+            f in filters(),
+        ) {
+            let tris: Vec<Tri> = raw
+                .iter()
+                .filter_map(|&(x, y, z, s, l, steep)| tri_at(x, y, z, s, l, steep))
+                .collect();
+            let grid = TriGrid::new(&tris);
+            let fine = TriBvh::new(&tris);
+            let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+            for &(x, y, w, h) in &boxes {
+                let (lo, hi) = (DVec2::new(x, y), DVec2::new(x + w, y + h));
+                grid.query(&tris, lo, hi, &mut a);
+                fine.query(&tris, lo, hi, &Filter::ANY, &mut b);
+                prop_assert_eq!(&a, &b);
+                prop_assert_eq!(&b, &brute(&tris, lo, hi, &Filter::ANY));
+                prop_assert!(b.windows(2).all(|w| w[0] < w[1]));
+                fine.query(&tris, lo, hi, &f, &mut c);
+                prop_assert_eq!(&c, &brute(&tris, lo, hi, &f));
+                // The legacy grid ignores filters (it is the reference).
+                TriIndex::Legacy(TriGrid::new(&tris)).query(&tris, lo, hi, &f, &mut b);
+                prop_assert_eq!(&a, &b);
+            }
+        }
+    }
+
+    #[test]
+    fn index_handles_empty_huge_and_coincident_scenes() {
+        let mut out = vec![7];
+        let empty = TriBvh::new(&[]);
+        empty.query(&[], DVec2::splat(-1.0), DVec2::ONE, &Filter::ANY, &mut out);
+        assert!(out.is_empty());
+        let none = TriIndex::new(&[], super::super::SpatialIndex::Fine);
+        none.query(&[], DVec2::ZERO, DVec2::ONE, &Filter::ANY, &mut out);
+        assert!(out.is_empty());
+
+        // Huge plan extent: tiny triangles at the origin and a few far out.
+        let mut tris = Vec::new();
+        for i in 0..200 {
+            let x = f64::from(i) * 1.0e-3;
+            tris.push(
+                Tri::new(
+                    [v(x, 0.0, 0.0), v(x + 1e-3, 0.0, 0.0), v(x, 1e-3, 0.0)],
+                    0,
+                    0,
+                )
+                .unwrap(),
+            );
+        }
+        for k in [-1.0e30, 1.0e30] {
+            tris.push(
+                Tri::new([v(k, k, 0.0), v(k * 0.5, k, 0.0), v(k, k * 0.5, 1.0)], 1, 1).unwrap(),
+            );
+        }
+        tris.push(
+            Tri::new(
+                [v(-1e30, -1e30, 0.0), v(1e30, -1e30, 0.0), v(0.0, 1e30, 0.0)],
+                2,
+                2,
+            )
+            .unwrap(),
+        );
+        let fine = TriBvh::new(&tris);
+        let grid = TriGrid::new(&tris);
+        let mut b = Vec::new();
+        for (lo, hi) in [
+            (DVec2::new(0.05, 0.0), DVec2::new(0.0505, 0.0)),
+            (DVec2::splat(-2e30), DVec2::splat(2e30)),
+            (DVec2::splat(f64::NEG_INFINITY), DVec2::splat(f64::INFINITY)),
+            (DVec2::splat(f64::NAN), DVec2::splat(f64::NAN)),
+            (DVec2::splat(5.0e29), DVec2::splat(1.0e30)),
+        ] {
+            fine.query(&tris, lo, hi, &Filter::ANY, &mut out);
+            grid.query(&tris, lo, hi, &mut b);
+            assert_eq!(out, b, "{lo} {hi}");
+            assert_eq!(out, brute(&tris, lo, hi, &Filter::ANY), "{lo} {hi}");
+        }
+
+        // 50 000 coincident triangles: a balanced tree, every one found.
+        let t = Tri::new([v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)], 0, 0).unwrap();
+        let same = vec![t; 50_000];
+        let fine = TriBvh::new(&same);
+        let bvh = &fine.buckets[0].2;
+        assert!(bvh.nodes.len() < same.len(), "{}", bvh.nodes.len());
+        fine.query(
+            &same,
+            DVec2::splat(0.5),
+            DVec2::splat(0.5),
+            &Filter::ANY,
+            &mut out,
+        );
+        assert_eq!(out, (0..50_000).collect::<Vec<u32>>());
+        fine.query(
+            &same,
+            DVec2::splat(2.0),
+            DVec2::splat(3.0),
+            &Filter::ANY,
+            &mut out,
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn filters_select_layers_slopes_and_heights() {
+        let flat = Tri::new([v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)], 1, 0).unwrap();
+        let wall = Tri::new([v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 0.0, 1.0)], 1, 0).unwrap();
+        // 55° from level: a ceiling, not walkable.
+        let (s, c) = (libm::sin(55f64.to_radians()), libm::cos(55f64.to_radians()));
+        let ceil = Tri::new([v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, c, s)], 1, 0).unwrap();
+        assert_eq!(Slope::of(&flat), Slope::Walkable);
+        assert_eq!(Slope::of(&wall), Slope::Wall);
+        assert_eq!(Slope::of(&ceil), Slope::Ceiling);
+        let f = Filter {
+            layer: LayerSel::Except(1),
+            ..Filter::ANY
+        };
+        assert!(!f.accepts(&flat));
+        let f = Filter {
+            layer: LayerSel::Only(1),
+            slopes: Slope::CEILINGS,
+            z_lo: 0.5,
+            z_hi: 2.0,
+        };
+        assert!(!f.accepts(&flat) && !f.accepts(&wall) && f.accepts(&ceil));
+        assert!(Filter::ANY.accepts(&wall));
     }
 
     #[test]

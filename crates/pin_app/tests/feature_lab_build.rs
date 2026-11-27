@@ -1,5 +1,6 @@
 //! 6.4 R1, R2, R5 (negative), R8 and the table contract C1..C7: the
-//! Feature Lab sources build (through the build example itself) into a
+//! Feature Lab sources build (through `pin_tablegen::backbox::build_from`,
+//! which `tables/feature_lab/build.sh` runs as `pin_tablegen build`) into a
 //! bundle that loads, validates for every declared ball with the XL ball
 //! restricted to its area, and fails validation naming the offending
 //! feature once the restriction is removed.
