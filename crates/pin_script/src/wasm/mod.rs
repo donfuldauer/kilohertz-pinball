@@ -161,23 +161,39 @@
 //! the context is passed through raw pointers in the store data, name
 //! lookups are binary searches over guest memory, and only error paths
 //! (which fault the script) format messages. Verified by `tests/wasm_alloc.rs`.
+//!
+//! # Features
+//!
+//! The backend itself ([`WasmScriptBackend`], [`PreparedModule`]) is built
+//! with the `wasmtime` feature (default). [`WasmConfig`], the limits above
+//! and the pre-compile scan ([`check_limits`], [`op_cost`], [`Usage`]) are
+//! engine-neutral and built with every feature set (#164 KP-070,
+//! REQ-WEB-001); without `wasmtime` the scan accepts binary modules only
+//! (WAT text needs the `wat` crate, part of that feature).
 
+#[cfg(feature = "wasmtime")]
 mod host;
 mod limits;
 
+/// The Wasm backend's limits, defined in [`crate::config`] (built with
+/// every feature set).
+pub use crate::config::WasmConfig;
 pub use limits::*;
 
-use host::{HostState, IdTables, V};
-use pin_core::ids::SwitchId;
-use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
+use pin_core::ScriptError;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
-use wasmtime::{
-    Config, Engine, ExternType, Global, Linker, Memory, Module, Mutability, Store,
-    StoreLimitsBuilder, Trap, TypedFunc, Val, ValType,
+#[cfg(feature = "wasmtime")]
+use {
+    crate::NameTables,
+    host::{HostState, IdTables, V},
+    pin_core::ids::SwitchId,
+    pin_core::{HostCommandQueue, HostCtx, SwitchEdge, TableScriptBackend},
+    std::sync::{Arc, OnceLock},
+    wasmtime::{
+        Config, Engine, ExternType, Global, Linker, Memory, Module, Mutability, Store,
+        StoreLimitsBuilder, Trap, TypedFunc, Val, ValType,
+    },
 };
-
-use crate::NameTables;
 
 /// Largest blob `save_state` may hand over, bytes.
 pub const MAX_STATE_BYTES: usize = 64 * 1024;
@@ -197,41 +213,12 @@ pub const MAX_WASM_STACK_BYTES: usize = 256 * 1024;
 pub const MIN_HOST_STACK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Bytes per Wasm page.
+#[cfg(feature = "wasmtime")]
 const PAGE: u64 = 65_536;
-
-/// Limits of one Wasm backend (§3.4, D25).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct WasmConfig {
-    /// Hard cap on the guest's linear memory, bytes.
-    pub memory_limit_bytes: usize,
-    /// Fuel (≈ Wasm operators) allowed per callback.
-    pub fuel_per_callback: u64,
-}
-
-impl WasmConfig {
-    /// The configuration the engine runs table rules with, matching
-    /// [`crate::lua::LuaConfig::engine`]: a 2 MiB memory cap and 100 000 fuel
-    /// per callback. [`WasmConfig::default`] keeps the larger tool/test
-    /// limits.
-    pub const fn engine() -> Self {
-        Self {
-            memory_limit_bytes: 2 * 1024 * 1024,
-            fuel_per_callback: 100_000,
-        }
-    }
-}
-
-impl Default for WasmConfig {
-    fn default() -> Self {
-        Self {
-            memory_limit_bytes: 16 * 1024 * 1024,
-            fuel_per_callback: 1_000_000,
-        }
-    }
-}
 
 /// The process-wide engine (one `Config` for every backend, so modules
 /// compiled on any thread can be instantiated by any backend).
+#[cfg(feature = "wasmtime")]
 fn engine() -> Result<&'static Engine, ScriptError> {
     static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
     ENGINE
@@ -271,6 +258,7 @@ fn engine() -> Result<&'static Engine, ScriptError> {
 }
 
 /// The process-wide linker holding the `pinball` imports.
+#[cfg(feature = "wasmtime")]
 fn linker() -> Result<&'static Linker<HostState>, ScriptError> {
     static LINKER: OnceLock<Result<Linker<HostState>, String>> = OnceLock::new();
     let engine = engine()?;
@@ -289,6 +277,7 @@ fn load(msg: impl fmt::Display) -> ScriptError {
     ScriptError::Load(msg.to_string())
 }
 
+#[cfg(feature = "wasmtime")]
 fn val(v: &ValType) -> Option<V> {
     match v {
         ValType::I32 => Some(V::I32),
@@ -299,6 +288,7 @@ fn val(v: &ValType) -> Option<V> {
 }
 
 /// True if the extern is a function with exactly `params -> results`.
+#[cfg(feature = "wasmtime")]
 fn func_is(ty: &ExternType, params: &[V], results: &[V]) -> bool {
     let ExternType::Func(f) = ty else {
         return false;
@@ -311,17 +301,31 @@ fn func_is(ty: &ExternType, params: &[V], results: &[V]) -> bool {
             .eq(results.iter().copied().map(Some))
 }
 
+/// Names of the exported functions the host calls (entry points, then the
+/// optional state hooks), in [`EXPORTS`] order. Engine-neutral: the
+/// pre-compile scan refuses re-exported host functions under these names.
+const EXPORT_NAMES: [&str; 6] = [
+    "on_init",
+    "on_tick",
+    "on_switch_edge",
+    "save_state",
+    "restore_state",
+    "alloc_state",
+];
+
 /// Exported functions: `(name, required, params, results)`.
+#[cfg(feature = "wasmtime")]
 const EXPORTS: &[(&str, bool, &[V], &[V])] = &[
-    ("on_init", true, &[], &[]),
-    ("on_tick", true, &[], &[]),
-    ("on_switch_edge", true, &[V::I32, V::I32], &[]),
-    ("save_state", false, &[], &[V::I64]),
-    ("restore_state", false, &[V::I32, V::I32], &[]),
-    ("alloc_state", false, &[V::I32], &[V::I32]),
+    (EXPORT_NAMES[0], true, &[], &[]),
+    (EXPORT_NAMES[1], true, &[], &[]),
+    (EXPORT_NAMES[2], true, &[V::I32, V::I32], &[]),
+    (EXPORT_NAMES[3], false, &[], &[V::I64]),
+    (EXPORT_NAMES[4], false, &[V::I32, V::I32], &[]),
+    (EXPORT_NAMES[5], false, &[V::I32], &[V::I32]),
 ];
 
 /// Static checks against `cfg`: declared memory and table sizes.
+#[cfg(feature = "wasmtime")]
 fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError> {
     let r = module.resources_required();
     if let Some(pages) = r.max_initial_memory_size {
@@ -347,6 +351,7 @@ fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError>
 /// A module compiled and validated by [`WasmScriptBackend::prepare`], ready
 /// to be instantiated by [`WasmScriptBackend::apply_prepared`]. `Send`, so it
 /// can travel from the I/O worker to the sim thread.
+#[cfg(feature = "wasmtime")]
 #[derive(Clone)]
 pub struct PreparedModule {
     module: Module,
@@ -355,6 +360,7 @@ pub struct PreparedModule {
     init_fuel: u64,
 }
 
+#[cfg(feature = "wasmtime")]
 impl fmt::Debug for PreparedModule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PreparedModule").finish_non_exhaustive()
@@ -362,6 +368,7 @@ impl fmt::Debug for PreparedModule {
 }
 
 /// One live instance and its pre-resolved entry points.
+#[cfg(feature = "wasmtime")]
 struct Live {
     store: Store<HostState>,
     memory: Memory,
@@ -376,12 +383,14 @@ struct Live {
 }
 
 /// The parts of an instance the host can put back after a failed swap.
+#[cfg(feature = "wasmtime")]
 struct Snapshot {
     memory: Vec<u8>,
     globals: Vec<Val>,
 }
 
 /// Maps a guest-call error to the fault it causes.
+#[cfg(feature = "wasmtime")]
 fn classify(e: &wasmtime::Error) -> ScriptError {
     match e.downcast_ref::<Trap>() {
         Some(Trap::OutOfFuel) => ScriptError::BudgetExceeded,
@@ -390,6 +399,7 @@ fn classify(e: &wasmtime::Error) -> ScriptError {
     }
 }
 
+#[cfg(feature = "wasmtime")]
 impl Live {
     /// Instantiates `m` (running its start function under a fresh budget).
     fn new(
@@ -535,12 +545,14 @@ impl Live {
 
 /// Lengths of every command list at the start of a callback, so a faulting
 /// callback's commands can be dropped (allocation-free).
+#[cfg(feature = "wasmtime")]
 struct QueueMark {
     lens: [usize; 11],
     gi_tint: Option<[f32; 4]>,
     overflow: u32,
 }
 
+#[cfg(feature = "wasmtime")]
 impl QueueMark {
     fn new(q: &HostCommandQueue, overflow: u32) -> Self {
         Self {
@@ -587,6 +599,7 @@ impl QueueMark {
 }
 
 /// Which guest entry point to call.
+#[cfg(feature = "wasmtime")]
 #[derive(Copy, Clone)]
 enum Entry {
     Init,
@@ -595,6 +608,7 @@ enum Entry {
 }
 
 /// The WebAssembly [`TableScriptBackend`]. See the module docs.
+#[cfg(feature = "wasmtime")]
 pub struct WasmScriptBackend {
     live: Live,
     names: Arc<IdTables>,
@@ -604,6 +618,7 @@ pub struct WasmScriptBackend {
     last_error: Option<ScriptError>,
 }
 
+#[cfg(feature = "wasmtime")]
 impl fmt::Debug for WasmScriptBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WasmScriptBackend")
@@ -616,6 +631,7 @@ impl fmt::Debug for WasmScriptBackend {
     }
 }
 
+#[cfg(feature = "wasmtime")]
 impl WasmScriptBackend {
     /// Compiles, validates and instantiates `module` (binary Wasm or WAT
     /// text). The start function, if any, runs under a fresh fuel budget; no
@@ -779,6 +795,7 @@ impl WasmScriptBackend {
     }
 }
 
+#[cfg(feature = "wasmtime")]
 impl TableScriptBackend for WasmScriptBackend {
     fn on_init(&mut self, ctx: &mut HostCtx) {
         self.run(Entry::Init, ctx);
@@ -801,7 +818,7 @@ impl TableScriptBackend for WasmScriptBackend {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "wasmtime"))]
 mod tests {
     use super::*;
     use pin_core::{HostView, Pcg32, SeedableRng};
@@ -978,5 +995,100 @@ mod tests {
         assert!(
             matches!(classify(&wasmtime::Error::msg("x")), ScriptError::Runtime(m) if m == "x")
         );
+    }
+}
+
+/// The engine-neutral pre-scan, under every feature set (#164 KP-070).
+#[cfg(test)]
+mod neutral_tests {
+    use super::*;
+    use wasm_encoder::{
+        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+        ImportSection, Instruction, Module, TypeSection,
+    };
+
+    /// A module importing `pinball.tick: () -> ()` (function 0) and defining
+    /// one function (index 1); `export` names `(export name, function)`.
+    fn module(export: &[(&str, u32)]) -> Vec<u8> {
+        let mut types = TypeSection::new();
+        types.ty().function([], []);
+        let mut imports = ImportSection::new();
+        imports.import("pinball", "tick", EntityType::Function(0));
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        let mut exports = ExportSection::new();
+        for &(name, f) in export {
+            exports.export(name, ExportKind::Func, f);
+        }
+        let mut body = Function::new([]);
+        body.instruction(&Instruction::Call(0))
+            .instruction(&Instruction::End);
+        let mut code = CodeSection::new();
+        code.function(&body);
+        let mut m = Module::new();
+        m.section(&types)
+            .section(&imports)
+            .section(&funcs)
+            .section(&exports)
+            .section(&code);
+        m.finish()
+    }
+
+    /// REQ-WEB-001: `check_limits` builds and scans binary modules without
+    /// any backend feature.
+    #[test]
+    fn prescan_counts_binary_modules_req_web_001() {
+        let u = check_limits(&module(&[("on_tick", 1), ("extra", 0)])).unwrap();
+        assert_eq!((u.types, u.imports, u.functions, u.exports), (1, 1, 1, 2));
+        assert_eq!(u.operators, 2);
+        let empty = check_limits(b"\0asm\x01\0\0\0").unwrap();
+        assert_eq!(empty.functions, 0);
+        assert!(matches!(
+            check_limits(b"\0asm\x02\0\0\0"),
+            Err(ScriptError::Load(_))
+        ));
+    }
+
+    /// Every entry point and state hook name refuses a re-exported import;
+    /// other names may re-export it.
+    #[test]
+    fn prescan_refuses_reexported_entry_points() {
+        for name in EXPORT_NAMES {
+            match check_limits(&module(&[(name, 0)])) {
+                Err(ScriptError::Load(m)) => {
+                    assert!(m.contains("re-exports an imported host function"), "{m}");
+                    assert!(m.contains(name), "{m}");
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+            check_limits(&module(&[(name, 1)])).unwrap();
+        }
+    }
+
+    /// `EXPORTS` takes its names from `EXPORT_NAMES`, in order.
+    #[cfg(feature = "wasmtime")]
+    #[test]
+    fn export_names_match_exports() {
+        let names: Vec<&str> = EXPORTS.iter().map(|(n, ..)| *n).collect();
+        assert_eq!(names, EXPORT_NAMES);
+    }
+
+    /// Without `wasmtime` (no WAT parser) text input is a load error.
+    #[cfg(not(feature = "wasmtime"))]
+    #[test]
+    fn wat_text_needs_wasmtime_req_web_001() {
+        match check_limits(b"(module)") {
+            Err(ScriptError::Load(m)) => assert!(m.contains("WAT text needs"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        let big = vec![b' '; MAX_WAT_BYTES + 1];
+        assert!(matches!(check_limits(&big), Err(ScriptError::Load(m)) if m.contains("WAT text")));
+    }
+
+    /// With `wasmtime`, WAT text is still accepted.
+    #[cfg(feature = "wasmtime")]
+    #[test]
+    fn wat_text_with_wasmtime() {
+        assert_eq!(check_limits(b"(module)").unwrap().functions, 0);
     }
 }
