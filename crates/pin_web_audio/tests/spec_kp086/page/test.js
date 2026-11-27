@@ -351,11 +351,17 @@ async function badAndGoodWasm() {
     processorErrors: errors,
   };
   const ctx2 = new OfflineAudioContext({ numberOfChannels: 2, length: 8 * QUANTUM, sampleRate: 48000 });
+  // Bounded wait: a hang must fail the check, not stall the run.
+  const TIMEOUT = Symbol('timeout');
   try {
-    const wa = await createWebAudio(ctx2, { wasmBytes: garbage.slice(0), base: '/www/' });
-    res.badMode = wa.mode;
+    const r = await Promise.race([
+      createWebAudio(ctx2, { wasmBytes: garbage.slice(0), base: '/www/' }),
+      new Promise((res) => setTimeout(() => res(TIMEOUT), 10000)),
+    ]);
+    res.badOutcome = r === TIMEOUT ? 'timeout' : 'resolved:' + r.mode;
   } catch (e) {
-    res.badMode = 'rejected: ' + String(e && e.message ? e.message : e);
+    res.badOutcome = 'rejected';
+    res.badRejectMessage = e && e.message !== undefined ? e.message : e;
   }
   const ctx3 = new OfflineAudioContext({ numberOfChannels: 2, length: 8 * QUANTUM, sampleRate: 48000 });
   const wa3 = await createWebAudio(ctx3, { wasmBytes: await wasmBytes(), base: '/www/' });

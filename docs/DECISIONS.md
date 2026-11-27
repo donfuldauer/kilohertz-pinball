@@ -9281,3 +9281,16 @@ weakened).
 **Decision:** The gesture test page (`/?gesture`) creates its realtime `AudioContext` and calls `resumeOnGesture(ctx, document)` from the module script at load time, not from `page.evaluate`. The browser is launched with Playwright's default arguments.
 **Rationale:** Playwright runs `page.evaluate` with a user activation, so a context created there starts `running` under the default autoplay policy. The first run showed `running` before any input. A context created at load has no activation, so the default policy keeps it `suspended` until the real `page.mouse.click`, which is what "starts on the first user gesture" needs shown.
 **Alternatives:** `--autoplay-policy=user-gesture-required` (rejected: the brief asks for the default policy, and the evaluate activation would still count).
+
+## #180 — Invalid wasm rejects createWebAudio; fallback only when the worklet cannot run the module
+
+**Decision:** `createWebAudio` rejects with an error when the mixer wasm is invalid. The worklet
+processor posts exactly one `{type:'error', error:<string>}` and outputs silence. The main-thread
+fallback (U6) is selected only when the worklet cannot run the module (for example `worklet.js`
+cannot load), and its output still equals native S6 bit for bit.
+
+**Rationale:** The fallback is for browsers that cannot instantiate wasm inside the worklet. It runs
+the same module on the main thread, so an invalid module cannot be rescued there. Silently
+resolving would hide a broken build.
+
+**Alternatives:** Resolve with a silent fallback: rejected, it hides a corrupt artifact.

@@ -235,7 +235,12 @@ async function badWasmMode(browser, origin) {
   check(bad.firstType === 'error' && bad.errorIsString, 'bad wasm: {type:error, error:String}', bad);
   check(bad.errorCount === 1 && bad.readyCount === 0, 'bad wasm: error posted once, never ready', bad);
   check(bad.silent, 'bad wasm: silence', bad);
-  check(bad.badMode === 'fallback', 'bad wasm: createWebAudio selects fallback', bad.badMode);
+  check(bad.badOutcome === 'rejected', 'bad wasm: createWebAudio rejects (no resolve, no hang)', bad.badOutcome);
+  check(
+    typeof bad.badRejectMessage === 'string' && bad.badRejectMessage.length > 0,
+    'bad wasm: rejection carries a non-empty string message',
+    bad.badRejectMessage,
+  );
   check(bad.goodMode === 'worklet', 'good wasm: createWebAudio selects worklet', bad.goodMode);
   check(bad.goodStatsLen === 9, 'good wasm: stats() has 9 numbers', bad.goodStatsLen);
   check(B.pageErrors.length === 0, 'badwasm page: zero page errors', B.pageErrors);

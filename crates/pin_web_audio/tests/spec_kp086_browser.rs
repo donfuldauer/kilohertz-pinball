@@ -279,11 +279,12 @@ fn req_web_022_browser_message_protocol() {
 
 /// REQ-WEB-022 (W22 fallback): a garbage wasm makes the processor post one
 /// `{type:'error', error: String}` (never `ready`) and output silence, and
-/// `createWebAudio` selects `mode === 'fallback'`; with good wasm it selects
-/// `worklet`. When `worklet.js` cannot load (served 404) the helper falls
+/// `createWebAudio` rejects with a non-empty string message (bounded wait; the
+/// fallback runs the same module, so it cannot rescue invalid wasm); with good
+/// wasm it selects `worklet`. When `worklet.js` cannot load (served 404) the helper falls
 /// back and the fallback output still equals native S6 bit for bit.
 #[test]
-fn req_web_022_browser_bad_wasm_selects_fallback() {
+fn req_web_022_browser_bad_wasm_rejects() {
     let e48 = fnv1a(&native_script(48_000, &s6_sounds(), &s6_triggers(), QUANTA));
     let Some(run) = run_browser("badwasm") else {
         return;
