@@ -514,7 +514,10 @@ fn req_build_003_field_ranges() {
         ),
         ("plastic", "outline = [[6000.0, 0.0]]", "outline[0]"),
         ("star_post", "diameter = 5.0", "__ok__"),
-        ("decoration", "shape = \"star\"", "__ok__"),
+        // SPEC A.5: `star` (needs `star_points`), for every kind (gate r1 finding 4).
+        ("decoration", "shape = \"star\"", "needs `star_points`"),
+        ("post", "shape = \"star\"", "needs `star_points`"),
+        ("decoration", "shape = \"star\", star_points = 5", "__ok__"),
     ] {
         let src = part("pp", kind, &format!("overrides = {{ {o} }}"));
         if want == "__ok__" {

@@ -356,9 +356,8 @@ impl PartKind {
                 F::Material,
                 F::Color,
             ],
-            PartKind::LaneGuide | PartKind::Wall => {
-                &[F::Height, F::Thickness, F::Material, F::Color]
-            }
+            PartKind::LaneGuide => &[F::Width, F::Height, F::Thickness, F::Material, F::Color],
+            PartKind::Wall => &[F::Height, F::Thickness, F::Material, F::Color],
             PartKind::Wireform => &[F::TubeRadius, F::TubeSides, F::Material, F::Color],
             PartKind::Deck => &[F::Thickness, F::Material, F::Color],
             PartKind::Plastic => &[
@@ -377,6 +376,7 @@ impl PartKind {
             PartKind::Decoration => &[
                 F::Shape,
                 F::Outline,
+                F::StarPoints,
                 F::Size,
                 F::Diameter,
                 F::Width,
@@ -767,6 +767,24 @@ impl PartDef {
         f
     }
 
+    /// The instance names its material once: `material` or `overrides.material`, not both
+    /// (SPEC A.5 `[[parts]]`). Shared by [`Self::validate`], [`PartLibrary::resolve`] and
+    /// [`LayoutManifest::resolve_parts`], so every entrypoint rejects the conflict before
+    /// [`Self::instance_fields`] picks one. Errors start with `what`.
+    fn check_material_keys(&self, what: &str) -> Result<(), SchemaError> {
+        if self.material.is_some()
+            && self
+                .overrides
+                .as_ref()
+                .is_some_and(|o| o.material.is_some())
+        {
+            return Err(invalid(format!(
+                "{what}: give `material` or `overrides.material`, not both"
+            )));
+        }
+        Ok(())
+    }
+
     /// Checks what the part states on its own; errors name `parts[index]` and the id.
     pub fn validate(&self, index: usize) -> Result<(), SchemaError> {
         let what = part_label(&self.id, index);
@@ -781,16 +799,8 @@ impl PartDef {
         }
         if let Some(m) = &self.material {
             check_id(&format!("{what} `material`"), m)?;
-            if self
-                .overrides
-                .as_ref()
-                .is_some_and(|o| o.material.is_some())
-            {
-                return Err(invalid(format!(
-                    "{what}: give `material` or `overrides.material`, not both"
-                )));
-            }
         }
+        self.check_material_keys(&what)?;
         if let Some(o) = &self.overrides {
             o.validate(self.kind, &what)?;
         }
@@ -879,6 +889,9 @@ pub fn check_physical_pairs(
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartLibrary {
     materials: BTreeMap<String, MaterialDef>,
+    /// The built-in entries, kept when a table replaces one (the physical fallback of a
+    /// layout element, SPEC A.5).
+    builtin_materials: BTreeMap<String, MaterialDef>,
     builtin_styles: BTreeMap<String, PartStyleDef>,
     table_styles: BTreeMap<String, PartStyleDef>,
     ring_sizes: BTreeMap<String, RingSize>,
@@ -898,6 +911,9 @@ pub struct ResolvedStyle {
 /// One layer of a style chain, root first.
 struct ChainLayer {
     fields: StyleFields,
+    /// The layer is the kind default (the built-in style whose id is the kind's name, or a
+    /// table style overriding it), not a named style.
+    kind_default: bool,
 }
 
 #[derive(Deserialize)]
@@ -929,6 +945,7 @@ fn load_builtin() -> Result<PartLibrary, SchemaError> {
     }
     let mut lib = PartLibrary {
         materials: BTreeMap::new(),
+        builtin_materials: BTreeMap::new(),
         builtin_styles: BTreeMap::new(),
         table_styles: BTreeMap::new(),
         ring_sizes: BTreeMap::new(),
@@ -945,6 +962,7 @@ fn load_builtin() -> Result<PartLibrary, SchemaError> {
             return Err(invalid(format!("{what}: duplicate id")));
         }
     }
+    lib.builtin_materials = lib.materials.clone();
     for r in &sf.ring_sizes {
         let what = format!("built-in ring size `{}`", truncate(&r.id));
         check_id(&what, &r.id)?;
@@ -1186,11 +1204,18 @@ impl PartLibrary {
                 }
                 Some(_) => {}
             }
+            let kind_default = cur == def.kind.name();
             if let Some(t) = t {
-                layers.push(ChainLayer { fields: t.fields() });
+                layers.push(ChainLayer {
+                    fields: t.fields(),
+                    kind_default,
+                });
             }
             if let Some(b) = b {
-                layers.push(ChainLayer { fields: b.fields() });
+                layers.push(ChainLayer {
+                    fields: b.fields(),
+                    kind_default,
+                });
             }
             // A table style overriding a built-in keeps the built-in's base.
             let base = b.or(t).and_then(|d| d.base.clone());
@@ -1238,13 +1263,28 @@ impl PartLibrary {
 
     /// Resolves a stand-alone or table-bound part: style chain, instance overrides,
     /// materials and placement. `position` is the part's position (the caller fills it
-    /// from a bound element). Errors name the part (`what`).
+    /// from a bound element). Errors name the part (`what`); giving both `material` and
+    /// `overrides.material` is one of them.
     pub fn resolve(
         &self,
         part: &PartDef,
         position: [f32; 3],
         what: &str,
     ) -> Result<ResolvedPart, SchemaError> {
+        self.resolve_part(part, position, what, false)
+    }
+
+    /// [`Self::resolve`]; with `defer_physical` a ball-touchable part need not have a
+    /// physical material yet (a part bound to a `layout.toml` wall, post or deck, whose
+    /// element supplies it when the layout is resolved).
+    fn resolve_part(
+        &self,
+        part: &PartDef,
+        position: [f32; 3],
+        what: &str,
+        defer_physical: bool,
+    ) -> Result<ResolvedPart, SchemaError> {
+        part.check_material_keys(what)?;
         let inst = part.instance_fields();
         inst.validate(part.kind, what)?;
         self.resolve_inner(&Spec {
@@ -1255,12 +1295,38 @@ impl PartLibrary {
             bind: part.bind.as_deref(),
             instance: &inst,
             legacy: &StyleFields::default(),
+            layout: &StyleFields::default(),
             legacy_physical: None,
+            defer_physical,
             placement: Placement {
                 position,
                 rotation_deg: part.rotation_deg,
             },
         })
+    }
+
+    /// The material a layout element of physical material `physical` falls back to: the
+    /// library entry named after it when that plays as `physical` (a table replacement
+    /// gives its finish), else the built-in entry, which a table replacement that plays
+    /// differently cannot change.
+    fn element_material(
+        &self,
+        physical: Material,
+        what: &str,
+    ) -> Result<(String, ResolvedMaterial), SchemaError> {
+        let id = physical.name();
+        let m = self.resolve_material(id, what)?;
+        if m.physical != Some(physical)
+            && let Some(def) = self.builtin_materials.get(id)
+            && def.physical.as_deref() == Some(id)
+        {
+            let builtin = ResolvedMaterial {
+                def: def.clone(),
+                physical: Some(physical),
+            };
+            return Ok((id.to_owned(), builtin));
+        }
+        Ok((id.to_owned(), m))
     }
 
     fn resolve_inner(&self, s: &Spec<'_>) -> Result<ResolvedPart, SchemaError> {
@@ -1276,8 +1342,11 @@ impl PartLibrary {
             )));
         }
         let mut fields = StyleFields::default();
+        // A named style (not the kind default) of the chain chose the material.
+        let mut style_material = false;
         for l in &layers {
             fields.overlay(&l.fields);
+            style_material |= !l.kind_default && l.fields.material.is_some();
         }
         fields.overlay(s.instance);
         let mut legacy = s.legacy.clone();
@@ -1287,6 +1356,8 @@ impl PartLibrary {
             }
         }
         fields.overlay(&legacy);
+        // Authoritative layout values are never dropped and win over everything.
+        fields.overlay(s.layout);
         // A ring size supplies the ring numbers the part does not state.
         if let Some(r) = &fields.ring_size {
             let size = self.ring_sizes.get(r).ok_or_else(|| {
@@ -1295,17 +1366,27 @@ impl PartLibrary {
             fields.inner_diameter = fields.inner_diameter.or(Some(size.inner_diameter));
             fields.section = fields.section.or(Some(size.section));
         }
+        let mut element_material = None;
         if let Some(legacy) = s.legacy_physical {
             // The element's own key fixes the physical material. The instance or a named
             // style may change the look with a library material that plays the same; a
             // kind-default material that plays differently gives way to the element's.
-            let explicit = s.instance.material.is_some() || s.style.is_some();
-            let chosen = match fields.material.take() {
-                Some(m) if explicit => m,
-                Some(m) if self.resolve_material(&m, s.what)?.physical == Some(legacy) => m,
-                _ => legacy.name().to_owned(),
+            let explicit = s.instance.material.is_some() || style_material;
+            let (chosen, m) = match fields.material.take() {
+                Some(n) if explicit => {
+                    let m = self.resolve_material(&n, s.what)?;
+                    (n, m)
+                }
+                Some(n) => {
+                    let m = self.resolve_material(&n, s.what)?;
+                    if m.physical == Some(legacy) {
+                        (n, m)
+                    } else {
+                        self.element_material(legacy, s.what)?
+                    }
+                }
+                None => self.element_material(legacy, s.what)?,
             };
-            let m = self.resolve_material(&chosen, s.what)?;
             if m.physical != Some(legacy) {
                 return Err(invalid(format!(
                     "{}: material `{}` plays as `{}` but the layout element is `{}` \
@@ -1317,16 +1398,18 @@ impl PartLibrary {
                 )));
             }
             fields.material = Some(chosen);
+            element_material = Some(m);
         }
-        let material = match &fields.material {
-            Some(n) => Some(self.resolve_material(n, s.what)?),
-            None => None,
+        let material = match (element_material, &fields.material) {
+            (Some(m), _) => Some(m),
+            (None, Some(n)) => Some(self.resolve_material(n, s.what)?),
+            (None, None) => None,
         };
         let trim_material = match &fields.trim_material {
             Some(n) => Some(self.resolve_material(n, s.what)?),
             None => None,
         };
-        if s.kind.is_touchable() {
+        if s.kind.is_touchable() && !s.defer_physical {
             match &material {
                 None => {
                     return Err(invalid(format!(
@@ -1354,10 +1437,8 @@ impl PartLibrary {
                 s.what
             )));
         }
-        if fields.shape == Some(Shape::Star)
-            && fields.star_points.is_none()
-            && s.kind.allows(StyleField::StarPoints)
-        {
+        // Every kind: one that cannot take `star_points` cannot be a star.
+        if fields.shape == Some(Shape::Star) && fields.star_points.is_none() {
             return Err(invalid(format!(
                 "{}: shape `star` needs `star_points`",
                 s.what
@@ -1392,8 +1473,13 @@ struct Spec<'a> {
     style: Option<&'a str>,
     bind: Option<&'a str>,
     instance: &'a StyleFields,
+    /// Element keys, dropped where the kind does not accept the field.
     legacy: &'a StyleFields,
+    /// Authoritative element values (a lane's `width`): never dropped, applied last.
+    layout: &'a StyleFields,
     legacy_physical: Option<Material>,
+    /// Skip the ball-touchable physical-material check (the layout element supplies it).
+    defer_physical: bool,
     placement: Placement,
 }
 
@@ -1525,6 +1611,40 @@ fn find_elements(t: &TableManifest, section: Option<&str>, id: &str) -> Vec<Elem
         }));
     }
     out
+}
+
+/// The `layout.toml` bind kind check shared by [`TableManifest::resolve_parts`] and
+/// [`LayoutManifest::resolve_parts`].
+fn check_layout_bind_kind(what: &str, kind: PartKind, section: &str) -> Result<(), SchemaError> {
+    let kinds = layout_bind_kinds(section);
+    if kinds.contains(&kind) {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "{what}: kind `{}` cannot bind to `{section}` (allowed: {})",
+            kind.name(),
+            kinds_list(kinds)
+        )))
+    }
+}
+
+/// The error for a second part bound to one element (shared by both entrypoints).
+fn already_bound(what: &str, bind: &str, j: usize) -> SchemaError {
+    invalid(format!(
+        "{what}: `{}` is already bound by `parts[{j}]`",
+        truncate(bind)
+    ))
+}
+
+/// Posts, walls and lane guides without a height stand `wall_height` tall (SPEC A.5).
+fn apply_wall_height(r: &mut ResolvedPart, wall_height: f32) {
+    if matches!(
+        r.kind,
+        PartKind::Post | PartKind::Wall | PartKind::LaneGuide
+    ) && r.fields.height.is_none()
+    {
+        r.fields.height = Some(wall_height);
+    }
 }
 
 fn kinds_list(kinds: &[PartKind]) -> String {
@@ -1664,7 +1784,10 @@ impl TableManifest {
     /// unambiguous, kind allowed, at most one part per element, `position` only when the
     /// element has none), styles, materials and placement. Parts bound to a layout element
     /// are checked here for everything except the element itself
-    /// ([`LayoutManifest::resolve_parts`] resolves them).
+    /// ([`LayoutManifest::resolve_parts`] resolves them); for a part bound to a wall, post
+    /// or deck that includes the ball-touchable physical-material check, because the
+    /// element's own material supplies it. Without the layout, an unset `height` stays
+    /// `None` ([`Self::all_parts`] applies `playfield.wall_height`).
     pub fn resolve_parts(&self, lib: &PartLibrary) -> Result<Vec<ResolvedPart>, SchemaError> {
         if self.parts.len() > MAX_PARTS {
             return Err(invalid(format!(
@@ -1688,22 +1811,15 @@ impl TableManifest {
                     .position
                     .ok_or_else(|| invalid(format!("{what}: needs `position` (or `bind`)")))?,
                 Some(b) => {
-                    let key = if let Some((section, n)) = parse_layout_bind(b) {
-                        let kinds = layout_bind_kinds(section);
-                        if !kinds.contains(&p.kind) {
-                            return Err(invalid(format!(
-                                "{what}: kind `{}` cannot bind to `{section}` (allowed: {})",
-                                p.kind.name(),
-                                kinds_list(kinds)
-                            )));
-                        }
+                    let (key, section) = if let Some((section, n)) = parse_layout_bind(b) {
+                        check_layout_bind_kind(&what, p.kind, section)?;
                         if p.position.is_some() {
                             return Err(invalid(format!(
                                 "{what}: `position` is not allowed with a `layout.toml` bind \
                                  (the element's own keys place it)"
                             )));
                         }
-                        format!("{section}[{n}]")
+                        (format!("{section}[{n}]"), section)
                     } else {
                         let (section, id) = match b.split_once(':') {
                             Some((s, id)) => match TABLE_SECTIONS.into_iter().find(|t| *t == s) {
@@ -1773,23 +1889,20 @@ impl TableManifest {
                             }
                         );
                         if let Some(j) = binds.insert(key, i) {
-                            return Err(invalid(format!(
-                                "{what}: `{}` is already bound by `parts[{j}]`",
-                                truncate(b)
-                            )));
+                            return Err(already_bound(&what, b, j));
                         }
                         let r = lib.resolve(p, pos, &what)?;
                         out.push(r);
                         continue;
                     };
                     if let Some(j) = binds.insert(key, i) {
-                        return Err(invalid(format!(
-                            "{what}: `{}` is already bound by `parts[{j}]`",
-                            truncate(b)
-                        )));
+                        return Err(already_bound(&what, b, j));
                     }
                     // Checked now with a placeholder position; resolved with the layout.
-                    lib.resolve(p, [0.0; 3], &what)?;
+                    // A wall, post or deck supplies the physical material itself, so only
+                    // the other binds need one here (checked after binding otherwise).
+                    let defer = matches!(section, "walls" | "posts" | "decks");
+                    lib.resolve_part(p, [0.0; 3], &what, defer)?;
                     continue;
                 }
             };
@@ -1799,10 +1912,14 @@ impl TableManifest {
     }
 
     /// Resolves every part: this table's stand-alone and table-bound `[[parts]]`, then every
-    /// element of `layout` (with its bound part, if any). Fixed order.
+    /// element of `layout` (with its bound part, if any). Fixed order. Every `post`, `wall`
+    /// and `lane_guide` without a `height` gets `layout.playfield.wall_height` (SPEC A.5).
     pub fn all_parts(&self, layout: &LayoutManifest) -> Result<Vec<ResolvedPart>, SchemaError> {
         let lib = self.part_library()?;
         let mut v = self.resolve_parts(&lib)?;
+        for r in &mut v {
+            apply_wall_height(r, layout.playfield.wall_height);
+        }
         v.extend(layout.resolve_parts(self, &lib)?);
         Ok(v)
     }
@@ -1839,9 +1956,13 @@ impl LayoutManifest {
     /// `material`, a lane's `width`, an insert's `shape` and `size`, positions, points and
     /// a deck's `z`. A bound part or table style may change the look of a wall, post or
     /// deck only with a library material whose `physical` equals that element's material
-    /// (an error naming the part otherwise). Posts, walls and lane guides whose height is
-    /// unset take `playfield.wall_height`. A bind to an element index that does not exist
-    /// is an error naming the part.
+    /// (an error naming the part otherwise); a material inherited from the kind default
+    /// gives way to the element's, and when the table replaced that library entry with one
+    /// that plays differently the built-in entry is used. Posts, walls and lane guides whose
+    /// height is unset take `playfield.wall_height`. Errors name the part: a bind to an
+    /// element index that does not exist, a kind the section does not allow, a second part
+    /// bound to one element (`posts[00]` is `posts[0]`), and both `material` and
+    /// `overrides.material` on a bound part.
     pub fn resolve_parts(
         &self,
         table: &TableManifest,
@@ -1849,7 +1970,12 @@ impl LayoutManifest {
     ) -> Result<Vec<ResolvedPart>, SchemaError> {
         let mut bound: BTreeMap<(&'static str, usize), (usize, &PartDef)> = BTreeMap::new();
         for (i, p) in table.parts.iter().enumerate() {
-            if let Some((section, n)) = p.bind.as_deref().and_then(parse_layout_bind) {
+            let Some(b) = p.bind.as_deref() else {
+                continue;
+            };
+            if let Some((section, n)) = parse_layout_bind(b) {
+                let what = part_label(&p.id, i);
+                check_layout_bind_kind(&what, p.kind, section)?;
                 let len = match section {
                     "walls" => self.walls.len(),
                     "posts" => self.posts.len(),
@@ -1860,11 +1986,14 @@ impl LayoutManifest {
                 };
                 if n >= len {
                     return Err(invalid(format!(
-                        "{}: `bind` `{section}[{n}]` but layout.toml has {len} {section}",
-                        part_label(&p.id, i)
+                        "{what}: `bind` `{section}[{n}]` but layout.toml has {len} {section}"
                     )));
                 }
-                bound.insert((section, n), (i, p));
+                p.check_material_keys(&what)?;
+                // `posts[00]` and `posts[0]` name one element.
+                if let Some((j, _)) = bound.insert((section, n), (i, p)) {
+                    return Err(already_bound(&what, b, j));
+                }
             }
         }
         let wall_height = self.playfield.wall_height;
@@ -1873,6 +2002,7 @@ impl LayoutManifest {
                        n: usize,
                        default_kind: PartKind,
                        legacy: StyleFields,
+                       layout: StyleFields,
                        legacy_physical: Option<Material>,
                        position: [f32; 3]|
          -> Result<(), SchemaError> {
@@ -1892,17 +2022,15 @@ impl LayoutManifest {
                 bind: None,
                 instance: &inst,
                 legacy: &legacy,
+                layout: &layout,
                 legacy_physical,
+                defer_physical: false,
                 placement: Placement {
                     position,
                     rotation_deg: b.map_or([0.0; 3], |(_, p)| p.rotation_deg),
                 },
             })?;
-            if matches!(kind, PartKind::Post | PartKind::Wall | PartKind::LaneGuide)
-                && r.fields.height.is_none()
-            {
-                r.fields.height = Some(wall_height);
-            }
+            apply_wall_height(&mut r, wall_height);
             out.push(r);
             Ok(())
         };
@@ -1911,6 +2039,7 @@ impl LayoutManifest {
                 "walls",
                 n,
                 PartKind::Wall,
+                StyleFields::default(),
                 StyleFields::default(),
                 Some(w.material),
                 [0.0; 3],
@@ -1931,16 +2060,23 @@ impl LayoutManifest {
                 n,
                 PartKind::Post,
                 legacy,
+                StyleFields::default(),
                 Some(phys),
                 [p.position[0], p.position[1], 0.0],
             )?;
         }
-        for n in 0..self.lanes.len() {
+        for (n, lane) in self.lanes.iter().enumerate() {
+            // The lane's width is authoritative: it wins over styles and overrides.
+            let layout = StyleFields {
+                width: Some(lane.width),
+                ..StyleFields::default()
+            };
             one(
                 "lanes",
                 n,
                 PartKind::LaneGuide,
                 StyleFields::default(),
+                layout,
                 None,
                 [0.0; 3],
             )?;
@@ -1955,13 +2091,15 @@ impl LayoutManifest {
                 Some(SplineKind::Guide) => PartKind::LaneGuide,
                 _ => PartKind::Wireform,
             };
-            one("ramps", n, kind, StyleFields::default(), None, [0.0; 3])?;
+            let none = StyleFields::default();
+            one("ramps", n, kind, none.clone(), none, None, [0.0; 3])?;
         }
         for (n, d) in self.decks.iter().enumerate() {
             one(
                 "decks",
                 n,
                 PartKind::Deck,
+                StyleFields::default(),
                 StyleFields::default(),
                 Some(d.material),
                 [0.0, 0.0, d.z],
@@ -1978,6 +2116,7 @@ impl LayoutManifest {
                 n,
                 PartKind::Insert,
                 legacy,
+                StyleFields::default(),
                 None,
                 [ins.position[0], ins.position[1], 0.0],
             )?;
