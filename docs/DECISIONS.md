@@ -9256,3 +9256,22 @@ resolved (`git log -S KP-002-lat001-frame-form -- docs/HUMAN_QUEUE.md docs/SPEC.
   needs to reach 1 degree.
 - Keeping the in-flight allowance or the SPEC erratum: rejected by the issue; the brief allows the
   owner's SPEC edit only as a fallback when a late latch cannot meet the raw count.
+
+## #149 — Independent Tester: the check b property oracle
+
+**Decision:** The black-box property for check b (`req_lat_001_check_b_passes_iff_every_raw_count_is_at_most_two`
+in `crates/pin_app/tests/windowed/main.rs`) expects a pass if and only if at least one press is
+checked and every checked press has `n_raw <= 2`, and checks the failure list one way: every press
+a failure names is a checked press with `n_raw > 2`, named with that count, and some failure names
+a raw count whenever one exceeds 2. The excluded press of the end-exclusion test is checked by
+name (never in a failure) rather than by check b passing.
+
+**Rationale:** The verdict fails a run whose every press falls in the final 500 ms ("every press
+fell in the final window"), and it caps its failure list ("... more failures not listed"); both
+are existing behaviour that this unit leaves unchanged, so the oracle models them instead of
+asserting that every failing press is listed. The pass/fail equivalence over raw counts, which is
+what the brief requires, is asserted in full.
+
+**Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
+it narrows the property; assert every failing press is named: rejected, it contradicts the
+existing cap.

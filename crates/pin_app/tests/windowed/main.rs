@@ -324,7 +324,7 @@ fn req_lat_004_check_a_coil_takes_effect_in_the_applying_tick() {
     }
 }
 
-/// REQ-LAT-001 check b: 1 and 2 frames pass, 3 fail.
+/// REQ-LAT-001 check b: a raw count of 1 and 2 frames passes, 3 fails.
 #[test]
 fn req_lat_001_check_b_frame_counts() {
     // Frames present every 100 ms; frame k draws tick (k-1)*100. A press
@@ -335,7 +335,7 @@ fn req_lat_001_check_b_frame_counts() {
         r.move_tick = Some(move_ms);
         r.apply_tick = move_ms;
         let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
-        assert_eq!(v.summary.max_frames_adjusted, want, "move {move_ms}");
+        assert_eq!(v.summary.max_frames_raw, want, "move {move_ms}");
         assert_eq!(v.b.passed(), want <= 2, "move {move_ms}: {:?}", v.b);
     }
     // One frame: a frame that read its snapshot after the move. Frames
@@ -351,7 +351,7 @@ fn req_lat_001_check_b_frame_counts() {
     let mut r = press(0, ts, 300_000);
     r.move_tick = Some(951);
     let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &params());
-    assert_eq!(v.summary.max_frames_adjusted, 1);
+    assert_eq!(v.summary.max_frames_raw, 1);
     assert!(v.b.passed(), "{:?}", v.b);
 }
 
@@ -359,7 +359,8 @@ fn req_lat_001_check_b_frame_counts() {
 /// presented frame counts from frame index 0, so a bat first shown in frame
 /// 2 is 3 frames after it (not 2: "no frame before the press" is not
 /// "frame 0 was"); a press after frame 0 presented, shown in frame 2, is 2.
-/// The in-flight allowance keeps its meaning: one frame, never more.
+/// There is no in-flight allowance (#149): frame 0, in flight at the press
+/// and presented 5 ms after it, is counted, so the raw 3 fails.
 #[test]
 fn req_lat_001_check_b_press_before_the_first_frame() {
     let fr = frames_at(&[10, 20, 30], &[4, 4, 5]);
@@ -371,37 +372,50 @@ fn req_lat_001_check_b_press_before_the_first_frame() {
         Some(0)
     );
     assert_eq!(verdict::last_frame_at_or_before(&[], after), None);
-    assert_eq!(
-        verdict::frame_count(&fr, before, 2, 0, 2, false),
-        (3, 3, false)
-    );
-    assert_eq!(
-        verdict::frame_count(&fr, before, 2, u64::MAX, 2, true),
-        (3, 2, true),
-        "one frame of allowance: the in-flight frame is frame 0"
-    );
-    assert_eq!(
-        verdict::frame_count(&fr, after, 2, u64::MAX, 2, true),
-        (2, 2, false)
-    );
-    // Through the verdict: frame 0 in flight before the coil deadline
-    // (press + 11 ms): raw 3, shifted to 2, passes.
+    assert_eq!(verdict::raw_frames(&fr, before, 2), 3);
+    assert_eq!(verdict::raw_frames(&fr, before, 0), 1);
+    assert_eq!(verdict::raw_frames(&fr, after, 2), 2);
+    // Through the verdict: frame 0 presented inside the old allowance
+    // window (press + 11 ms): raw 3, not rescued, fails.
     let r = press(0, before, 300_000);
     let t = joined_until(vec![r], fr, T0 + 2_000_000_000);
     assert_eq!(t.rows[0].frame, Some(2));
     assert_eq!(t.rows[0].frames_to_photon, Some(3));
     let v = evaluate(&t, &OK_SHUTDOWN, &params());
-    assert!(v.b.passed(), "{}", v.report());
+    assert!(v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
     assert_eq!(v.summary.max_frames_raw, 3);
-    assert_eq!(v.summary.max_frames_adjusted, 2);
-    assert_eq!(v.summary.in_flight_shifted, 1);
-    // Frame 0 presented after the coil deadline: no allowance, 3 fails.
+    assert_b_names_press(&v, 0, 3);
+    // Frame 0 presented after the old window: the same raw 3, the same
+    // failure.
     let late = frames_at(&[20, 30, 40], &[4, 4, 5]);
     let t = joined_until(vec![press(0, before, 300_000)], late, T0 + 2_000_000_000);
     assert_eq!(t.rows[0].frames_to_photon, Some(3));
     let v = evaluate(&t, &OK_SHUTDOWN, &params());
     assert!(!v.b.passed(), "{}", v.report());
     assert_eq!(v.summary.max_frames_raw, 3);
+    assert_b_names_press(&v, 0, 3);
+    // Shown in frame 1 (frames 0 and 1 count): raw 2 passes.
+    let fr = frames_at(&[10, 20, 30], &[4, 5, 6]);
+    let t = joined_until(vec![press(0, before, 300_000)], fr, T0 + 2_000_000_000);
+    assert_eq!(t.rows[0].frames_to_photon, Some(2));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 2);
+}
+
+/// Check b failed for press `seq` with raw count `n`: some failure names
+/// the press's sequence number and the count (REQ-LAT-001).
+fn assert_b_names_press(v: &verdict::Verdict, seq: u64, n: u64) {
+    assert!(!v.b.failures.is_empty(), "{}", v.report());
+    assert!(
+        v.b.failures
+            .iter()
+            .any(|f| f.contains(&format!("press #{seq} ("))
+                && f.contains(&format!(" {n} presented frames after the press"))),
+        "check b failure must name press #{seq} and {n} frames: {:?}",
+        v.b
+    );
 }
 
 /// REQ-LAT-003 check d (O2): the shutdown line's `input dropped N` is
@@ -455,9 +469,9 @@ fn req_lat_003_check_d_fails_on_dropped_input_events() {
     );
 }
 
-/// REQ-LAT-001 check b: a raw count of 3 passes only through the one-frame
-/// in-flight allowance (frame 10 presents 0.5 ms after the press, before
-/// the coil deadline); the raw count is gated, the allowance counted.
+/// REQ-LAT-001 check b: a raw count of 3 fails even when frame 10, in
+/// flight at the press, presents 0.5 ms after it (before the coil
+/// deadline): the frame in flight is not skipped, there is no allowance.
 #[test]
 fn req_lat_001_check_b_in_flight_frame_before_the_deadline() {
     // Frame 10 presents 0.5 ms after the press; the bat moves 1 ms after.
@@ -466,11 +480,16 @@ fn req_lat_001_check_b_in_flight_frame_before_the_deadline() {
     r.move_tick = Some(1001);
     r.apply_tick = 1000;
     let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
-    assert!(v.b.passed(), "{}", v.report());
-    assert_eq!(v.summary.max_frames_adjusted, 2);
+    assert!(v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
     assert_eq!(v.summary.max_frames_raw, 3);
-    assert_eq!(v.summary.in_flight_shifted, 1);
-    assert!(v.b.info.contains("in-flight shifted 1"), "{}", v.b.info);
+    assert_b_names_press(&v, 0, 3);
+    let info = v.b.info.to_lowercase();
+    assert!(
+        !info.contains("in-flight") && !info.contains("shifted") && !info.contains("adjusted"),
+        "{}",
+        v.b.info
+    );
 }
 
 /// Frames for the in-flight table: frame k presented at `present_ms[k]`
@@ -489,13 +508,12 @@ fn frames_at(present_ms: &[u64], snap: &[u64]) -> Vec<Frame> {
 }
 
 /// REQ-LAT-001 check b (table-driven): the raw count from the press is
-/// gated (`n_raw <= 2`), with exactly one allowance: when the frame in
-/// flight at the press presented within `(ts, ts + bound_a + coil_ticks]`
-/// the count may start after it (`n_adj <= 2`). Raw 1 and 2 pass; raw 3
-/// with the in-flight frame inside that window passes (the review's case:
-/// press at 100 ms, frames at 101, 220 and 340 ms, the bat first visible
-/// at 340 ms); raw 3 with it outside fails; raw 4 fails even shifted; a
-/// press 700 ms late fails check a and gets no allowance.
+/// gated (`n_raw <= 2`) with no allowance: the frame in flight at the press
+/// counts wherever it presented. Raw 1 and 2 pass; raw 3 fails with the
+/// in-flight frame inside the old window `(ts, ts + bound_a + coil_ticks]`
+/// (press at 100 ms, frames at 101, 220 and 340 ms, the bat first visible
+/// at 340 ms), at its edge and outside it; raw 4 fails; a press 700 ms late
+/// fails check a and check b, rescued by nothing.
 #[test]
 fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
     let p = Params {
@@ -505,14 +523,13 @@ fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
     let ts = T0 + 100 * TICK_NS;
     // A press at 100 ms applied in tick 101 (1 ms late; bound_a 3 ms).
     let deadline_ms = 100 + 3 + p.coil_ticks;
-    // (in-flight present ms, in-flight snap, move tick, raw, adjusted,
-    // shifted, pass)
-    for (inflight_ms, inflight_snap, mv, raw, adj, shifted, pass) in [
-        (101u64, 101u64, 101u64, 1u64, 1u64, false, true), // raw 1
-        (101, 90, 101, 2, 2, false, true),                 // raw 2
-        (101, 90, 102, 3, 2, true, true),                  // the review's case
-        (deadline_ms, 90, 102, 3, 2, true, true),          // window edge
-        (deadline_ms + 1, 90, 102, 3, 3, false, false),    // outside the window
+    // (in-flight present ms, in-flight snap, move tick, raw, pass)
+    for (inflight_ms, inflight_snap, mv, raw, pass) in [
+        (101u64, 101u64, 101u64, 1u64, true), // raw 1
+        (101, 90, 101, 2, true),              // raw 2
+        (101, 90, 102, 3, false),             // inside the old window
+        (deadline_ms, 90, 102, 3, false),     // the old window's edge
+        (deadline_ms + 1, 90, 102, 3, false), // outside the old window
     ] {
         let fr = frames_at(
             &[90, inflight_ms, 220, 340, 460, 59_900],
@@ -520,15 +537,18 @@ fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
         );
         let mut r = press(0, ts, TICK_NS);
         r.move_tick = Some(mv);
-        let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &p);
+        let t = joined(vec![r], fr);
+        assert_eq!(t.rows[0].frames_to_photon, Some(raw));
+        let v = evaluate(&t, &OK_SHUTDOWN, &p);
         let case = format!("in-flight {inflight_ms} ms, move {mv}: {}", v.report());
         assert!(v.a.passed(), "{case}");
         assert_eq!(v.summary.max_frames_raw, raw, "{case}");
-        assert_eq!(v.summary.max_frames_adjusted, adj, "{case}");
-        assert_eq!(v.summary.in_flight_shifted, usize::from(shifted), "{case}");
         assert_eq!(v.b.passed(), pass, "{case}");
+        if !pass {
+            assert_b_names_press(&v, 0, raw);
+        }
     }
-    // Raw 4 (3 after the in-flight frame): fails even with the shift.
+    // Raw 4: fails.
     let fr = frames_at(
         &[90, 101, 150, 220, 340, 59_900],
         &[80, 90, 95, 101, 220, 59_000],
@@ -539,8 +559,8 @@ fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
     assert!(v.a.passed(), "{}", v.report());
     assert!(!v.b.passed(), "{}", v.report());
     assert_eq!(v.summary.max_frames_raw, 4);
-    assert_eq!(v.summary.in_flight_shifted, 0);
-    // 700 ms late: fails check a, and its raw 3 gets no allowance.
+    assert_b_names_press(&v, 0, 4);
+    // 700 ms late: fails check a, and its raw 3 fails check b.
     let fr = frames_at(&[90, 101, 220, 900, 59_900], &[80, 90, 101, 800, 59_000]);
     let mut late = press(0, ts, 700 * TICK_NS);
     late.move_tick = Some(late.apply_tick);
@@ -548,12 +568,388 @@ fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
     assert!(!v.a.passed(), "{}", v.report());
     assert!(!v.b.passed(), "{}", v.report());
     assert_eq!(v.summary.max_frames_raw, 3);
-    assert_eq!(v.summary.in_flight_shifted, 0);
+    assert_b_names_press(&v, 0, 3);
+}
+
+/// The frame table of the #149 in-flight table: frame 0 presented 10 ms
+/// before the press at `ts` (F0, drawing tick 89), frame 1 the frame in
+/// flight at the press, presented `inflight_ns` after it, then a frame every
+/// 16 ms. Frames 1 to `raised - 1` draw tick 95 (before the move at tick
+/// 101), frame `raised` and later draw tick 101 onwards, so frame `raised`
+/// is the first candidate and the raw count is `raised`.
+fn in_flight_table(ts: u64, inflight_ns: u64, raised: u64) -> Vec<Frame> {
+    let mut fr = vec![Frame {
+        frame: 0,
+        snap_tick: 89,
+        present_ns: ts - 10 * TICK_NS,
+    }];
+    for k in 1..8u64 {
+        fr.push(Frame {
+            frame: k,
+            snap_tick: if k < raised {
+                95
+            } else {
+                101 + 16 * (k - raised)
+            },
+            present_ns: ts + inflight_ns + (k - 1) * 16 * TICK_NS,
+        });
+    }
+    fr
+}
+
+/// REQ-LAT-001 (#149, CI form, table-driven): the bat first shown raised
+/// at raw count 1 or 2 passes check b and at 3 or 4 fails it, whether the
+/// frame in flight at the press presented 0.2 ms, 1 ms, 4.7 ms or 30 ms
+/// after the press (0.2 to 4.7 ms lie inside the removed allowance window
+/// `(ts, ts + bound_a + 8 ticks]`, 30 ms outside it): the verdict does not
+/// depend on when the in-flight frame presented.
+#[test]
+fn req_lat_001_check_b_raw_count_table_ignores_in_flight_present_time() {
+    let ts = T0 + 100 * TICK_NS;
+    for inflight_ns in [200_000u64, 1_000_000, 4_700_000, 30_000_000] {
+        for raised in 1u64..=4 {
+            let fr = in_flight_table(ts, inflight_ns, raised);
+            // Applied in tick 101 (ends 1 ms after the press), coil at once.
+            let mut r = press(0, ts, TICK_NS);
+            r.move_tick = Some(101);
+            let t = joined_until(vec![r], fr.clone(), T0 + 2_000_000_000);
+            let case = format!("in-flight +{inflight_ns} ns, raised at {raised}");
+            assert_eq!(t.rows[0].frame, Some(raised), "{case}");
+            assert_eq!(t.rows[0].frames_to_photon, Some(raised), "{case}");
+            assert_eq!(verdict::raw_frames(&fr, ts, raised), raised, "{case}");
+            let v = evaluate(&t, &OK_SHUTDOWN, &params());
+            let case = format!("{case}: {}", v.report());
+            assert!(v.a.passed() && v.c.passed() && v.d.passed(), "{case}");
+            assert_eq!(v.summary.excluded_presses, 0, "{case}");
+            assert_eq!(v.summary.max_frames_raw, raised, "{case}");
+            assert_eq!(v.summary.p99_frames_raw, raised, "{case}");
+            assert_eq!(v.b.passed(), raised <= 2, "{case}");
+            assert_eq!(v.passed(), raised <= 2, "{case}");
+            if raised > 2 {
+                assert_b_names_press(&v, 0, raised);
+                assert_eq!(v.failed_checks(), vec!["b"], "{case}");
+            } else {
+                assert!(v.b.failures.is_empty(), "{case}");
+            }
+        }
+    }
+}
+
+/// The wording the removed allowance used to print, none of which may
+/// appear in the report, check b's info line or its failures.
+const ALLOWANCE_WORDS: [&str; 5] = [
+    "in-flight shifted",
+    "shifted",
+    "adjusted",
+    "allowance",
+    "in-flight",
+];
+
+/// REQ-LAT-001 (#149): the summary and check b's info line print the raw
+/// max and p99 only: no "in-flight shifted", no "adjusted" (nor any other
+/// allowance wording) in a passing or a failing verdict, in the report, the
+/// info line or the failures.
+#[test]
+fn req_lat_001_report_has_no_in_flight_or_adjusted_wording() {
+    let ts = T0 + 100 * TICK_NS;
+    for (inflight_ns, raised) in [(1_000_000u64, 2u64), (1_000_000, 3), (30_000_000, 4)] {
+        let mut r = press(0, ts, TICK_NS);
+        r.move_tick = Some(101);
+        let t = joined_until(
+            vec![r],
+            in_flight_table(ts, inflight_ns, raised),
+            T0 + 2_000_000_000,
+        );
+        let v = evaluate(&t, &OK_SHUTDOWN, &params());
+        assert_eq!(v.b.passed(), raised <= 2, "{}", v.report());
+        let text = format!("{}\n{}\n{:?}", v.report(), v.b.info, v.b.failures).to_lowercase();
+        for w in ALLOWANCE_WORDS {
+            assert!(!text.contains(w), "{w:?} in: {text}");
+        }
+        // The raw max and p99 are what the info line reports.
+        assert!(
+            v.b.info.contains(&format!("raw max {raised} p99 {raised}")),
+            "{}",
+            v.b.info
+        );
+    }
+    // The text path too (the windowed run's report).
+    let (c, ..) = latency_trace(bindings(), now);
+    let v = verdict::evaluate_text(
+        &c.collect(T0).to_csv(),
+        "pin_app: 60000 sim ticks (0 dropped), 600 frames, input dropped 0, 0 haptic events\n",
+        &Params::default(),
+    )
+    .unwrap();
+    let text = format!("{}\n{}", v.report(), v.b.info).to_lowercase();
+    for w in ALLOWANCE_WORDS {
+        assert!(!text.contains(w), "{w:?} in: {text}");
+    }
+}
+
+/// REQ-LAT-001 (#149): the rest of check b behaves as before under the
+/// raw-count rule. A press stamped less than 500 ms before `run_end_ns` is
+/// excluded and counted even with a raw count of 3 (at exactly 500 ms it is
+/// checked and fails); a press whose bat never moved fails; a trace whose
+/// `frames_to_photon` disagrees with the frame table fails (including the
+/// old shifted value, raw - 1, and a press before the first frame written
+/// as `frame` instead of `frame + 1`).
+#[test]
+fn req_lat_001_check_b_exclusion_no_move_mismatch_and_first_frame_unchanged() {
+    let ts = T0 + 100 * TICK_NS;
+    let raw3 = |run_end_ns: u64| {
+        let mut r = press(0, ts, TICK_NS);
+        r.move_tick = Some(101);
+        joined_until(vec![r], in_flight_table(ts, 1_000_000, 3), run_end_ns)
+    };
+    // Within the final 500 ms: excluded, counted, its raw 3 not failed (a
+    // run whose every press is excluded fails as a whole, as before, so
+    // the press is checked by name).
+    for end in [ts + 499_999_999, ts + 400_000_000] {
+        let v = evaluate(&raw3(end), &OK_SHUTDOWN, &params());
+        assert_eq!(v.summary.excluded_presses, 1, "{}", v.report());
+        assert!(
+            !v.b.failures.iter().any(|f| f.contains("press #0 (")),
+            "{}",
+            v.report()
+        );
+    }
+    // Exactly 500 ms before the end: checked, and the raw 3 fails.
+    let v = evaluate(&raw3(ts + 500_000_000), &OK_SHUTDOWN, &params());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.excluded_presses, 0);
+    assert_b_names_press(&v, 0, 3);
+
+    // No move: fails check b.
+    let mut t = raw3(T0 + 2_000_000_000);
+    t.rows[0].move_tick = None;
+    t.rows[0].frame = None;
+    t.rows[0].frame_snap_tick = None;
+    t.rows[0].present_ns = None;
+    t.rows[0].frames_to_photon = None;
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(!v.b.passed(), "{}", v.report());
     assert!(
-        v.b.failures[0].contains("no in-flight allowance"),
+        v.b.failures.iter().any(|f| f.contains("never moved")),
         "{:?}",
         v.b
     );
+
+    // `frames_to_photon` mismatches fail; the correct raw value is
+    // accepted (and fails only on the count).
+    let t = raw3(T0 + 2_000_000_000);
+    assert_eq!(t.rows[0].frames_to_photon, Some(3));
+    for wrong in [2u64, 4, 0] {
+        let mut t = t.clone();
+        t.rows[0].frames_to_photon = Some(wrong);
+        let v = evaluate(&t, &OK_SHUTDOWN, &params());
+        assert!(!v.b.passed(), "written {wrong}: {}", v.report());
+        assert!(v.a.passed(), "written {wrong}: {}", v.report());
+    }
+    let mut r = press(0, ts, TICK_NS);
+    r.move_tick = Some(101);
+    let ok = joined_until(
+        vec![r],
+        in_flight_table(ts, 1_000_000, 2),
+        T0 + 2_000_000_000,
+    );
+    assert!(evaluate(&ok, &OK_SHUTDOWN, &params()).b.passed());
+    let mut bad = ok.clone();
+    bad.rows[0].frames_to_photon = Some(1);
+    assert!(!evaluate(&bad, &OK_SHUTDOWN, &params()).b.passed());
+
+    // A press before the first presented frame counts `frame + 1`.
+    let fr = frames_at(&[10, 20, 30, 40], &[4, 6, 7, 8]);
+    let before = T0 + 5 * TICK_NS;
+    let t = joined_until(vec![press(0, before, 300_000)], fr, T0 + 2_000_000_000);
+    assert_eq!(t.rows[0].frame, Some(1));
+    assert_eq!(t.rows[0].frames_to_photon, Some(2));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 2);
+    let mut without_plus_one = t.clone();
+    without_plus_one.rows[0].frames_to_photon = Some(1);
+    assert!(
+        !evaluate(&without_plus_one, &OK_SHUTDOWN, &params())
+            .b
+            .passed()
+    );
+}
+
+/// A generated press and frame timeline for the check b property.
+#[derive(Clone, Debug)]
+struct Timeline {
+    /// Frame gaps (us), cycled until the run ends.
+    frame_gaps_us: Vec<u64>,
+    /// Per frame (cycled): how late in its interval the frame latched its
+    /// snapshot, in per mille of the gap before it.
+    latch_permille: Vec<u64>,
+    /// Per press: (gap to the previous press in us, coil ticks, later
+    /// candidate skipped, right bat?, a frame presented this many us after
+    /// the press if any).
+    presses: Vec<(u64, u64, u64, bool, Option<u64>)>,
+    /// Run end after the last press (us).
+    tail_us: u64,
+}
+
+fn timeline() -> impl Strategy<Value = Timeline> {
+    (
+        prop::collection::vec(4_000u64..40_000, 1..12),
+        prop::collection::vec(0u64..=1000, 1..12),
+        prop::collection::vec(
+            (
+                20_000u64..400_000,
+                0u64..=8,
+                0u64..3,
+                any::<bool>(),
+                prop::option::of(50u64..12_000),
+            ),
+            1..25,
+        ),
+        100_000u64..1_500_000,
+    )
+        .prop_map(
+            |(frame_gaps_us, latch_permille, presses, tail_us)| Timeline {
+                frame_gaps_us,
+                latch_permille,
+                presses,
+                tail_us,
+            },
+        )
+}
+
+/// Builds the trace of `tl` and the raw count of every press, computed
+/// here from the frame table alone (F0 the last frame presented at or
+/// before the press, `frame + 1` without one), with the excluded flag
+/// (stamped less than 500 ms before `run_end_ns`).
+fn build_timeline(tl: &Timeline) -> (Trace, Vec<(u64, bool)>) {
+    // Press stamps (the first may precede the first frame), never on a
+    // whole millisecond.
+    let mut stamps = Vec::new();
+    let mut ts = T0 + 137;
+    for (i, p) in tl.presses.iter().enumerate() {
+        ts += if i == 0 { p.0 / 4 } else { p.0 } * 1000 + 211;
+        stamps.push(ts);
+    }
+    let run_end_ns = ts + tl.tail_us * 1000;
+    // Present times: the cycled gaps plus the frames placed just after a
+    // press (inside the old allowance window).
+    let mut presents = Vec::new();
+    let mut t = T0;
+    for k in 0.. {
+        t += tl.frame_gaps_us[k % tl.frame_gaps_us.len()] * 1000;
+        if t > run_end_ns {
+            break;
+        }
+        presents.push(t);
+    }
+    for (p, &ts) in tl.presses.iter().zip(&stamps) {
+        if let Some(us) = p.4 {
+            presents.push(ts + us * 1000);
+        }
+    }
+    presents.sort_unstable();
+    presents.dedup();
+    let mut frames: Vec<Frame> = Vec::new();
+    let mut prev = T0;
+    for (k, &present_ns) in presents.iter().enumerate() {
+        let lag = (present_ns - prev) * tl.latch_permille[k % tl.latch_permille.len()] / 1000;
+        let tick = (present_ns - lag - T0) / TICK_NS;
+        let snap_tick = frames.last().map_or(tick, |f| f.snap_tick.max(tick));
+        frames.push(Frame {
+            frame: k as u64,
+            snap_tick,
+            present_ns,
+        });
+        prev = present_ns;
+    }
+    let mut rows = Vec::new();
+    let mut counts = Vec::new();
+    for (seq, (p, &ts)) in tl.presses.iter().zip(&stamps).enumerate() {
+        // Applied in the first tick ending at or after the stamp.
+        let apply_tick = (ts - T0) / TICK_NS + 1;
+        let mut r = press(seq as u64, ts, T0 + apply_tick * TICK_NS - ts);
+        assert_eq!(r.apply_tick, apply_tick);
+        if p.3 {
+            r.input = "right_flipper".into();
+        }
+        let move_tick = apply_tick + p.1;
+        r.move_tick = Some(move_tick);
+        // The first candidate, or a later one (the bat shown raised only
+        // there); the last frame is always a candidate.
+        let first = frames
+            .iter()
+            .position(|f| f.snap_tick >= move_tick)
+            .expect("a frame after the move");
+        let chosen = &frames[(first + p.2 as usize).min(frames.len() - 1)];
+        let n = match frames.iter().rposition(|f| f.present_ns <= ts) {
+            Some(f0) => chosen.frame - f0 as u64,
+            None => chosen.frame + 1,
+        };
+        r.frame = Some(chosen.frame);
+        r.frame_snap_tick = Some(chosen.snap_tick);
+        r.present_ns = Some(chosen.present_ns);
+        r.frames_to_photon = Some(n);
+        rows.push(r);
+        counts.push((n, run_end_ns - ts < 500_000_000));
+    }
+    (
+        Trace {
+            rows,
+            frames,
+            overflows: 0,
+            run_end_ns,
+        },
+        counts,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// REQ-LAT-001 (#149, CI form): over generated press and frame
+    /// timelines (frames placed 0.05 to 12 ms after presses, inside the
+    /// removed allowance window, among them), check b passes if and only
+    /// if every press not stamped within 500 ms of `run_end_ns` has a raw
+    /// count from the press of at most 2; checks a, c and d hold; the
+    /// excluded presses are counted; every failing press is named with its
+    /// raw count. When the in-flight frame presented plays no part.
+    #[test]
+    fn req_lat_001_check_b_passes_iff_every_raw_count_is_at_most_two(tl in timeline()) {
+        let (t, counts) = build_timeline(&tl);
+        let v = evaluate(&t, &OK_SHUTDOWN, &params());
+        prop_assert!(v.a.passed(), "{}", v.report());
+        prop_assert!(v.c.passed(), "{}", v.report());
+        prop_assert!(v.d.passed(), "{}", v.report());
+        let excluded = counts.iter().filter(|c| c.1).count();
+        prop_assert_eq!(v.summary.excluded_presses, excluded);
+        // A run whose every press is excluded fails check b as before.
+        let ok = excluded < counts.len() && counts.iter().all(|&(n, ex)| ex || n <= 2);
+        prop_assert_eq!(v.b.passed(), ok, "{:?}\n{}", counts, v.report());
+        if excluded == 0 {
+            let max = counts.iter().map(|c| c.0).max().unwrap();
+            prop_assert_eq!(v.summary.max_frames_raw, max);
+        }
+        // Every press a failure names is a checked press with a raw count
+        // above 2, named with that count (the list is capped, so not every
+        // failing press need appear), and a failing count is named.
+        for (seq, &(n, ex)) in counts.iter().enumerate() {
+            let tag = format!("press #{seq} (");
+            for f in v.b.failures.iter().filter(|f| f.contains(&tag)) {
+                prop_assert!(!ex && n > 2, "press #{} raw {} named: {}", seq, n, f);
+                prop_assert!(
+                    f.contains(&format!(" {n} presented frames after the press")),
+                    "press #{} raw {}: {}", seq, n, f
+                );
+            }
+        }
+        if counts.iter().any(|&(n, ex)| !ex && n > 2) {
+            prop_assert!(
+                v.b.failures.iter().any(|f| f.contains("presented frames after the press")),
+                "{:?}", v.b
+            );
+        }
+    }
 }
 
 /// REQ-LAT-004, REQ-LAT-005 check a: a press whose bat never moved fails,
