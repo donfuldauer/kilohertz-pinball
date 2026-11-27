@@ -9383,3 +9383,76 @@ heap to the one image name keeps cargo, rustc and the runner's tools at normal s
   outside the hypothesis).
 - Passing the cdb commands inline with escaped quotes: rejected, because whether the nested
   quoting survives depends on cdb's own command-line parsing, which cannot be checked from Linux.
+
+## #209 KP-100 — WARP srgb_blend_gpu heap corruption: findings
+
+Failure under diagnosis: `ci` run 45721320162, job 139580336913, where two `srgb_blend_gpu` tests
+FAILED at +0.628 s and the process then exited with 0xc0000374 (STATUS_HEAP_CORRUPTION). Re-run
+job 139597766656 passed. Diagnostic workflow: `.github/workflows/diag-srgb-blend-warp.yml`.
+
+Both runs used the same runner image as the original failure (ImageOS win25-vs2026, ImageVersion
+20261116.315.1, Windows Server 2025 Datacenter 10.0.26100), wgpu v30.0.1, rustc 1.97.0, adapter
+Microsoft Basic Render Driver (Dx12, Cpu). The D3D12 debug layer (d3d12SDKLayers.dll
+10.0.26100.33648) was present. Page heap was enabled with full traces for the test exe only
+(gflags, IFEO GlobalFlag 0x02000000, disabled afterwards); cdb 10.0.26100.9457.
+
+| Run | Mode | Runs | Passes | Failures | Heap corruption | Page-heap faults |
+|---|---|---|---|---|---|---|
+| A (45936104929, head 44b0779) | as-is | 50 | 50 | 0 | 0 | n/a |
+| A | serial | 50 | 50 | 0 | 0 | n/a |
+| A | validation | 50 | 50 | 0 | 0 | n/a |
+| A | pageheap | 20 | 20 | 0 | 0 | 0 |
+| B (45937445524, head ebc43fe) | as-is | 200 | 200 | 0 | 0 | n/a |
+| B | serial | 200 | 200 | 0 | 0 | n/a |
+| B | validation | 200 | 200 | 0 | 0 | n/a |
+| B | pageheap | 20 | 20 | 0 | 0 | 0 |
+| Total | concurrent (as-is + validation) | 500 | 500 | 0 | 0 | n/a |
+| Total | serial | 250 | 250 | 0 | 0 | n/a |
+| Total | pageheap | 40 | 40 | 0 | 0 | 0 |
+| Total | all | 790 | 790 | 0 | 0 | 0 |
+
+In run A "pass" meant exit 0. In run B "pass" meant exit 0 and a libtest `test result: ok.`
+(tests_passed_total 600 in each of as-is, serial and validation; 60 under page heap). The
+validation leg recorded d3d12_errors=0, d3d12_warnings=0, validation_lines=0. Its debugger
+sub-runs report cdb_exit=0x8007006D while the tests inside them passed (tests=3/0/0); that is a
+cdb exit artefact of those extra runs, not a test result.
+
+**Decision:** The failure is not reproduced in 790 runs (500 concurrent, 250 serial, 40 under full
+page heap); observed rate 0/790. The earlier failure remains one occurrence in about 58 earlier
+WARP runs on the same image (about 1/850 counting these). No panic text and no page-heap stack
+were captured because nothing failed. Conclusion (d), not reproduced: no hypothesis is confirmed
+or excluded. Against the candidates:
+- (a) native fault in WARP / the D3D12 runtime: not confirmed, not excluded; with (c) it is the
+  remaining explanation.
+- (b) wgpu-hal dx12 / wgpu-core threading with one device used by three threads: not confirmed,
+  not excluded. Serial and concurrent runs show no difference, because neither failed.
+- (c) device loss, then panics and a heap fail-fast in teardown: not confirmed, not excluded.
+- Page heap and the debug layer found no corrupting write and no API misuse on this path in the
+  runs made. That weighs against a deterministic bug in `pin_render` or in wgpu's use of D3D12 on
+  this test, and leaves a rare native or runtime fault ((a) or (c)) as the remaining explanation.
+
+The test-serialising lock is NOT added. The issue adds it "only if serialising the tests removes
+the failure", and the data cannot show that. No test is changed (R10): `srgb_blend_gpu.rs` and
+`.github/workflows/**` are untouched.
+
+Upstream report: not filed, because no stack or panic text exists to report. If the failure
+recurs, the diagnostic workflow (dispatch from `main`, `runs` input) is the reproduction tool, and
+the upstream report should carry wgpu 30.0.1, rustc 1.97.0, windows-2025-vs2026 20261116.315.1,
+adapter Microsoft Basic Render Driver (Dx12, Cpu), the stack and the repro rate. The next WARP
+failure of `srgb_blend_gpu` in `ci` is handled by dispatching the diagnostic workflow, not by
+re-running blind.
+
+**Rationale:** A flake is not a root cause (R10). With 0/790 failures, a one-in-850 event is
+still plausible at the earlier rate (expected about 0.9 failures in 790 runs, so seeing none is
+unremarkable), so the runs cannot show that serialising helps. A lock added now would be
+unverified and could mask a real fault, and the verification criterion for a lock (50 of 50 green)
+would pass with or without it. Recording the rate and the reproduction route keeps the evidence
+usable if it recurs.
+
+**Alternatives:**
+- Add a serialising lock to `srgb_blend_gpu.rs` anyway: rejected; the data does not support it
+  and it would hide the signal.
+- Skip, ignore or loosen the tests on WARP: rejected (R10).
+- File an upstream wgpu or Microsoft report now: rejected; no stack, panic text or reproducer.
+- Run more diagnostic runs until a failure appears: rejected for this issue; at about 1/850 the
+  cost is high, and the dispatchable workflow remains for a recurrence.
