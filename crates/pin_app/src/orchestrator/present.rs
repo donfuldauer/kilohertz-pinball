@@ -82,6 +82,7 @@ use super::view::{TableRenderOptions, TableRenderer, TableVisuals, routes_for_wi
 use crate::ui::{MenuOverlay, MenuState};
 use arrayvec::ArrayVec;
 use pin_core::snapshot::FrameStateSnapshot;
+use pin_core::triple_buffer::TripleReader;
 use pin_render::displays::{DisplayRoute, MAX_PLAYERS};
 use pin_render::gpu::{
     GpuContext, LayerCompositor, LayerTarget, PRESENTER_JOIN_TIMEOUT, SurfaceOptions,
@@ -90,6 +91,7 @@ use pin_render::gpu::{
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// The 8-bit colour format of a surface the table renderer can draw.
 fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
@@ -1122,6 +1124,28 @@ impl AppSurfaces {
         snap: &FrameStateSnapshot,
         on_playfield: &mut dyn FnMut(SurfaceStatus),
     ) -> Vec<SurfaceStatus> {
+        let mut fixed = SnapshotLatch::new(snap);
+        self.render_latched(&mut fixed, on_playfield)
+    }
+
+    /// [`render_with_playfield_hook`](Self::render_with_playfield_hook)
+    /// with a late snapshot latch (#149, REQ-LAT-001): the first playfield
+    /// slot calls [`SnapshotLatch::latch`] immediately before it encodes
+    /// (for a direct surface after `get_current_texture` returned, which
+    /// can block; for a presenter-thread surface after a free frame slot
+    /// was taken), first waiting out the latch's minimum lag after the
+    /// previous playfield present ([`SnapshotLatch::late_wait`]; that
+    /// present is recorded here when the slot returns
+    /// [`SurfaceStatus::Presented`]), and every other slot draws
+    /// [`SnapshotLatch::drawn`]. A
+    /// playfield that is skipped, hidden, occluded or busy does not latch.
+    /// After the call, `latch.drawn()` is the snapshot the presented
+    /// playfield frame drew (the one a latency trace row must name).
+    pub fn render_latched(
+        &mut self,
+        latch: &mut SnapshotLatch<dyn SnapshotSource + '_>,
+        on_playfield: &mut dyn FnMut(SurfaceStatus),
+    ) -> Vec<SurfaceStatus> {
         let (queue, gpu_lock) = (&self.queue, &self.gpu_lock);
         let mut submit = |cb: wgpu::CommandBuffer| {
             let _g = lock_gpu(gpu_lock);
@@ -1132,7 +1156,9 @@ impl AppSurfaces {
             t.begin_frame();
         }
         let mut out = Vec::with_capacity(self.slots.len());
+        let mut playfield_latched = false;
         for s in &mut self.slots {
+            let when = slot_latch(s.role, &mut playfield_latched);
             let status = if s.role == SurfaceRole::Playfield {
                 let mut hook = PlayfieldHook::new(&mut *on_playfield);
                 let status = Self::render_slot(
@@ -1141,11 +1167,15 @@ impl AppSurfaces {
                     &self.gpu_lock,
                     self.timer.as_mut(),
                     s,
-                    snap,
+                    &mut *latch,
+                    when,
                     self.menu.as_deref_mut(),
                     &mut || hook.presented(),
                 );
                 hook.finish(status);
+                if when == SlotLatch::Late && status == SurfaceStatus::Presented {
+                    latch.presented(Instant::now());
+                }
                 status
             } else {
                 Self::render_slot(
@@ -1154,7 +1184,8 @@ impl AppSurfaces {
                     &self.gpu_lock,
                     self.timer.as_mut(),
                     s,
-                    snap,
+                    &mut *latch,
+                    when,
                     None,
                     &mut || {},
                 )
@@ -1188,7 +1219,8 @@ impl AppSurfaces {
         gpu_lock: &Mutex<()>,
         timer: Option<&mut GpuFrameTimer>,
         s: &mut Slot,
-        snap: &FrameStateSnapshot,
+        latch: &mut SnapshotLatch<dyn SnapshotSource + '_>,
+        when: SlotLatch,
         menu: Option<&mut MenuOverlay>,
         on_present: &mut dyn FnMut(),
     ) -> SurfaceStatus {
@@ -1212,7 +1244,8 @@ impl AppSurfaces {
                 d,
                 &mut s.renderer,
                 target,
-                snap,
+                latch,
+                when,
                 menu,
                 on_present,
             ),
@@ -1225,7 +1258,8 @@ impl AppSurfaces {
                     t,
                     &mut s.renderer,
                     target,
-                    snap,
+                    latch,
+                    when,
                     menu,
                 );
                 if t.dead {
@@ -1409,6 +1443,197 @@ impl<'h> PlayfieldHook<'h> {
     }
 }
 
+/// Where the render thread reads the latest simulation snapshot
+/// (REQ-LAT-001). The app's source is the sim's triple-buffer reader
+/// (wait-free, lock-free, allocation-free: the render thread never blocks
+/// the sim thread, R4); a fixed snapshot is a source that never changes.
+pub trait SnapshotSource {
+    /// The latest published snapshot.
+    fn latest(&mut self) -> &FrameStateSnapshot;
+}
+
+impl SnapshotSource for TripleReader<FrameStateSnapshot> {
+    fn latest(&mut self) -> &FrameStateSnapshot {
+        self.read()
+    }
+}
+
+impl SnapshotSource for &FrameStateSnapshot {
+    fn latest(&mut self) -> &FrameStateSnapshot {
+        self
+    }
+}
+
+/// The render thread's snapshot latch (#149, REQ-LAT-001, REQ-LAT-006).
+///
+/// The render loop latches once at the top of each iteration (for the
+/// display commands, the menu and the debug view) and the table presenter
+/// latches again for the first playfield slot immediately before it
+/// encodes, after the playfield surface's acquire returned
+/// ([`AppSurfaces::render_latched`]). So a frame shows the newest snapshot
+/// published before its encode, not the one published when the previous
+/// present returned: a press that lands just before a present returns is
+/// shown by the next frame once the bat has moved, instead of the frame
+/// after it. The latch only moves the read later inside the frame; the
+/// playfield still queues at most one frame ahead
+/// (`desired_maximum_frame_latency` 1, REQ-LAT-006).
+///
+/// [`drawn`](Self::drawn) is the snapshot of the last latch, which is the
+/// snapshot a presented playfield frame drew; [`last_tick`](Self::last_tick)
+/// is its tick. A latch whose tick is lower than the previous latch's is
+/// counted as non-monotonic ([`take_non_monotonic`](Self::take_non_monotonic)).
+/// Each latch copies the snapshot (a few kilobytes, on the stack of the
+/// render thread; no heap allocation).
+///
+/// **Minimum lag.** When the playfield's acquire returns right after the
+/// previous present (a software adapter, whose acquire does not wait for
+/// the display), a latch at that moment still misses a press that landed
+/// just before that present: its bat is raised only a few ticks later. So
+/// the late latch is made no earlier than [`min_lag`](Self::with_min_lag)
+/// after the previous playfield present returned
+/// ([`late_wait`](Self::late_wait); the render thread sleeps the rest,
+/// never the sim thread). The app uses [`LATE_LATCH_MIN_LAG`]; a latch made
+/// with [`new`](Self::new) has no minimum lag.
+pub struct SnapshotLatch<S: ?Sized> {
+    drawn: FrameStateSnapshot,
+    last_tick: u64,
+    non_monotonic: u64,
+    latches: u64,
+    min_lag: Duration,
+    last_present: Option<Instant>,
+    source: S,
+}
+
+/// The app's minimum lag of the late latch after the previous playfield
+/// present (#149, REQ-LAT-001): the longest time from a press to the first
+/// snapshot that shows its bat raised 1 degree that the windowed harness's
+/// check a accepts (REQ-LAT-004's one tick plus 2 ms of forwarding and
+/// wake-up, then at most 8 ticks from the applying tick to the 1 degree
+/// raise): 11 ms. A press that lands just before a present returns is then
+/// drawn by the next frame. Only the time from the previous present to the
+/// acquire's return is topped up, so an acquire that already waited (a
+/// display-paced surface) adds nothing.
+pub const LATE_LATCH_MIN_LAG: Duration = Duration::from_millis(11);
+
+impl<S: SnapshotSource> SnapshotLatch<S> {
+    /// A latch over `source` that has not latched yet: [`drawn`](Self::drawn)
+    /// is the default snapshot (tick 0) and [`last_tick`](Self::last_tick) 0.
+    pub fn new(source: S) -> Self {
+        Self {
+            drawn: FrameStateSnapshot::default(),
+            last_tick: 0,
+            non_monotonic: 0,
+            latches: 0,
+            min_lag: Duration::ZERO,
+            last_present: None,
+            source,
+        }
+    }
+
+    /// This latch with a minimum lag of its late latch after the previous
+    /// playfield present ([`late_wait`](Self::late_wait)).
+    pub fn with_min_lag(mut self, min_lag: Duration) -> Self {
+        self.min_lag = min_lag;
+        self
+    }
+}
+
+impl<S: SnapshotSource + ?Sized> SnapshotLatch<S> {
+    /// Reads the latest snapshot now and makes it the drawn one: updates
+    /// [`last_tick`](Self::last_tick) and counts a tick lower than the
+    /// previous latch's as non-monotonic.
+    pub fn latch(&mut self) -> &FrameStateSnapshot {
+        self.drawn = *self.source.latest();
+        if self.drawn.tick < self.last_tick {
+            self.non_monotonic += 1;
+        }
+        self.last_tick = self.drawn.tick;
+        self.latches += 1;
+        &self.drawn
+    }
+
+    /// The snapshot of the last [`latch`](Self::latch) (the default
+    /// snapshot before the first).
+    pub fn drawn(&self) -> &FrameStateSnapshot {
+        &self.drawn
+    }
+
+    /// The tick of the last latch (0 before the first).
+    pub fn last_tick(&self) -> u64 {
+        self.last_tick
+    }
+
+    /// The number of latches since the latch was made.
+    pub fn latches(&self) -> u64 {
+        self.latches
+    }
+
+    /// Non-monotonic latches counted since the last call (then reset).
+    pub fn take_non_monotonic(&mut self) -> u64 {
+        std::mem::take(&mut self.non_monotonic)
+    }
+
+    /// Records that the playfield presented at `at` (the start of the next
+    /// late latch's minimum lag).
+    pub fn presented(&mut self, at: Instant) {
+        self.last_present = Some(at);
+    }
+
+    /// How long a late latch at `now` waits first: the rest of the minimum
+    /// lag after the previous playfield present (zero without a minimum
+    /// lag, before the first present, or once the lag has passed).
+    pub fn late_wait(&self, now: Instant) -> Duration {
+        match self.last_present {
+            Some(p) => (p + self.min_lag).saturating_duration_since(now),
+            None => Duration::ZERO,
+        }
+    }
+}
+
+/// Which snapshot a slot draws (#149): the first playfield slot of a frame
+/// latches late (immediately before its encode, after its acquire); every
+/// other slot draws the snapshot already latched.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SlotLatch {
+    /// Re-read the latest snapshot just before encoding.
+    Late,
+    /// Draw the snapshot already latched.
+    Latched,
+}
+
+impl SlotLatch {
+    /// The snapshot this slot draws from `latch`.
+    fn snapshot<'l>(
+        self,
+        latch: &'l mut SnapshotLatch<dyn SnapshotSource + '_>,
+    ) -> &'l FrameStateSnapshot {
+        match self {
+            Self::Late => {
+                // The render thread waits (the sim thread keeps ticking and
+                // publishing through the triple buffer).
+                let wait = latch.late_wait(Instant::now());
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                }
+                latch.latch()
+            }
+            Self::Latched => latch.drawn(),
+        }
+    }
+}
+
+/// The latch kind of each slot of a frame, in slot order: only the first
+/// playfield slot latches late (so a frame's playfield, its trace row and
+/// the slots drawn after it share one snapshot).
+fn slot_latch(role: SurfaceRole, playfield_latched: &mut bool) -> SlotLatch {
+    if role == SurfaceRole::Playfield && !*playfield_latched {
+        *playfield_latched = true;
+        SlotLatch::Late
+    } else {
+        SlotLatch::Latched
+    }
+}
+
 /// Presents, then calls `on_present`, then (on a suboptimal surface)
 /// reconfigures: the present-time hook (REQ-LAT-003) is never delayed by a
 /// reconfigure, which can block.
@@ -1437,7 +1662,8 @@ fn render_direct(
     d: &mut Direct,
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
-    snap: &FrameStateSnapshot,
+    latch: &mut SnapshotLatch<dyn SnapshotSource + '_>,
+    when: SlotLatch,
     menu: Option<&mut MenuOverlay>,
     on_present: &mut dyn FnMut(),
 ) -> SurfaceStatus {
@@ -1457,6 +1683,9 @@ fn render_direct(
         wgpu::CurrentSurfaceTexture::Occluded => return SurfaceStatus::Occluded,
         _ => return SurfaceStatus::Skipped,
     };
+    // The late latch (#149): the acquire has returned, so the newest
+    // snapshot is read just before the frame is encoded.
+    let snap = when.snapshot(latch);
     let view = frame
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1506,7 +1735,8 @@ fn render_threaded(
     t: &mut Threaded,
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
-    snap: &FrameStateSnapshot,
+    latch: &mut SnapshotLatch<dyn SnapshotSource + '_>,
+    when: SlotLatch,
     menu: Option<&mut MenuOverlay>,
 ) -> SurfaceStatus {
     let handoff = t.presenter.handoff();
@@ -1527,6 +1757,7 @@ fn render_threaded(
         handoff.give_back(frame);
         return SurfaceStatus::Skipped;
     };
+    let snap = when.snapshot(latch);
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("presenter-thread frame"),
@@ -2210,5 +2441,184 @@ mod tests {
         );
         drop(r);
         assert_eq!(guard.strong_count(), 1);
+    }
+
+    /// A fake snapshot source whose tick advances between reads: read `i`
+    /// returns `ticks[i]` (the last one once exhausted), counting reads.
+    struct AdvancingSource {
+        ticks: Vec<u64>,
+        reads: usize,
+        snap: FrameStateSnapshot,
+    }
+
+    impl AdvancingSource {
+        fn new(ticks: &[u64]) -> Self {
+            Self {
+                ticks: ticks.to_vec(),
+                reads: 0,
+                snap: FrameStateSnapshot::default(),
+            }
+        }
+    }
+
+    impl SnapshotSource for AdvancingSource {
+        fn latest(&mut self) -> &FrameStateSnapshot {
+            let i = self.reads.min(self.ticks.len() - 1);
+            self.reads += 1;
+            self.snap.tick = self.ticks[i];
+            &self.snap
+        }
+    }
+
+    /// REQ-LAT-001 (#149): the sim publishes tick 16 between the early
+    /// latch (tick 10, top of the iteration) and the playfield's late latch
+    /// (after its acquire): the frame draws tick 16, and `drawn` and
+    /// `last_tick` name it (the snapshot the trace row records).
+    #[test]
+    fn req_lat_001_late_latch_draws_the_later_snapshot() {
+        let mut latch = SnapshotLatch::new(AdvancingSource::new(&[10, 16]));
+        assert_eq!(latch.last_tick(), 0);
+        assert_eq!(latch.drawn().tick, 0);
+        assert_eq!(latch.latch().tick, 10);
+        let dynl: &mut SnapshotLatch<dyn SnapshotSource> = &mut latch;
+        assert_eq!(SlotLatch::Late.snapshot(dynl).tick, 16);
+        assert_eq!(dynl.drawn().tick, 16);
+        assert_eq!(dynl.last_tick(), 16);
+        assert_eq!(dynl.latches(), 2);
+        assert_eq!(dynl.take_non_monotonic(), 0);
+    }
+
+    /// REQ-LAT-001: a slot that draws the latched snapshot does not read
+    /// the source again, so the slots after the playfield draw the
+    /// playfield's snapshot.
+    #[test]
+    fn req_lat_001_latched_slot_does_not_reread() {
+        let mut latch = SnapshotLatch::new(AdvancingSource::new(&[3, 7, 11]));
+        latch.latch();
+        let dynl: &mut SnapshotLatch<dyn SnapshotSource> = &mut latch;
+        assert_eq!(SlotLatch::Late.snapshot(dynl).tick, 7);
+        assert_eq!(SlotLatch::Latched.snapshot(dynl).tick, 7);
+        assert_eq!(SlotLatch::Latched.snapshot(dynl).tick, 7);
+        assert_eq!(latch.source.reads, 2);
+    }
+
+    /// REQ-LAT-001: a late latch whose tick is below the previous latch's
+    /// is still counted as non-monotonic (once; the count resets when
+    /// taken), and `last_tick` follows the snapshot actually drawn.
+    #[test]
+    fn req_lat_001_late_latch_counts_a_non_monotonic_read() {
+        let mut latch = SnapshotLatch::new(AdvancingSource::new(&[20, 18, 25]));
+        latch.latch();
+        let dynl: &mut SnapshotLatch<dyn SnapshotSource> = &mut latch;
+        assert_eq!(SlotLatch::Late.snapshot(dynl).tick, 18);
+        assert_eq!(dynl.last_tick(), 18);
+        assert_eq!(dynl.take_non_monotonic(), 1);
+        assert_eq!(dynl.take_non_monotonic(), 0);
+        assert_eq!(dynl.latch().tick, 25);
+        assert_eq!(dynl.take_non_monotonic(), 0);
+    }
+
+    /// REQ-LAT-001: only the first playfield slot of a frame latches late;
+    /// a backglass drawn before it and every slot after it draw the
+    /// latched snapshot.
+    #[test]
+    fn req_lat_001_only_the_first_playfield_slot_latches_late() {
+        let mut latched = false;
+        let kinds: Vec<SlotLatch> = [
+            SurfaceRole::Backglass,
+            SurfaceRole::Playfield,
+            SurfaceRole::Score,
+            SurfaceRole::Playfield,
+        ]
+        .into_iter()
+        .map(|r| slot_latch(r, &mut latched))
+        .collect();
+        assert_eq!(
+            kinds,
+            [
+                SlotLatch::Latched,
+                SlotLatch::Late,
+                SlotLatch::Latched,
+                SlotLatch::Latched
+            ]
+        );
+        let mut none = false;
+        assert_eq!(
+            slot_latch(SurfaceRole::Score, &mut none),
+            SlotLatch::Latched
+        );
+        assert!(!none);
+    }
+
+    /// REQ-LAT-001, REQ-LAT-006: the app's source is the sim's triple
+    /// buffer (wait-free; the render thread never blocks the sim): a value
+    /// published after the early latch is what the late latch draws, with
+    /// no frame of queueing added (the latch only moves the read inside
+    /// the frame; the playfield keeps `desired_maximum_frame_latency` 1).
+    #[test]
+    fn req_lat_006_late_latch_reads_the_triple_buffer_without_a_queued_frame() {
+        let (mut writer, reader) = pin_core::TripleBuffer::new(FrameStateSnapshot::default());
+        let mut latch = SnapshotLatch::new(reader);
+        let mut s = FrameStateSnapshot {
+            tick: 5,
+            ..Default::default()
+        };
+        writer.publish(s);
+        assert_eq!(latch.latch().tick, 5);
+        s.tick = 9;
+        writer.publish(s);
+        let dynl: &mut SnapshotLatch<dyn SnapshotSource> = &mut latch;
+        assert_eq!(SlotLatch::Late.snapshot(dynl).tick, 9);
+        assert_eq!(dynl.drawn().tick, 9);
+        assert_eq!(frame_latency_for(SurfaceRole::Playfield), 1);
+    }
+
+    /// REQ-LAT-001: a fixed snapshot is a source (the
+    /// [`AppSurfaces::render_with_playfield_hook`] path): latching it
+    /// draws that snapshot.
+    #[test]
+    fn req_lat_001_fixed_snapshot_source() {
+        let s = FrameStateSnapshot {
+            tick: 42,
+            ..Default::default()
+        };
+        let mut latch = SnapshotLatch::new(&s);
+        let dynl: &mut SnapshotLatch<dyn SnapshotSource + '_> = &mut latch;
+        assert_eq!(SlotLatch::Late.snapshot(dynl), &s);
+        assert_eq!(dynl.last_tick(), 42);
+    }
+
+    /// REQ-LAT-001 (#149): the late latch waits out the minimum lag after
+    /// the previous playfield present and no more: the full lag right
+    /// after the present, the rest part-way, nothing once it has passed,
+    /// before the first present, or without a minimum lag (constructed
+    /// instants; nothing sleeps).
+    #[test]
+    fn req_lat_001_late_wait_tops_up_the_minimum_lag() {
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let mut latch = SnapshotLatch::new(AdvancingSource::new(&[1])).with_min_lag(ms(11));
+        assert_eq!(latch.late_wait(t0), Duration::ZERO);
+        latch.presented(t0);
+        assert_eq!(latch.late_wait(t0), ms(11));
+        assert_eq!(latch.late_wait(t0 + ms(4)), ms(7));
+        assert_eq!(latch.late_wait(t0 + ms(11)), Duration::ZERO);
+        assert_eq!(latch.late_wait(t0 + ms(30)), Duration::ZERO);
+        let mut none = SnapshotLatch::new(AdvancingSource::new(&[1]));
+        none.presented(t0);
+        assert_eq!(none.late_wait(t0), Duration::ZERO);
+    }
+
+    /// REQ-LAT-001: the app's minimum lag covers check a's longest
+    /// press-to-raise time (one tick + 2 ms forwarding, then 8 ticks to
+    /// the 1 degree raise) and stays well inside two 60 Hz refresh
+    /// intervals.
+    #[test]
+    fn req_lat_001_app_minimum_lag_covers_the_press_to_raise_bound() {
+        assert_eq!(
+            LATE_LATCH_MIN_LAG,
+            Duration::from_millis(1 + 2) + Duration::from_millis(8)
+        );
+        assert!(LATE_LATCH_MIN_LAG < Duration::from_micros(33_333));
     }
 }
