@@ -172,6 +172,62 @@ class ReleaseWorkflow(unittest.TestCase):
             self.assertNotRegex(cond, r"==\s*['\"]pull_request['\"]")
             self.assertNotRegex(self.jobs[j], r"(?m)^\s*if:.*workflow_dispatch'\s*\|\|")
 
+    # --- KP-060 / SPEC section 4 subphase 7.2: in-workflow artifact check -----------------
+
+    def package_steps(self):
+        """The `package` job's steps as text blocks (split at `      - ` items)."""
+        parts = re.split(r"(?m)^      - ", self.jobs["package"])
+        return ["      - " + p for p in parts[1:]]
+
+    def step_index(self, pred):
+        return [i for i, st in enumerate(self.package_steps()) if pred(st)]
+
+    def test_package_job_checks_artifacts_before_upload(self):
+        """KP-060 / SPEC 4 7.2: package.py --check runs on every leg between packaging and upload."""
+        steps = self.package_steps()
+        pack = self.step_index(lambda st: "scripts/package.py" in st and "--check" not in st)
+        check = self.step_index(lambda st: "scripts/package.py" in st and "--check" in st)
+        upload = self.step_index(lambda st: "actions/upload-artifact@v4" in st)
+        self.assertEqual(len(pack), 1)
+        self.assertEqual(len(check), 1)
+        self.assertEqual(len(upload), 1)
+        self.assertTrue(pack[0] < check[0] < upload[0], (pack, check, upload))
+        st = steps[check[0]]
+        self.assertIn("--target ${{ matrix.target }}", st)
+        self.assertNotRegex(st, r"(?m)^\s+if:")
+        self.assertRegex(st, r"shell:\s*bash")
+        self.assertRegex(st, r"set -[a-z]*e[a-z]*u?[a-z]*o pipefail|pipefail")
+        self.assertIn("tee", st)
+        self.assertIn("GITHUB_STEP_SUMMARY", st)
+        self.assertIn("matrix.platform", st)
+
+    def test_package_job_macos_slices_and_signature_step(self):
+        """KP-060 / SPEC 4 7.2: macOS-only step verifies both slices and the .app signature before upload."""
+        steps = self.package_steps()
+        mac = self.step_index(lambda st: "lipo" in st and "codesign" in st)
+        upload = self.step_index(lambda st: "actions/upload-artifact@v4" in st)
+        check = self.step_index(lambda st: "--check" in st and "scripts/package.py" in st)
+        self.assertEqual(len(mac), 1)
+        self.assertTrue(check[0] < mac[0] < upload[0])
+        st = steps[mac[0]]
+        self.assertRegex(st, r"(?m)^\s+if:\s*runner\.os == 'macOS'\s*$")
+        self.assertRegex(st, r"shell:\s*bash")
+        self.assertIn("pipefail", st)
+        self.assertRegex(st, r"ditto -x -k")
+        self.assertRegex(st, r"lipo -archs")
+        self.assertIn("x86_64", st)
+        self.assertIn("arm64", st)
+        self.assertRegex(st, r"codesign --verify[^\n]*--deep")
+        self.assertRegex(st, r"codesign --verify[^\n]*--strict")
+        self.assertIn("GITHUB_STEP_SUMMARY", st)
+        self.assertNotRegex(st, r"extractall")
+
+    def test_dry_run_job_does_not_use_check(self):
+        """KP-060: the PR dry-run job deletes the archive, so it never runs --check."""
+        for name, t in self.jobs.items():
+            if "--dry-run" in t:
+                self.assertNotRegex(t, r"scripts/package\.py[^\n]*--check", name)
+
 
 if __name__ == "__main__":
     unittest.main()
