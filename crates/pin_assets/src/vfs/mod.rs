@@ -83,6 +83,16 @@ impl Vfs {
                 path.display()
             )));
         }
+        // R11: a FIFO, device or socket named `x.zip` must never be opened (a
+        // FIFO open blocks). `metadata` followed symlinks, so a link to a
+        // regular archive still passes. A narrow type-change race after this
+        // check is accepted.
+        if !meta.is_file() {
+            return Err(AssetError::Io(format!(
+                "{}: not a regular file",
+                path.display()
+            )));
+        }
         // An archive larger than its uncompressed cap (plus headers) is pointless.
         if meta.len() > crate::zip::archive_cap(&limits) {
             return Err(AssetError::TotalTooLarge(meta.len()));

@@ -372,6 +372,50 @@ impl InputRouter {
         }
     }
 
+    /// Releases everything this router holds, at `ts_ns` (an input-profile
+    /// switch replaces the router; the new one knows none of these holds, so
+    /// it would never send their releases). Sends, in order: any releases
+    /// still owed from an earlier gamepad profile swap, one button release
+    /// per held cabinet input (in the order [`HeldInputs::release_all`]
+    /// returns them), then, in [`CabinetAxis::ALL`] order, one 0.0 event for
+    /// each cabinet axis this router last left away from 0.0: a nudge axis
+    /// whose digital-nudge value is non-zero, or any axis (plunger, nudge,
+    /// flipper travel) a routed gamepad last drove to a non-zero value. An
+    /// axis both sources drive gets one event. The digital nudge is reset,
+    /// so a later [`poll`](Self::poll) does not resume it, and every pad's
+    /// driven-axis state is cleared. Counted in [`RouterStats`] like
+    /// [`poll`](Self::poll) and key edges count them. A second call sends
+    /// nothing.
+    pub fn release_all(&mut self, ts_ns: u64, out: &mut impl FnMut(InputEvent)) {
+        self.flush_pending(ts_ns, out);
+        for input in self.held.release_all() {
+            self.stats.edges += 1;
+            out(InputEvent::button(ts_ns, input, false));
+        }
+        self.nudge = DigitalNudge::new(DIGITAL_NUDGE_STRENGTH, DIGITAL_NUDGE_MS);
+        for (slot, axis) in CabinetAxis::ALL.into_iter().enumerate() {
+            let mut driven = false;
+            for p in &mut self.pads {
+                driven |= p.emitted[slot].take().is_some();
+            }
+            let digital = match axis {
+                CabinetAxis::NudgeX => Some(0),
+                CabinetAxis::NudgeY => Some(1),
+                _ => None,
+            };
+            if let Some(k) = digital
+                && self.nudge_out[k] != 0.0
+            {
+                self.nudge_out[k] = 0.0;
+                driven = true;
+            }
+            if driven {
+                self.stats.axes += 1;
+                out(InputEvent::axis(ts_ns, axis, 0.0));
+            }
+        }
+    }
+
     /// A key changed state (`scancode` = `SDL_Scancode`).
     pub fn key(
         &mut self,
@@ -559,5 +603,164 @@ mod tests {
             r.queue(Pending::Button(i));
         }
         assert_eq!(r.pending.len(), MAX_PENDING);
+    }
+    /// PR #197 finding 1 (issue #84 live input-profile change; HeldInputs
+    /// "profile switch"): `release_all` releases every held input in
+    /// `HeldInputs::release_all` order, zeroes a non-zero nudge, and a second
+    /// call emits nothing.
+    #[test]
+    fn release_all_releases_holds_and_zeroes_nudge() {
+        let profile =
+            pin_input::profiles::builtin_profile("xarcade_keyboard").expect("built-in profile");
+        let mut r = InputRouter::with_keyboard_profile(profile);
+        let mut sink = Vec::new();
+        // Space (launch), LShift (left flipper), C (left flipper alias),
+        // LAlt (action) and Left arrow (nudge left).
+        for sc in [44, 225, 6, 226, 80] {
+            r.key(1_000_000, sc, true, &mut |e| sink.push(e));
+        }
+        assert!(
+            sink.iter().any(|e| matches!(
+                e.kind,
+                InputEventKind::Axis { axis: CabinetAxis::NudgeX, value } if value != 0.0
+            )),
+            "nudge started: {sink:?}"
+        );
+        let before = r.stats();
+        let mut expected: Vec<CabinetInput> = CabinetInput::ALL
+            .into_iter()
+            .filter(|i| r.held().is_held(*i))
+            .collect();
+        assert_eq!(expected.len(), 3);
+        let mut out = Vec::new();
+        r.release_all(2_000_000, &mut |e| out.push(e));
+        let mut want: Vec<InputEvent> = expected
+            .drain(..)
+            .map(|i| InputEvent::button(2_000_000, i, false))
+            .collect();
+        want.push(InputEvent::axis(2_000_000, CabinetAxis::NudgeX, 0.0));
+        assert_eq!(out, want);
+        assert!(CabinetInput::ALL.iter().all(|i| !r.held().is_held(*i)));
+        let after = r.stats();
+        assert_eq!(after.edges, before.edges + 3);
+        assert_eq!(after.axes, before.axes + 1);
+        // Nothing left: a second call and a later poll emit nothing.
+        let mut again = Vec::new();
+        r.release_all(3_000_000, &mut |e| again.push(e));
+        r.poll(3_000_000, &mut |e| again.push(e));
+        assert_eq!(again, []);
+        assert_eq!(r.stats(), after);
+    }
+    /// A gamepad profile driving the plunger (left stick Y), both nudge axes
+    /// (right stick) and a digital nudge (West button).
+    fn analog_pad_profile() -> DeviceProfile {
+        pin_input::parse_profile(
+            r#"
+id = "analog_test"
+name = "Analog test"
+[buttons]
+launch = [ "button:south" ]
+[[axes]]
+raw = "left_y"
+axis = "plunger"
+from = 0.0
+to = 1.0
+[[axes]]
+raw = "right_x"
+axis = "nudge_x"
+from = -1.0
+to = 1.0
+[[axes]]
+raw = "right_y"
+axis = "nudge_y"
+from = -1.0
+to = 1.0
+[nudge]
+left = [ "button:west" ]
+"#,
+        )
+        .expect("test profile parses")
+    }
+
+    fn last_axis(events: &[InputEvent], axis: CabinetAxis) -> Option<f32> {
+        events.iter().rev().find_map(|e| match e.kind {
+            InputEventKind::Axis { axis: a, value } if a == axis => Some(value),
+            _ => None,
+        })
+    }
+
+    /// Gate #163 round 11 (review body, input_router.rs `release_all`; issue
+    /// #84 live input-profile change): a router swap neutralises every analog
+    /// axis a gamepad left non-zero (plunger, nudge), once per axis even when
+    /// two pads and the digital nudge drive it, after the pending releases
+    /// and button releases; counted in `RouterStats`; a second call sends
+    /// nothing.
+    #[test]
+    fn release_all_neutralises_gamepad_axes_once() {
+        let profile = analog_pad_profile();
+        let mut r = InputRouter::new();
+        assert_eq!(r.add_gamepad_with_profile(1, &profile), Some(1));
+        assert_eq!(r.add_gamepad_with_profile(2, &profile), Some(2));
+        let mut sink = Vec::new();
+        let mut push = |e: InputEvent| sink.push(e);
+        r.axis(1_000_000, 1, GamepadAxis::LeftY, 32767, &mut push);
+        r.axis(1_000_000, 2, GamepadAxis::LeftY, 32767, &mut push);
+        r.axis(1_000_000, 1, GamepadAxis::RightX, 32767, &mut push);
+        r.axis(1_000_000, 2, GamepadAxis::RightY, -32768, &mut push);
+        r.button(1_000_000, 1, GamepadButton::West, true, &mut push);
+        r.button(1_000_000, 2, GamepadButton::South, true, &mut push);
+        assert!(last_axis(&sink, CabinetAxis::Plunger).is_some_and(|v| v != 0.0));
+        assert!(last_axis(&sink, CabinetAxis::NudgeX).is_some_and(|v| v != 0.0));
+        assert!(last_axis(&sink, CabinetAxis::NudgeY).is_some_and(|v| v != 0.0));
+        let before = r.stats();
+        let mut out = Vec::new();
+        r.release_all(5_000_000, &mut |e| out.push(e));
+        assert_eq!(
+            out,
+            [
+                InputEvent::button(5_000_000, CabinetInput::Launch, false),
+                InputEvent::axis(5_000_000, CabinetAxis::Plunger, 0.0),
+                InputEvent::axis(5_000_000, CabinetAxis::NudgeX, 0.0),
+                InputEvent::axis(5_000_000, CabinetAxis::NudgeY, 0.0),
+            ]
+        );
+        let after = r.stats();
+        assert_eq!(after.edges, before.edges + 1);
+        assert_eq!(after.axes, before.axes + 3);
+        assert!(r.pads.iter().all(|p| p.emitted.iter().all(Option::is_none)));
+        let mut again = Vec::new();
+        r.release_all(6_000_000, &mut |e| again.push(e));
+        r.poll(7_000_000, &mut |e| again.push(e));
+        assert_eq!(again, []);
+        assert_eq!(r.stats(), after);
+    }
+
+    /// Round 11: a gamepad plunger alone gives exactly one neutral plunger
+    /// event; an axis already back at 0.0 gives none.
+    #[test]
+    fn release_all_neutralises_a_lone_gamepad_plunger() {
+        let profile = analog_pad_profile();
+        let mut r = InputRouter::new();
+        r.add_gamepad_with_profile(3, &profile);
+        let mut sink = Vec::new();
+        r.axis(1_000_000, 3, GamepadAxis::LeftY, 32767, &mut |e| {
+            sink.push(e)
+        });
+        r.axis(1_000_000, 3, GamepadAxis::RightX, 32767, &mut |e| {
+            sink.push(e)
+        });
+        r.axis(2_000_000, 3, GamepadAxis::RightX, 0, &mut |e| sink.push(e));
+        assert_eq!(last_axis(&sink, CabinetAxis::NudgeX), Some(0.0));
+        let axes = r.stats().axes;
+        let mut out = Vec::new();
+        r.release_all(3_000_000, &mut |e| out.push(e));
+        assert_eq!(
+            out,
+            [InputEvent::axis(3_000_000, CabinetAxis::Plunger, 0.0)]
+        );
+        assert_eq!(r.stats().axes, axes + 1);
+        let mut again = Vec::new();
+        r.release_all(4_000_000, &mut |e| again.push(e));
+        assert_eq!(again, []);
     }
 }

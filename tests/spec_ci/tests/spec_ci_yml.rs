@@ -489,9 +489,20 @@ fn job_text(id: &str) -> String {
     text[start..end].to_owned()
 }
 
-/// Subphase 2.5 filled the 1.2 placeholder: the golden replay-hash check (D9).
+/// The committed x86_64-linux golden of the replay-hash fixture (D9, KP-069).
+const GOLDEN: &str = "crates/pin_sim/tests/fixtures/replay_table.golden";
+/// The one place the replay-hash legs share the record / replay / golden logic (KP-069).
+const ASSERT_SCRIPT: &str = "scripts/ci/replay_hash_assert.sh";
+
+fn assert_script_text() -> String {
+    std::fs::read_to_string(repo_root().join(ASSERT_SCRIPT))
+        .unwrap_or_else(|e| panic!("{ASSERT_SCRIPT}: {e}"))
+}
+
+/// Subphase 2.5 filled the 1.2 placeholder: the golden replay-hash check (D9). KP-069 (SPEC §0
+/// row D9, §2.4; PROCESS R3): every leg also asserts the committed x86_64-linux golden.
 #[test]
-fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
+fn replay_hash_records_replays_and_asserts_the_golden_on_every_os() {
     let [lin, cross] = family("replay-hash");
     for os in Os::ALL {
         assert!(
@@ -499,14 +510,34 @@ fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
             "replay-hash must run on {os:?}"
         );
     }
-    for (j, text_id) in [(lin, "replay-hash"), (cross, "replay-hash-cross")] {
+    for (j, text_id) in [
+        (lin, "replay-hash"),
+        (cross, "replay-hash-cross"),
+        (job("replay-hash-aarch64"), "replay-hash-aarch64"),
+    ] {
         replay_hash_job_checks(&j, text_id);
+    }
+    // No job compares one leg's output with another's: each leg compares with the committed
+    // golden. Only the pr-checks aggregator may list a replay-hash job (it reads results, not
+    // hashes), no replay-hash job exports outputs, and no expression reads one.
+    for j in ci().jobs().into_iter().filter(|j| j.id != "pr-checks") {
+        assert!(
+            !j.needs().iter().any(|n| n.starts_with("replay-hash")),
+            "job `{}` consumes a replay-hash job via needs: {:?}",
+            j.id,
+            j.needs()
+        );
+    }
+    for id in ["replay-hash", "replay-hash-cross", "replay-hash-aarch64"] {
+        assert!(
+            !job_text(id).contains("\n    outputs:"),
+            "{id} must not export the hash as a job output"
+        );
     }
     let all = workflow_text("ci.yml");
     assert!(
-        !all.lines()
-            .any(|l| l.trim_start().starts_with("needs:") && (l.contains("replay-hash"))),
-        "no job may consume (compare) the per-OS replay hashes"
+        !all.contains("needs.replay-hash"),
+        "no expression may read a replay-hash job's outputs"
     );
 }
 
@@ -520,43 +551,366 @@ fn replay_hash_job_checks(j: &Job, text_id: &str) {
         "want `cargo build --release -p pin_sim`, got {builds:?}"
     );
     let text = job_text(text_id);
+    // Record, 10 replays and the golden comparison live in the assert script; each leg runs it.
     assert!(
-        script.contains("--record-inputs") && script.contains("--ticks"),
-        "replay-hash must record the fixture:\n{script}"
+        script.contains(&format!("bash {ASSERT_SCRIPT} target/")),
+        "{text_id} must run {ASSERT_SCRIPT} on its pin_sim:\n{script}"
     );
     assert!(
-        text.contains("10000") || text.contains("10_000"),
-        "replay-hash must record 10 000 ticks:\n{text}"
+        text.contains("FIXTURE: crates/pin_sim/tests/fixtures/replay_table")
+            && (text.contains("TICKS: \"10000\"") || text.contains("TICKS: \"10_000\"")),
+        "{text_id} must record the fixture for 10 000 ticks:\n{text}"
+    );
+    // A matrix job runs every OS leg to the end: one failing OS must not cancel the others
+    // (the old `fail-fast: false` assertion, restored under KP-069). Jobs without a
+    // `strategy.matrix` (replay-hash-aarch64) have nothing to cancel and are not checked.
+    if text.contains("\n    strategy:") && text.contains("\n      matrix:") {
+        assert!(
+            text.contains("fail-fast: false"),
+            "one OS must not cancel the others: {text_id} must set `fail-fast: false`:\n{text}"
+        );
+    }
+    // Seam digests: the test runs with --nocapture and its printed lines are checked.
+    let seam = cargo_lines(&script, "test");
+    assert!(
+        seam.iter()
+            .any(|l| selected_packages(l).iter().any(|p| p == "pin_physics")
+                && l.contains("--test ball_seam_bitident")
+                && l.contains("--release")
+                && l.contains("--nocapture")),
+        "{text_id} must run ball_seam_bitident:\n{script}"
     );
     assert!(
-        script.contains("--replay-inputs"),
-        "replay-hash must replay the recording:\n{script}"
+        script.contains("set -euo pipefail") && script.contains("| tee \"$log\""),
+        "{text_id}: the seam output is captured with tee and pipe failures are not masked:\n{script}"
     );
     assert!(
-        ["1 2 3 4 5 6 7 8 9 10", "seq 1 10", "seq 10", "{1..10}"]
+        script.contains(&format!("bash {ASSERT_SCRIPT} --seam-digests \"$log\"")),
+        "{text_id} must check the printed seam digests:\n{script}"
+    );
+    assert!(
+        !text.contains("continue-on-error"),
+        "{text_id} must gate (no continue-on-error)"
+    );
+    assert!(
+        !text.to_ascii_lowercase().contains("report only"),
+        "{text_id} gates the golden and the seam digests; no step may call itself report only"
+    );
+    assert!(
+        text.contains("REPLAY_HASH_TARGET:"),
+        "{text_id}: annotations must name the leg"
+    );
+}
+
+#[test]
+fn replay_hash_assert_script_records_replays_and_compares_with_the_golden() {
+    let s = assert_script_text();
+    assert!(s.starts_with("#!/usr/bin/env bash\n"), "bash shebang");
+    assert!(s.contains("set -euo pipefail"));
+    assert!(
+        s.contains("--record-inputs") && s.contains("--ticks") && s.contains("--replay-inputs"),
+        "the script must record and replay the fixture"
+    );
+    assert!(
+        s.contains("TICKS:-10000") && s.contains("crates/pin_sim/tests/fixtures/replay_table}"),
+        "defaults: the fixture at 10 000 ticks"
+    );
+    assert!(
+        s.contains("for i in 1 2 3 4 5 6 7 8 9 10; do"),
+        "replay 10 times"
+    );
+    assert!(
+        s.contains("[ \"$replayed\" != \"$recorded\" ]"),
+        "in-machine mismatch must be compared"
+    );
+    assert!(
+        s.contains("[ \"$recorded\" != \"$want\" ]") && s.contains(GOLDEN),
+        "the recording must be compared with the golden"
+    );
+    assert!(s.contains("exit $fail") && s.contains("::error"));
+    assert!(s.contains("::notice title=replay-hash ${target}::"));
+    // CRLF checkouts (Windows): \r is stripped from the golden and from program output.
+    assert!(
+        s.contains("want=\"$(tr -d '\\r' < \"$golden\")\""),
+        "the golden must be read with \\r stripped"
+    );
+    assert!(
+        s.contains("| tr -d '\\r' | grep '^state_hash='"),
+        "pin_sim output must be read with \\r stripped"
+    );
+    // Seam check: exactly five lines, all `same`, any `differs` fails.
+    assert!(s.contains("--seam-digests") && s.contains("'^\\[seam digest\\] '"));
+    assert!(s.contains("grep -q 'differs'") && s.contains("-ne 5"));
+    // Portable to bash 3.2 and Git Bash (comments may name what is avoided).
+    let code: String = s
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in ["mapfile", "readarray", "declare -A", "local -A", "sed -i"] {
+        assert!(!code.contains(banned), "{ASSERT_SCRIPT} uses {banned}");
+    }
+}
+
+/// Runs the assert script with `args`; the exit code and stdout.
+fn run_assert_script(args: &[&str]) -> (Option<i32>, String) {
+    let out = std::process::Command::new("bash")
+        .arg(repo_root().join(ASSERT_SCRIPT))
+        .args(args)
+        .current_dir(repo_root())
+        .env("REPLAY_HASH_TARGET", "spec_ci")
+        .output()
+        .expect("bash is required");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+fn seam_fixture(lines: &[&str]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("spec_ci_seam_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let n = std::fs::read_dir(&dir).unwrap().count();
+    let path = dir.join(format!("seam_{n}.log"));
+    std::fs::write(&path, lines.join("\r\n") + "\r\n").unwrap();
+    path
+}
+
+#[test]
+fn seam_digest_check_fails_on_differs_or_missing_lines() {
+    let same = [
+        "running 1 test",
+        "[seam digest] spec_scenario: 0xa8e8957e1b4cee40 (x86_64-linux HEAD: 0xa8e8957e1b4cee40, same)",
+        "[seam digest] spec_scenario_hook: 0x9da6a4436316c72e (x86_64-linux HEAD: 0x9da6a4436316c72e, same)",
+        "[seam digest] box: 0x7850af7058aace12 (x86_64-linux HEAD: 0x7850af7058aace12, same)",
+        "[seam digest] belt: 0x710c25cd832c76c2 (x86_64-linux HEAD: 0x710c25cd832c76c2, same)",
+        "[seam digest] slope: 0x1764f34e6e37436f (x86_64-linux HEAD: 0x1764f34e6e37436f, same)",
+        "test no_bodies_no_hooks_is_bit_identical_to_head ... ok",
+    ];
+    let p = seam_fixture(&same);
+    assert_eq!(
+        run_assert_script(&["--seam-digests", p.to_str().unwrap()]).0,
+        Some(0),
+        "five `same` lines (CRLF) pass"
+    );
+    let mut differs = same;
+    differs[4] =
+        "[seam digest] belt: 0x0000000000000001 (x86_64-linux HEAD: 0x710c25cd832c76c2, differs)";
+    let p = seam_fixture(&differs);
+    let (code, out) = run_assert_script(&["--seam-digests", p.to_str().unwrap()]);
+    assert_eq!(code, Some(1), "a `differs` line fails:\n{out}");
+    assert!(out.contains("::error"), "{out}");
+    let four: Vec<&str> = same
+        .iter()
+        .copied()
+        .filter(|l| !l.contains("slope"))
+        .collect();
+    let p = seam_fixture(&four);
+    assert_eq!(
+        run_assert_script(&["--seam-digests", p.to_str().unwrap()]).0,
+        Some(1),
+        "four lines fail"
+    );
+    let mut six = same.to_vec();
+    six.push("[seam digest] extra: 0x0 (x86_64-linux HEAD: 0x0, ?)");
+    let p = seam_fixture(&six);
+    assert_eq!(
+        run_assert_script(&["--seam-digests", p.to_str().unwrap()]).0,
+        Some(1),
+        "a sixth, unknown line fails"
+    );
+    let p = seam_fixture(&["test result: ok. 1 passed"]);
+    assert_eq!(
+        run_assert_script(&["--seam-digests", p.to_str().unwrap()]).0,
+        Some(1),
+        "no lines fail"
+    );
+    let _ = std::fs::remove_dir_all(p.parent().unwrap());
+}
+
+#[test]
+fn replay_hash_assert_script_rejects_a_malformed_golden_before_running() {
+    let dir = std::env::temp_dir().join(format!("spec_ci_golden_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.golden");
+    std::fs::write(&bad, "state_hash=25097C21C2C3ADC1\n").unwrap();
+    let (code, out) = run_assert_script(&["/nonexistent/pin_sim", "", bad.to_str().unwrap()]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("not lowercase hex"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn replay_hash_golden_is_one_lowercase_hex_state_hash_line() {
+    let raw = std::fs::read(repo_root().join(GOLDEN)).expect("golden file present");
+    // A Windows checkout may turn LF into CRLF; the consumers strip \r.
+    let text: String = String::from_utf8(raw)
+        .expect("ASCII")
+        .chars()
+        .filter(|c| *c != '\r')
+        .collect();
+    let hex = text
+        .strip_prefix("state_hash=")
+        .and_then(|r| r.strip_suffix('\n'))
+        .unwrap_or_else(|| panic!("golden is not `state_hash=<hex>\\n`: {text:?}"));
+    assert_eq!(hex.len(), 16, "{text:?}");
+    assert!(
+        hex.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn replay_hash_aarch64_cross_builds_and_runs_under_qemu() {
+    let j = job("replay-hash-aarch64");
+    let text = job_text("replay-hash-aarch64");
+    assert_eq!(j.runner_labels(), vec!["ubuntu-latest".to_owned()]);
+    let t = j.timeout_minutes().expect("timeout-minutes");
+    assert!((1..=45).contains(&t), "timeout-minutes = {t}");
+    assert_eq!(j.needs(), vec!["changes".to_owned()]);
+    let cond = j.condition().unwrap_or_default();
+    assert!(
+        cond.contains("needs.changes.outputs.aarch64 == 'true'")
+            && cond.contains("|| github.event_name != 'pull_request'"),
+        "runs on PRs that touch the simulation and on every non-PR event: {cond}"
+    );
+    assert!(!skips_pull_requests_only(&cond), "{cond}");
+    let script = j.script();
+    for pkg in [
+        "qemu-user",
+        "gcc-aarch64-linux-gnu",
+        "g++-aarch64-linux-gnu",
+        "libc6-dev-arm64-cross",
+    ] {
+        assert!(script.contains(pkg), "does not install {pkg}:\n{script}");
+    }
+    assert!(
+        text.contains("targets: aarch64-unknown-linux-gnu"),
+        "the aarch64 target must be added to the toolchain"
+    );
+    assert!(
+        text.contains("key: aarch64"),
+        "the rust-cache key must differ from the x86_64 job"
+    );
+    let builds = cargo_lines(&script, "build");
+    assert!(
+        builds.iter().any(|l| l.contains("--release")
+            && l.contains("--target aarch64-unknown-linux-gnu")
+            && selected_packages(l).iter().any(|p| p == "pin_sim")),
+        "want `cargo build --release --target aarch64-unknown-linux-gnu -p pin_sim`: {builds:?}"
+    );
+    assert!(
+        script.contains(&format!(
+            "bash {ASSERT_SCRIPT} target/aarch64-unknown-linux-gnu/release/pin_sim \"qemu-aarch64 -L /usr/aarch64-linux-gnu\""
+        )),
+        "the golden is asserted on the aarch64 binary under qemu:\n{script}"
+    );
+    let tests = cargo_lines(&script, "test");
+    assert!(
+        tests
             .iter()
-            .any(|l| script.contains(l)),
-        "replay-hash must replay 10 times:\n{script}"
+            .any(|l| l.contains("--target aarch64-unknown-linux-gnu")
+                && l.contains("--test ball_seam_bitident")),
+        "ball_seam_bitident must run for aarch64: {tests:?}"
     );
-    // In-machine mismatch fails the job: a comparison and a failing exit, and
-    // the job is not allowed to fail silently.
+    for (k, v) in [
+        (
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:",
+            "aarch64-linux-gnu-gcc",
+        ),
+        (
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER:",
+            "qemu-aarch64",
+        ),
+        ("CC_aarch64_unknown_linux_gnu:", "aarch64-linux-gnu-gcc"),
+        ("QEMU_LD_PREFIX:", "/usr/aarch64-linux-gnu"),
+    ] {
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with(k))
+            .unwrap_or_else(|| panic!("env {k} missing"));
+        assert!(line.contains(v), "{line}");
+    }
+    assert!(!text.contains("continue-on-error"));
+}
+
+/// A condition that would skip every pull request (the aarch64 job must not).
+fn skips_pull_requests_only(cond: &str) -> bool {
+    cond.contains("github.event_name != 'pull_request'") && !cond.contains("||")
+}
+
+#[test]
+fn changes_exposes_the_aarch64_filter_failing_closed() {
+    let text = job_text("changes");
     assert!(
-        script.contains("!=") && (script.contains("exit $fail") || script.contains("exit 1")),
-        "replay-hash must fail on a mismatch:\n{script}"
+        text.contains("aarch64: ${{ steps.filter.outputs.aarch64 }}"),
+        "changes must declare the aarch64 output"
     );
     assert!(
-        !text.contains("continue-on-error: true"),
-        "replay-hash must gate on in-machine mismatches"
+        text.contains("dof=true\n          aarch64=true\n"),
+        "aarch64 must default to true (fail closed)"
     );
-    // Cross-OS: reported only. Every OS runs to the end and no job compares
-    // the per-OS results.
+    assert!(text.contains("echo \"aarch64=$aarch64\" >> \"$GITHUB_OUTPUT\""));
+    for path in [
+        "crates/pin_core/*",
+        "crates/pin_physics/*",
+        "crates/pin_input/*",
+        "crates/pin_sim/*",
+        "crates/pin_script/*",
+        "crates/pin_assets/*",
+        "third_party/lua-src/*",
+        "tables/*",
+        "Cargo.toml",
+        "Cargo.lock",
+        "versions.toml",
+        ".github/workflows/ci.yml",
+        ASSERT_SCRIPT,
+    ] {
+        assert!(text.contains(path), "aarch64 filter misses {path}");
+    }
+}
+
+#[test]
+fn rosetta_and_cross_legs_assert_the_golden() {
+    // ci.yml legs: x86_64 Linux, Windows x86_64 and macOS arm64 run the assert script.
+    for id in ["replay-hash", "replay-hash-cross"] {
+        assert!(
+            job(id)
+                .script()
+                .contains(&format!("bash {ASSERT_SCRIPT} target/release/pin_sim")),
+            "{id} must assert the golden"
+        );
+    }
+    let cross = job_text("replay-hash-cross");
     assert!(
-        text.contains("fail-fast: false"),
-        "one OS must not cancel the others"
+        cross.contains("target: x86_64-pc-windows-msvc")
+            && cross.contains("target: aarch64-apple-darwin")
+    );
+    // release.yml: the x86_64-apple-darwin (Rosetta 2) verify leg asserts the golden.
+    let release = Workflow::load("release.yml");
+    let verify = release.job("verify").expect("release.yml verify job");
+    let text = workflow_text("release.yml");
+    let at = text
+        .find(&format!(
+            "bash {ASSERT_SCRIPT} target/x86_64-apple-darwin/release/pin_sim"
+        ))
+        .expect("release.yml runs the assert script on the x86_64-apple-darwin pin_sim");
+    let step_start = text[..at].rfind("      - name:").expect("step");
+    let step = &text[step_start..at];
+    assert!(
+        step.contains("if: matrix.target == 'x86_64-apple-darwin'"),
+        "the Rosetta replay-hash step must be conditional on the x86_64-apple-darwin leg:\n{step}"
     );
     assert!(
-        text.to_ascii_lowercase().contains("report"),
-        "replay-hash must say that cross-OS differences are report-only"
+        verify.script().contains(
+            "cargo build --release -p pin_sim --bin pin_sim --target x86_64-apple-darwin"
+        ),
+        "the Rosetta step builds the x86_64 pin_sim"
+    );
+    assert!(
+        text.contains("RUSTFLAGS: \"-D warnings\""),
+        "-D warnings kept"
     );
 }
 
@@ -732,12 +1086,13 @@ fn cargo_commands_in_ci_exist_in_the_brief() {
 }
 
 /// The Linux/PR-set job ids that `pr-checks` aggregates (D40).
-const PR_SET: [&str; 7] = [
+const PR_SET: [&str; 8] = [
     "changes",
     "fmt",
     "clippy",
     "core-tests",
     "replay-hash",
+    "replay-hash-aarch64",
     "gpu-tests",
     "dof-bridge",
 ];
@@ -811,7 +1166,7 @@ fn pr_checks_script_requires_changes_to_succeed() {
 }
 
 /// Run the extracted script with a NEEDS fixture; the exit code.
-fn run_pr_checks(results: [(&str, &str); 7]) -> Option<i32> {
+fn run_pr_checks(results: [(&str, &str); 8]) -> Option<i32> {
     let body: Vec<String> = results
         .iter()
         .map(|(k, v)| format!("\"{k}\": {{\"result\": \"{v}\", \"outputs\": {{}}}}"))
@@ -827,8 +1182,8 @@ fn run_pr_checks(results: [(&str, &str); 7]) -> Option<i32> {
         .code()
 }
 
-fn fixture(over: &[(&str, &str)], default: &str) -> [(&'static str, &'static str); 7] {
-    let mut out = [("", ""); 7];
+fn fixture(over: &[(&str, &str)], default: &str) -> [(&'static str, &'static str); 8] {
+    let mut out = [("", ""); 8];
     for (i, id) in PR_SET.iter().enumerate() {
         let r = over
             .iter()
@@ -855,6 +1210,19 @@ fn pr_checks_script_exit_codes() {
     );
     assert_ne!(
         run_pr_checks(fixture(&[("core-tests", "cancelled")], "success")),
+        Some(0)
+    );
+    // replay-hash-aarch64 (KP-069): skipped passes, failed or cancelled fails.
+    assert_eq!(
+        run_pr_checks(fixture(&[("replay-hash-aarch64", "skipped")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("replay-hash-aarch64", "failure")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("replay-hash-aarch64", "cancelled")], "success")),
         Some(0)
     );
     assert_ne!(

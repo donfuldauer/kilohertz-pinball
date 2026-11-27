@@ -414,14 +414,55 @@ impl Simulation {
     ///   [`newton_swing_rad`] of the captive ball's displacement;
     /// * bumper (ring kick not modelled) and VUK: zero offset, identity.
     ///
-    /// Reads only; writes nothing but `self.snapshot`, never allocates,
-    /// and never publishes a non-finite value.
+    /// Balls: captive Newton balls are published as ordinary `balls`
+    /// entries and take no extra slots (SPEC Appendix A). The order is
+    /// fixed: the free balls first (ascending solver handle), then the
+    /// captive balls in `[[mechs]]` order and, within a chain, by ball
+    /// index. A captive ball's entry is its path position, its velocity the
+    /// unit path tangent times its path speed, the chain's profile, the
+    /// mech's `layer`, identity orientation and zero angular velocity
+    /// (captive spin is not modelled); a captive ball with a non-finite
+    /// position or velocity is skipped. The array holds at most
+    /// `MAX_BALLS` entries: captive balls past it are dropped and counted
+    /// in [`SimCounters::captive_balls_unpublished`](crate::SimCounters).
+    /// [`Simulation::balls_in_play`] (and the script's `balls_in_play`)
+    /// stays free-only, because the rules end a ball when it reaches 0, so
+    /// `snapshot.balls()[..balls_in_play()]` are exactly the free balls.
+    ///
+    /// Reads only; writes nothing but `self.snapshot` and that counter,
+    /// never allocates, and never publishes a non-finite value.
     pub(crate) fn publish_snapshot(&mut self) {
         let s = &mut self.snapshot;
         s.tick = self.tick;
         s.ball_count = 0;
         for (_, b) in self.solver.balls() {
             s.push_ball(BallState::from(b));
+        }
+        // Captive Newton balls: ordinary entries after the free balls.
+        let mut unpublished = 0u32;
+        for n in &self.newtons {
+            if n.chain >= self.solver.newton_chain_count() {
+                continue;
+            }
+            let c = self.solver.newton_chain(n.chain);
+            for i in 0..c.len() {
+                let position = c.ball_position(i);
+                let velocity = c.path().tangent(c.ball_t(i)).normalize_or_zero() * c.ball_speed(i);
+                if !position.is_finite() || !velocity.is_finite() {
+                    continue;
+                }
+                let ball = BallState {
+                    position_m: position.to_array(),
+                    orientation: IDENTITY_QUAT,
+                    velocity_m_s: velocity.to_array(),
+                    angular_velocity_rad_s: [0.0; 3],
+                    profile: c.profile(),
+                    layer: n.layer,
+                };
+                if !s.push_ball(ball) {
+                    unpublished = unpublished.saturating_add(1);
+                }
+            }
         }
         s.flipper_count = 0;
         for d in &self.drives {
@@ -440,6 +481,10 @@ impl Simulation {
             self.snapshot.dynamic_meshes[i] = t;
         }
         self.snapshot.dynamic_mesh_count = n as u8;
+        self.counters.captive_balls_unpublished = self
+            .counters
+            .captive_balls_unpublished
+            .saturating_add(unpublished);
     }
 }
 
