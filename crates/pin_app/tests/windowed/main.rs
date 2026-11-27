@@ -1405,6 +1405,73 @@ fn run_scenario(s: &Scenario) -> ScenarioRun {
     )
 }
 
+/// The oracle's exclusive upper bound on a press's frame snapshot ticks
+/// (`snap_tick < bound`), per row, derived independently from the rows in
+/// event order: the next release of the same input bounds the press
+/// inclusively, except that when that release is followed, in event order, by
+/// a press of the same input in the same tick (same `apply_tick`) the release
+/// tick is excluded. `u64::MAX` when there is no release.
+fn oracle_frame_bound(rows: &[Row]) -> Vec<u64> {
+    (0..rows.len())
+        .map(|i| {
+            let Some(j) =
+                (i + 1..rows.len()).find(|&j| !rows[j].down && rows[j].input == rows[i].input)
+            else {
+                return u64::MAX;
+            };
+            let tick = rows[j].apply_tick;
+            let repressed = rows[j + 1..]
+                .iter()
+                .any(|x| x.down && x.input == rows[j].input && x.apply_tick == tick);
+            if repressed {
+                tick
+            } else {
+                tick.saturating_add(1)
+            }
+        })
+        .collect()
+}
+
+/// REQ-LAT-001, REQ-LAT-004 (round 14, thread 4713880962): a left press at
+/// 137 ns, its release at 3_000_274 ns and a re-press at 3_000_411 ns with
+/// wakes at 2, 4 and 6 ms: the release and re-press both apply in tick 4 and
+/// the first frame (5 ms) draws tick 4. The first press's frame is empty (the
+/// release tick is excluded), the re-press's frame is that frame.
+#[test]
+fn req_lat_004_same_tick_repress_excludes_release_tick_from_oracle() {
+    let row = |seq: u64, down: bool, ts: u64, tick: u64, mv: Option<u64>| Row {
+        seq,
+        input: "left_flipper".into(),
+        down,
+        sdl_ts_ns: ts,
+        apply_tick: tick,
+        move_tick: mv,
+        ..Row::default()
+    };
+    let rows = vec![
+        row(0, true, 137, 2, Some(2)),
+        row(1, false, 3_000_274, 4, None),
+        row(2, true, 3_000_411, 4, Some(4)),
+    ];
+    let frames = [Frame {
+        frame: 0,
+        snap_tick: 4,
+        present_ns: 5_000_000,
+    }];
+    let bound = oracle_frame_bound(&rows);
+    let first = |i: usize| {
+        let m = rows[i].move_tick?;
+        frames
+            .iter()
+            .find(|f| f.snap_tick >= m && f.snap_tick < bound[i])
+    };
+    assert!(first(0).is_none(), "first press's frame must be empty");
+    assert_eq!(first(2).map(|f| f.frame), Some(0));
+    // Without the re-press the release tick is inclusive.
+    let bound = oracle_frame_bound(&rows[..2]);
+    assert_eq!(bound[0], 5);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -1413,7 +1480,8 @@ proptest! {
     /// and is the first executed tick that had received it (drained at or
     /// after its arrival) and whose end is not before its stamp;
     /// `frames_to_photon` equals `frame - F0`, where `frame` is the first
-    /// frame with a snapshot tick in `[move_tick, release_tick]` whose drawn
+    /// frame with a snapshot tick in `[move_tick, release_tick]` (the release tick
+    /// excluded when the same input is pressed again in that tick) whose drawn
     /// bat is raised at least 1 degree from the applying tick's base
     /// (re-derived here from the frames' own snapshots).
     #[test]
@@ -1422,8 +1490,8 @@ proptest! {
         let t = parse_trace(&text).unwrap();
         prop_assert_eq!(t.rows.len(), evs.len());
         prop_assert_eq!(t.overflows, 0);
-        let releases = verdict::release_ticks(&t.rows);
-        for ((r, (ts, arrival)), release) in t.rows.iter().zip(&evs).zip(&releases) {
+        let bounds = oracle_frame_bound(&t.rows);
+        for ((r, (ts, arrival)), until) in t.rows.iter().zip(&evs).zip(&bounds) {
             prop_assert_eq!(r.sdl_ts_ns, *ts);
             prop_assert!(r.apply_tick_end_sdl_ns >= r.sdl_ts_ns);
             let first = executed
@@ -1443,11 +1511,10 @@ proptest! {
                 .take_while(|e| e.tick < r.apply_tick)
                 .last()
                 .map_or(0.0, |e| e.angles[bat]);
-            let until = release.unwrap_or(u64::MAX);
             let expected = r.move_tick.and_then(|m| {
                 t.frames.iter().find(|f| {
                     f.snap_tick >= m
-                        && f.snap_tick <= until
+                        && f.snap_tick < *until
                         && frame_angles[f.frame as usize][bat] - base >= RAISE_THRESHOLD_RAD
                 })
             });

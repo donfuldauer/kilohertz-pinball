@@ -703,14 +703,10 @@ impl AppConfig {
             .any(|w| matches!(w, ConfigWarning::TooLarge(_)));
         if lost
             && !too_large
-            && let Some(name) = path.file_name()
+            && let Some(bak) = Self::recovery_path(path)
+            && !bak.exists()
         {
-            let mut bak = name.to_os_string();
-            bak.push(".bak");
-            let bak = path.with_file_name(bak);
-            if !bak.exists() {
-                let _ = std::fs::copy(path, bak);
-            }
+            let _ = std::fs::copy(path, bak);
         }
         l
     }
@@ -818,6 +814,25 @@ impl AppConfig {
         toml::to_string(&doc)
     }
 
+    /// The recovery copy [`load`](Self::load) makes of a configuration file
+    /// at `path` whose content could not all be used: `<name>.bak` next to
+    /// it. `None` when `path` has no file name.
+    pub fn recovery_path(path: &Path) -> Option<PathBuf> {
+        let mut bak = path.file_name()?.to_os_string();
+        bak.push(".bak");
+        Some(path.with_file_name(bak))
+    }
+
+    /// The temporary file [`save`](Self::save) writes a configuration file
+    /// at `path` through before renaming it over `path`: `.<name>.tmp` next
+    /// to it. `None` when `path` has no file name.
+    pub fn save_scratch_path(path: &Path) -> Option<PathBuf> {
+        let mut tmp = std::ffi::OsString::from(".");
+        tmp.push(path.file_name()?);
+        tmp.push(".tmp");
+        Some(path.with_file_name(tmp))
+    }
+
     /// Writes the settings to `path` atomically: a temporary file next to it
     /// (`.<name>.tmp`), `sync_all`, then a rename over `path`. On error the
     /// previous file is untouched and the temporary file is removed.
@@ -825,16 +840,12 @@ impl AppConfig {
         let text = self
             .to_toml_string()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let name = path.file_name().ok_or_else(|| {
+        let tmp = Self::save_scratch_path(path).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "config path has no file name",
             )
         })?;
-        let mut tmp_name = std::ffi::OsString::from(".");
-        tmp_name.push(name);
-        tmp_name.push(".tmp");
-        let tmp = path.with_file_name(tmp_name);
         let write = || -> std::io::Result<()> {
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(text.as_bytes())?;

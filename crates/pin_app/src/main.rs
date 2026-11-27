@@ -394,12 +394,25 @@ struct TraceSink {
     /// file identity before publication ([`finish_trace`]); `None` when
     /// there is none to protect.
     config: Option<PathBuf>,
+    /// The table bundle loaded now (the `--table` path at start-up, then
+    /// each bundle a table browser swap started, [`set_loaded`](Self::set_loaded)),
+    /// rechecked by the load guard's bundle-membership rule before
+    /// publication ([`finish_trace`]; gate 163 round 14, review comment
+    /// 4713880925); `None` while no bundle is loaded.
+    loaded: Option<PathBuf>,
 }
 
 /// Attempts at a fresh sibling temp-file name.
 const TRACE_TMP_TRIES: u32 = 8;
 
 impl TraceSink {
+    /// Records `bundle` as the table bundle loaded now (a table browser
+    /// swap started it), replacing the previous one: the shutdown step
+    /// ([`finish_trace`]) does not publish the trace over it or into it.
+    fn set_loaded(&mut self, bundle: PathBuf) {
+        self.loaded = Some(bundle);
+    }
+
     /// Writes `csv` and moves it into place: to the temp file (flushed and
     /// synced; a platform that cannot sync the file is tolerated), then
     /// renamed over the destination. The temp file keeps the mode it was
@@ -598,7 +611,20 @@ fn unanswered_selection(menu: &MenuController) -> Option<&Path> {
 /// directory entry on a case-insensitive volume), which the start-up
 /// comparison ([`config_alias`]) cannot know. Then the trace is not
 /// published either: `--latency-trace: <dest> is the configuration file:
-/// the trace was not published`.
+/// the trace was not published`. The configuration's recovery copy
+/// ([`AppConfig::recovery_path`], which a malformed configuration's load
+/// makes) is compared the same way (gate 163 round 14, review comment
+/// 4713880930): `... is the configuration recovery copy: the trace was not
+/// published`.
+///
+/// The table bundle loaded now (the sink's `loaded`: the `--table` bundle
+/// or the last one a table browser swap started) is checked with the load
+/// guard's bundle-membership rule too ([`trace_alias`]; gate 163 round 14,
+/// review comment 4713880925): a destination that did not exist when the
+/// bundle was loaded but now is (in) it, e.g. a file created inside the
+/// loaded folder bundle during the run, is not published over: `...
+/// is in the selected table bundle: the trace was not published`. The
+/// unanswered selection is still checked as well.
 fn finish_trace(
     sink: TraceSink,
     blocked: &AtomicBool,
@@ -614,6 +640,11 @@ fn finish_trace(
     } else {
         in_flight
             .and_then(|p| trace_alias(&sink.dest, p))
+            .or_else(|| {
+                sink.loaded
+                    .as_deref()
+                    .and_then(|p| trace_alias(&sink.dest, p))
+            })
             .or_else(|| {
                 sink.config
                     .as_deref()
@@ -637,14 +668,24 @@ fn finish_trace(
 /// (device and inode on Unix, canonical path elsewhere). The same file
 /// gives `--latency-trace: <dest> is the configuration file`; distinct
 /// files, or either path missing (or unreadable), give `None`.
+///
+/// The configuration's recovery copy ([`AppConfig::recovery_path`]) is
+/// compared the same way (gate 163 round 14, review comment 4713880930):
+/// the same file gives `--latency-trace: <dest> is the configuration
+/// recovery copy`.
 fn config_identity_alias(dest: &Path, config: &Path) -> Option<String> {
-    let cm = std::fs::metadata(config).ok()?;
     let dm = std::fs::metadata(dest).ok()?;
-    same_file(&dm, dest, &cm, config).then(|| {
-        format!(
-            "--latency-trace: {} is the configuration file",
-            dest.display()
-        )
+    let backup = AppConfig::recovery_path(config);
+    [
+        (Some(config), "the configuration file"),
+        (backup.as_deref(), "the configuration recovery copy"),
+    ]
+    .into_iter()
+    .find_map(|(p, what)| {
+        let p = p?;
+        let pm = std::fs::metadata(p).ok()?;
+        same_file(&dm, dest, &pm, p)
+            .then(|| format!("--latency-trace: {} is {what}", dest.display()))
     })
 }
 
@@ -734,7 +775,10 @@ fn is_config_path(a: &Path, a_meta: Option<&std::fs::Metadata>, b: &Path) -> boo
 /// save is protected too), or `config` is one of the trace's sibling
 /// temp-file names (`.kp-trace.<pid>.<n>.tmp` beside `dest`, which the
 /// commit would move away). The text is `--latency-trace: <dest> is the
-/// configuration file`. `None` for a separate destination.
+/// configuration file`. A `dest` that is the configuration's recovery copy
+/// ([`AppConfig::recovery_path`], the same [`is_config_path`] test; gate
+/// 163 round 14, review comment 4713880930) gives `--latency-trace: <dest>
+/// is the configuration recovery copy`. `None` for a separate destination.
 fn config_alias(
     dest: &Path,
     dest_meta: Option<&std::fs::Metadata>,
@@ -748,6 +792,14 @@ fn config_alias(
     };
     if is_config_path(dest, dest_meta, config) {
         return refuse();
+    }
+    // The recovery copy a malformed configuration's load makes (gate 163
+    // round 14, review comment 4713880930).
+    if AppConfig::recovery_path(config).is_some_and(|b| is_config_path(dest, dest_meta, &b)) {
+        return Some(format!(
+            "--latency-trace: {} is the configuration recovery copy",
+            dest.display()
+        ));
     }
     let dir = trace_dir(dest);
     let config = normalised_path(config);
@@ -842,7 +894,13 @@ fn open_direct(path: &Path) -> Result<std::fs::File, String> {
 /// opened for writing here (unless it is a device) and never truncated: the
 /// trace goes to a sibling temp file, created now with mode `0600` (Unix)
 /// with `create_new` as the writability probe and renamed over the
-/// destination by [`TraceSink::commit`] at shutdown.
+/// destination by [`TraceSink::commit`] at shutdown. A temp-file candidate
+/// that is the configuration save's scratch file
+/// ([`AppConfig::save_scratch_path`], compared with [`is_config_path`]) is
+/// skipped for the next one, so a settings save during the run never
+/// renames the open trace file over the configuration (gate 163 round 14,
+/// review comment 4713880926). The `--table` path is kept as the loaded
+/// bundle the shutdown step rechecks ([`finish_trace`]).
 fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let Some(path) = path_of(args, "--latency-trace") else {
         return Ok(None);
@@ -872,9 +930,10 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
         // A write-only open of a FIFO blocks until a reader appears.
         return Err(format!("--latency-trace: {}: is a FIFO", path.display()));
     }
+    let table = path_of(args, "--table").and_then(Result::ok);
     if let Some(fm) = &dest_meta
-        && let Some(Ok(table)) = path_of(args, "--table")
-        && let Some(alias) = bundle_alias(fm, &path, &table)
+        && let Some(table) = &table
+        && let Some(alias) = bundle_alias(fm, &path, table)
     {
         let verb = match alias {
             BundleAlias::File => "is",
@@ -895,6 +954,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
             tmp: None,
             file: Some(file),
             config: Some(config),
+            loaded: table,
         }));
     }
     if path.file_name().is_none() {
@@ -902,9 +962,18 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     }
     let dir = trace_dir(&path);
     let pid = std::process::id();
+    // The configuration save's own scratch file: never shared with the
+    // trace (gate 163 round 14, review comment 4713880926).
+    let scratch = AppConfig::save_scratch_path(&config);
     let mut last = None;
     for n in 0..TRACE_TMP_TRIES {
         let tmp = dir.join(trace_tmp_name(pid, n));
+        if scratch
+            .as_deref()
+            .is_some_and(|s| is_config_path(&tmp, std::fs::metadata(&tmp).ok().as_ref(), s))
+        {
+            continue;
+        }
         match owner_only(std::fs::OpenOptions::new().write(true).create_new(true)).open(&tmp) {
             Ok(file) => {
                 return Ok(Some(TraceSink {
@@ -912,6 +981,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
                     tmp: Some(tmp),
                     file: Some(file),
                     config: Some(config),
+                    loaded: table,
                 }));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
@@ -1667,6 +1737,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
                         ) {
                             Ok(Swap::Started(t, e)) => {
                                 threads = Some(t);
+                                // The bundle rechecked at shutdown.
+                                if let Some(sink) = trace_file.as_mut() {
+                                    sink.set_loaded(path.clone());
+                                }
                                 // The stopped engine's trace is kept.
                                 bank_trace(&mut banked_trace, trace.take(), sdl_now_ns());
                                 profiler = e.profiler;
@@ -3606,5 +3680,249 @@ mod tests {
         empty.overflows.frames = 1;
         assert!(first_frame_at_shutdown(false, Some(&empty)));
         assert!(!first_frame_at_shutdown(true, Some(&empty)));
+    }
+
+    /// Gate 163 round 14 (review comment 4713880926, REQ-LAT-003,
+    /// REQ-VIEW-006): a configuration file named so that its save scratch
+    /// (`.<name>.tmp`, [`pin_app::ui::AppConfig::save_scratch_path`]) is a
+    /// trace temp-file candidate (`kp-trace.<pid>.0` gives
+    /// `.kp-trace.<pid>.0.tmp`) never shares that file with the trace: the
+    /// trace takes the next candidate, so a menu save during the run writes
+    /// the configuration and the trace still publishes to its destination.
+    #[test]
+    fn gate163_r14_config_save_scratch_is_never_the_trace_temp_file() {
+        use pin_app::ui::AppConfig;
+        let dir = fresh_dir("r14_scratch");
+        let pid = std::process::id();
+        let cfg = dir.join(format!("kp-trace.{pid}.0"));
+        let scratch = AppConfig::save_scratch_path(&cfg).unwrap();
+        assert_eq!(scratch, dir.join(super::trace_tmp_name(pid, 0)));
+        let dest = dir.join("out.csv");
+        let sink = open_latency_trace(&args(&[
+            "--config",
+            cfg.to_str().unwrap(),
+            "--latency-trace",
+            dest.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_ne!(sink.tmp.as_deref(), Some(scratch.as_path()));
+        // The menu saves its settings during the run.
+        let saved = AppConfig {
+            wireframe: true,
+            ..AppConfig::default()
+        };
+        saved.save(&cfg).unwrap();
+        let text = saved.to_toml_string().unwrap();
+        sink.commit(b"csv,trace\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), text);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"csv,trace\n");
+        let want = {
+            let mut v = vec![format!("kp-trace.{pid}.0"), "out.csv".to_owned()];
+            v.sort();
+            v
+        };
+        assert_eq!(names(&dir), want, "no scratch or temp file left");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 14 (review comment 4713880930, REQ-LAT-003,
+    /// REQ-VIEW-006): the recovery copy a malformed configuration's load
+    /// makes (`<name>.bak`, [`pin_app::ui::AppConfig::recovery_path`]) is
+    /// protected like the configuration file: `--latency-trace
+    /// <config>.bak` is refused at start-up (existing or not yet), a
+    /// destination that is the recovery copy at shutdown is not published
+    /// over it, and a separate destination still publishes.
+    #[test]
+    fn gate163_r14_config_recovery_copy_is_never_replaced_by_the_trace() {
+        use super::finish_trace;
+        use pin_app::ui::AppConfig;
+        use std::sync::atomic::AtomicBool;
+        let dir = fresh_dir("r14_bak");
+        let cfg = dir.join("session.toml");
+        let bak = AppConfig::recovery_path(&cfg).unwrap();
+        assert_eq!(bak, dir.join("session.toml.bak"));
+        let c = cfg.to_str().unwrap();
+        let b = bak.to_str().unwrap();
+        let refused = |trace: &str| {
+            let e = open_latency_trace(&args(&["--config", c, "--latency-trace", trace]))
+                .expect_err("refused");
+            assert_eq!(
+                e,
+                format!("--latency-trace: {trace} is the configuration recovery copy")
+            );
+        };
+        // Not yet existing: the load may still make it.
+        refused(b);
+        assert!(names(&dir).is_empty(), "nothing created: {:?}", names(&dir));
+        // A malformed configuration's load makes the recovery copy.
+        std::fs::write(&cfg, "wireframe = [\n").unwrap();
+        drop(AppConfig::load(&cfg));
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "wireframe = [\n");
+        refused(b);
+        let dot = format!("{}/./sub/../session.toml.bak", dir.display());
+        refused(&dot);
+        // A destination that becomes the recovery copy during the run
+        // (a hard link, standing in for another spelling of the entry).
+        let dest = dir.join("late.csv");
+        let d = dest.to_str().unwrap();
+        let open = |trace: &str| {
+            open_latency_trace(&args(&["--config", c, "--latency-trace", trace]))
+                .unwrap()
+                .unwrap()
+        };
+        let sink = open(d);
+        std::fs::hard_link(&bak, &dest).unwrap();
+        let flag = AtomicBool::new(false);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            None
+        );
+        assert_eq!(
+            failure.as_deref(),
+            Some(
+                format!(
+                    "--latency-trace: {d} is the configuration recovery copy: the trace was not \
+                     published"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "wireframe = [\n");
+        assert_eq!(
+            names(&dir),
+            ["late.csv", "session.toml", "session.toml.bak"]
+        );
+        // A separate destination publishes; both files keep their bytes.
+        let other = dir.join("trace.csv");
+        let sink = open(other.to_str().unwrap());
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            Some(other.clone())
+        );
+        assert_eq!(failure, None);
+        assert_eq!(std::fs::read(&other).unwrap(), b"csv,trace\n");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "wireframe = [\n");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "wireframe = [\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 14 (review comment 4713880925, REQ-LAT-003): a
+    /// destination that did not exist at start-up but is created inside
+    /// the loaded `--table` folder bundle during the run is not published
+    /// over at shutdown (the load guard's bundle-membership rule,
+    /// [`super::trace_alias`], applied to the loaded bundle): the file keeps
+    /// its bytes, no temp file is left, the run fails with `... is in the
+    /// selected table bundle: the trace was not published`. A destination
+    /// still missing at shutdown, or outside the bundle, still publishes.
+    #[test]
+    fn gate163_r14_destination_created_in_the_loaded_table_bundle() {
+        use super::finish_trace;
+        use std::sync::atomic::AtomicBool;
+        let dir = fresh_dir("r14_loaded");
+        let cfg = dir.join("config.toml");
+        let folder = dir.join("example");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("table.toml"), b"manifest").unwrap();
+        let dest = folder.join("notes.txt");
+        let open = |d: &Path| {
+            open_latency_trace(&args(&[
+                "--config",
+                cfg.to_str().unwrap(),
+                "--table",
+                folder.to_str().unwrap(),
+                "--latency-trace",
+                d.to_str().unwrap(),
+            ]))
+            .unwrap()
+            .unwrap()
+        };
+        let sink = open(&dest);
+        // Created inside the bundle during the run.
+        std::fs::write(&dest, b"user notes").unwrap();
+        let flag = AtomicBool::new(false);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            None
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"user notes");
+        assert_eq!(names(&folder), ["notes.txt", "table.toml"]);
+        assert_eq!(
+            failure.as_deref(),
+            Some(
+                format!(
+                    "--latency-trace: {} is in the selected table bundle: the trace was not \
+                     published",
+                    dest.display()
+                )
+                .as_str()
+            )
+        );
+        // A destination outside the bundle publishes.
+        let other = dir.join("trace.csv");
+        let sink = open(&other);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            Some(other.clone())
+        );
+        assert_eq!(failure, None);
+        assert_eq!(std::fs::read(&other).unwrap(), b"csv,trace\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 14 (review comment 4713880925, REQ-LAT-003): after a
+    /// table browser swap the newly loaded bundle
+    /// ([`super::TraceSink::set_loaded`]) is the one rechecked at shutdown:
+    /// a destination created inside it during the run is not published
+    /// over; the unanswered-selection check still applies alongside.
+    #[test]
+    fn gate163_r14_destination_created_in_a_swapped_in_bundle() {
+        use super::finish_trace;
+        use std::sync::atomic::AtomicBool;
+        let dir = fresh_dir("r14_swapped");
+        let folder = dir.join("example");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("table.toml"), b"manifest").unwrap();
+        let zip = dir.join("t.zip");
+        std::fs::write(&zip, b"PK bundle bytes").unwrap();
+        let dest = folder.join("notes.txt");
+        let flag = AtomicBool::new(false);
+        // Before any load, the folder is no loaded bundle: it publishes.
+        let sink = r10_sink(&dest);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv\n", &mut failure),
+            Some(dest.clone())
+        );
+        std::fs::remove_file(&dest).unwrap();
+        // The browser swapped the folder in; the file appears afterwards.
+        let mut sink = r10_sink(&dest);
+        sink.set_loaded(folder.clone());
+        std::fs::write(&dest, b"user notes").unwrap();
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv\n", &mut failure),
+            None
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"user notes");
+        assert!(failure.unwrap().contains("the trace was not published"));
+        // Loaded folder elsewhere, the unanswered selection still refuses.
+        let zdest = zip.clone();
+        let mut sink = r10_sink(&zdest);
+        sink.set_loaded(folder.clone());
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, Some(&zip), b"csv\n", &mut failure),
+            None
+        );
+        assert_eq!(std::fs::read(&zip).unwrap(), b"PK bundle bytes");
+        assert!(failure.is_some());
+        assert_eq!(names(&folder), ["notes.txt", "table.toml"]);
+        assert_eq!(names(&dir), ["example", "t.zip"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

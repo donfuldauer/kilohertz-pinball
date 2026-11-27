@@ -10013,3 +10013,28 @@ requiring a new single review PR after a split (contradicts P6 step 3).
 Also (finding 18): the lavapipe worker cap is chosen only among settings that pass checks a to d, using the dropped ratio only to compare those.
 
 The spec test `tests/spec_ci/tests/spec_ci_gpu_cross_cache.rs` pinned the literal 32; it now pins the `build_budget` expression, the step order, the shared reserve formula, the clamp and `MAX_BUILD_MIN` = 32 (a one-file owned-path extension of brief F, made after the round 13 verifier run found the stale assertion; CodeRabbit round 13 finding 2).
+
+
+## #163 gate round 14 — merge of main: I/O worker budget seam and cabinet on a cancelled swap
+
+**Decision.** `main` (a211feb) is merged into the gate branch because #196 conflicted with it (P6 "Review PR" step 5). Every conflict keeps both sides. The I/O worker loop is `spawn_with_budget(handler(req, &AtomicU64))`: `spawn` and `spawn_guarded` both pass `serve(req, mixer, budget)`, and the gate's `spawn_with(handler(req))` test seam wraps it and is `#[cfg(test)]`. On `Swap::Closed` (a close pending at the swap) the cabinet is not detached in `swap_table`; `Cabinet::finish` on the shutdown path detaches it after every engine thread has been joined.
+
+**Rationale.** This keeps the gate's coalesced `(reply, coalesced)` protocol and main's per-load atomic budget read on one loop, and the guarded worker gets the budget too. No test-seam signature changes, so the gate's worker tests stay as they are. A cancelled swap ends the run, so detaching at shutdown gives main's single flush and single telemetry line.
+
+**Alternatives.** Passing the budget into `spawn_with` (rejected: it changes every gate test call site). Detaching in `swap_table` before returning `Closed` (equivalent result, but splits the detach across two places).
+
+## #163 gate round 14 — Trace never published over the config save scratch, the config recovery copy, or a file of the loaded bundle
+
+**Decision.** (1) `AppConfig::save_scratch_path` (`.<name>.tmp`) is the single computation of the config save's scratch file, used by `AppConfig::save` and `open_latency_trace`. A trace temp-file candidate that is that scratch file is skipped for the next candidate. (2) `AppConfig::recovery_path` (`<name>.bak`) is the single computation of the recovery copy a malformed configuration's load makes, used by `AppConfig::load`. The start-up `config_alias` refuses it, whether or not it exists yet, with `--latency-trace: <dest> is the configuration recovery copy`. The shutdown `config_identity_alias` refuses it by file identity. (3) `TraceSink` records the bundle loaded now: the `--table` path, then each bundle a browser swap started. At shutdown `finish_trace` applies the load guard's bundle-membership rule to it, alongside the unanswered-selection check.
+
+**Rationale.** CodeRabbit round 14 findings 4713880926, 4713880930 and 4713880925. Each lets the opt-in trace replace user data: the saved configuration, its only recovery copy, or a file added to the loaded bundle. The classifier first deferred them as contrived triggers under the round limit. They were reclassified as blocking because the round limit fixes verified correctness defects and data loss is one, however contrived the trigger. Sharing the path computations keeps the guard and the writer from drifting apart. All checks run on the main thread after the engine joins (R4).
+
+**Alternatives.** Fail start-up on a scratch collision (rejected: the candidate loop already moves on, and a later candidate always works). Recheck every bundle loaded during the run (not required by the finding: a swapped-out bundle's engine is joined, and a later issue can extend it). Known limit: paths that do not exist yet are compared as normalised paths, which are case-sensitive, as in rounds 11 and 12.
+
+## #163 gate round 14 — Windowed proptest oracle follows the round 13 release-tick rule
+
+**Decision.** The windowed proptest `req_lat_004_first_executed_tick_and_req_lat_001_frames` takes its frame bound from `oracle_frame_bound`. The bound is the release tick, exclusive, when a later row of the same input is a press in the same apply tick. Otherwise the release tick is included, and with no later release there is no bound. A fixed regression covers the finding's case.
+
+**Rationale.** CodeRabbit round 14 finding 4713880962: the oracle admitted the release tick in every case, which contradicts "#163 gate round 13 — Frame join and frame count across a same-tick re-press and an engine swap". The generator can produce that case, so the required windowed test could fail without a product regression. That made it a blocking failing-required-check risk under the round limit. The verifier reproduced the failure with the old bound (after 850 cases).
+
+**Alternatives.** Reuse `verdict::release_ticks` (rejected: it is inclusive, and changing the verdict's check b is deferred to #246 with finding 4713880969).

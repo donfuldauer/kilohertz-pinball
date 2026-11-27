@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 16
 - Resolved queue lines: 323
-- Decision entries: 599
-- Run-log rows: 650
+- Decision entries: 659
+- Run-log rows: 685
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -583,6 +583,63 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #103: Drop target offset clamps at −height (docs/DECISIONS.md)
 - #103: Plunger slot sign and quaternion precision (docs/DECISIONS.md)
 - #103 tester: Newton swing at rest (docs/DECISIONS.md)
+- #98: Previous camera kept inside PostChain (docs/DECISIONS.md)
+- #98: Spec tests: "behind the near plane" is tested with points behind the eye (docs/DECISIONS.md)
+- #98: Non-finite radius or shutter gives None (docs/DECISIONS.md)
+- #86: Telemetry is encoded on the sim thread (docs/DECISIONS.md)
+- #86: GI telemetry comes from `kind = "gi"` lamps (docs/DECISIONS.md)
+- #86: Coil and magnet telemetry sources (docs/DECISIONS.md)
+- #86: config.toml keys for telemetry and DOF (docs/DECISIONS.md)
+- #86: DOF requires telemetry (docs/DECISIONS.md)
+- #86: The audio thread's placeholder telemetry encoder stays (docs/DECISIONS.md)
+- #86: Rumble restarts from silence on every load, swap and session (docs/DECISIONS.md)
+- #86: Size guard: DOF delivered in the same change (docs/DECISIONS.md)
+- #110 KP-029 (tester): Scope of the rear_left length independence check (docs/DECISIONS.md)
+- #110 KP-029: lib.rs module declaration outside owned paths (docs/DECISIONS.md)
+- #110 KP-029: cabinet.glb frame, node list and material list (docs/DECISIONS.md)
+- #110 KP-029: Glass plane (docs/DECISIONS.md)
+- #110 KP-029: Leveler roll is not a body tilt (docs/DECISIONS.md)
+- #110 KP-029: Trim metal colour (docs/DECISIONS.md)
+- #110 KP-029: Tapered legs are square frusta (docs/DECISIONS.md)
+- #110 KP-029: Cabinet model design values (docs/DECISIONS.md)
+- #110 KP-029: Glass assertion: passes under the bar at the front (Orchestrator ruling) (docs/DECISIONS.md)
+- #128: Lua hook re-arm: direct C call on every reset (docs/DECISIONS.md)
+- #128: Wasm instantiation fuel: measured charges for globals and empty expression segments (docs/DECISIONS.md)
+- #128: Narrow path extension: `exact` table in `src/wasm/mod.rs` (docs/DECISIONS.md)
+- #128: Spec tests: tilt-release model and re-hold assertions (A1, A2) (docs/DECISIONS.md)
+- #128: Spec tests: init_fuel assertions are made without a start function (docs/DECISIONS.md)
+- #129 tester: placement of the release-order property and the mutation fuzz (docs/DECISIONS.md)
+- #129: Checked `DecodeBudget::release` returning `Result` instead of an RAII guard (docs/DECISIONS.md)
+- #129: A sound over the decoded-audio budget is silent; the table still loads (docs/DECISIONS.md)
+- #129: Budget plumbing: `load_app_table_with_budget` and `IoWorker::set_decoded_budget_bytes` (docs/DECISIONS.md)
+- #129: lewton floor 1: overflow is a decode error, valid values unchanged (docs/DECISIONS.md)
+- #227: Mono `Sample` equality and the roll-loop table (docs/DECISIONS.md)
+- #227: Existing budget tests keep their intent at 4 bytes per mono frame (docs/DECISIONS.md)
+- #111 KP-030 (tester): Arched top on modern_standard (docs/DECISIONS.md)
+- #111 KP-030 (tester): Grille discs 2 mm proud (docs/DECISIONS.md)
+- #111 KP-030 (tester): Value checks for position keys (docs/DECISIONS.md)
+- #111 KP-030: Backbox model: nodes, materials and design values (docs/DECISIONS.md)
+- #111 KP-030: Backbox checks beyond the contract's list (docs/DECISIONS.md)
+- #229 KP-108: Backbox width, height and depth must hold two wall-thickness panels (docs/DECISIONS.md)
+- #135: clearance spatial index (docs/DECISIONS.md)
+- #135 tester: Shipped-table verdict check builds the clearance inputs in-process (docs/DECISIONS.md)
+- #135 tester: Scaling scene uses ridged decks, not flat ones (docs/DECISIONS.md)
+- #135 tester: The 4.3 layouts run on their own base bundle (docs/DECISIONS.md)
+- #133 KP-052-T: Device-loss spec tests: fallback path and screenshot hook (docs/DECISIONS.md)
+- #133 KP-052: device-loss rebuild (docs/DECISIONS.md)
+- #239 KP-112: forced loss waits for the queue (docs/DECISIONS.md)
+- #239 KP-112: surfaces are recreated for a DX12 or Vulkan rebuild (docs/DECISIONS.md)
+- #130 (tester): Mid-play retrigger in the 10-minute equality test (docs/DECISIONS.md)
+- #130 (tester): Which state assertions are deterministic (docs/DECISIONS.md)
+- #130: One voice per streamed track, ignored while it plays (docs/DECISIONS.md)
+- #130: Rewind when a streamed voice ends or is stolen (docs/DECISIONS.md)
+- #130: Underrun is silence without skipping (docs/DECISIONS.md)
+- #130: Ring charged whole and clamped to the known length (docs/DECISIONS.md)
+- #130: 10-minute cap kept for streams (docs/DECISIONS.md)
+- #130: Polling loader, no wakeup from the audio thread (docs/DECISIONS.md)
+- #130: Additive `table_audio` instead of changing `RegisteredSound` (docs/DECISIONS.md)
+- #130: A streamed track owns its compressed bytes in memory (docs/DECISIONS.md)
+- Process: Gate reviews have a round limit (docs/DECISIONS.md)
 - #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
 - #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
 - #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
@@ -649,6 +706,9 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate round 13: Windowed verdict: run-end marker, drain bound and frame count (docs/DECISIONS.md)
 - #163 gate round 13: Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes (docs/DECISIONS.md)
 - #163 gate round 13: GPU-leg build step bounded by the cache-save reserve (docs/DECISIONS.md)
+- #163 gate round 14: merge of main: I/O worker budget seam and cabinet on a cancelled swap (docs/DECISIONS.md)
+- #163 gate round 14: Trace never published over the config save scratch, the config recovery copy, or a file of the loaded bundle (docs/DECISIONS.md)
+- #163 gate round 14: Windowed proptest oracle follows the round 13 release-tick rule (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
@@ -667,6 +727,7 @@ Mentions of D33 in the run log, queue and decisions:
 - docs/DECISIONS.md: "blocked" (case-insensitive). Gate lines match `[Gg]ate A<n>` or `[Ww]ave <n> gate`. D33
 - docs/DECISIONS.md: mentions match `D33` not preceded by a letter or digit and not followed by a digit. All inputs
 - docs/DECISIONS.md: Section numbers, subphase numbers ("Subphase 2.3: …") and decision IDs D1–D33 are unchanged, so
+- docs/DECISIONS.md: **Decision:** (1) **One request path, loss state on the context.** `GpuContext::with_instance`, the new `with_instance_features` and `new_headless_with_features` all go through one private `GpuContext::build`, which asks for `device_request(adapter.features(), adapter.limits(), wanted)`: `device_features = (wanted | timestamp queries) & adapter`, downlevel limits at the adapter's resolution, acceleration-structure limits and the experimental opt-in only when ray queries are requested and offered. `build` registers the device's single device-lost callback before it returns, and the callback writes a flag shared by the context (`device_lost`, `device_lost_reason`, first reason wins). `RayQueryReflections::new` shares this flag (`Arc` clone) and no longer registers its own callback. `mark_device_lost` sets a second flag that belongs to that one source, so forwarding a loss to one source does not mark its siblings. `add_mesh`, `read_layer` and `prepare` check the loss before any other work. `GpuError::DeviceLost(reason)` carries the reason only (`"Destroyed"`, `"Unknown: <msg>"`); `fallback_reason()` still reads `"device lost: <reason>"`. `<GpuContext as RayCapability>::device_lost` returns the real flag. (2) **Timestamps on the headless-with-features path.** `new_headless_with_features` now also enables `TIMESTAMP_QUERY` / `TIMESTAMP_QUERY_INSIDE_ENCODERS` when the adapter offers them, because the request path is shared. (3) **Instance and surface reuse.** After a loss the render thread breaks the dead table presenter into its surfaces (`AppSurfaces::into_sources`: presenter threads stopped and joined, renderers, timer and menu overlay dropped, `SurfaceSource`s returned with their window guards and current pixel sizes), clones the instance from the dead context, drops the dead context (under the lifecycle lock, bounded wait), and builds a new context on the same instance with the same `GpuOptions` and `wanted` (empty in the app, D33). It then builds a new `AppSurfaces` with `try_new`, which hands the sources back if it fails. No surface is created on the render thread. (4) **Retry budget.** `RebuildPolicy` (pure) counts a loss once, allows one attempt per render-loop iteration and at most `MAX_DEVICE_REBUILD_ATTEMPTS = 3` attempts per loss, logs every attempt, and resets after a success. After the third failure it logs once, sets `gpu_error` and stops presenting. The forced-loss hook (`RenderConfig::force_device_loss`) destroys the device and then polls without blocking at most 64 times so the callback is delivered. After that, a forced loss and a real one take the same path. (5) **Debug presenter scope.** The `SurfaceSet` debug view cannot give its surfaces back (`gpu/surfaces.rs` is outside this unit). A loss there logs once, sets `gpu_error` and stops presenting. (6) **Presenter-thread surfaces.** `run_presenter` (presenter.rs, outside this unit) consumes its `PresenterTarget`, so a surface owned by a presenter thread cannot be taken back. The thread is stopped and its window guard is kept (the slot now holds a clone, `UnrecoveredSurface`). Each rebuild attempt with such a surface fails with a message naming the window, so a cabinet with a presenter-thread backglass or score window stops presenting after three attempts, as the brief requires. Surfaces skipped for lack of an 8-bit format are now kept in `AppSurfaces` (never drawn) so they can be returned as well. (7) **Display state across a rebuild.** `AppSurfaces` records the sim's `DisplayCommand`s in a `DisplayMemory`: the last scene with its start time and each player's latest score (players below `MAX_PLAYERS`). Commands that arrive while a rebuild is pending go into the same memory. Replaying it (`restore_state`) gives the new renderers the same scene state and score state, and minimised windows stay hidden. The last menu state is shown again on a rebuilt menu overlay. Things that reset: the renderers' `display_commands` counters (they count the replayed commands), `AppSurfaces::frames`, per-renderer GPU history (post chain temporal state, reflection probes rebuilt from scratch), and the HUD text until its next 250 ms refresh. GPU frame timing is not resumed: `GpuFrameTimer::new` consumes the profiler's `PresentProfiler`, and `gpu_timer.rs` provides no way to get it back. One stderr line says so.
 - docs/HUMAN_QUEUE.md: - ~~[3.5] DOF bridge choices to confirm (DECISIONS "3.5 — DOF bridge design choices"): resolved map passed as a temp JSON file, stop = stdin EOF + 1.5 s grace then kill, GI driven via `lamp =` mappings to `kind = "gi"` lamps (no `gi =` key in `[dof]`), lamp value round(v·255). Real DOF hosting (reflection on `DirectOutput.Pinball`) is unverified on hardware (D33) — please try it on a cabinet.~~ Kept open as the P8 line below.
 - docs/HUMAN_QUEUE.md: - [P8 hardware] [3.5] On a Windows cabinet with DOF devices, try the DOF bridge for real (the real DOF host library, spawn and stop, lamp and GI mappings) once the app starts it (cabinet-feedback issue); it ships marked unverified on hardware until then (DECISIONS.md "3.5 — DOF bridge design choices"; D33).
 - docs/HUMAN_QUEUE.md: - ~~[3.5 review round 1, non-blocking] (N2) A late datagram of an OLDER full state arriving after a newer one is taken as a new session (protocol §6 mandates it) and regresses elements until the next full state; needs ~1 s of reordering — known limitation. (N3) After a restart, map entries carried by a lost full-state datagram are forwarded later only if their value differs (DOF state stays consistent; deviation from "sends everything"). (N10) The real Windows spawn path (CREATE_NO_WINDOW, stdin-EOF stop, kill after grace, .exe quoting) is not run by any CI job — unverified, like real DOF (D33). (N12) --parent-pid is open to pid reuse and treats access-denied as dead; stdin EOF covers the normal case.~~ Decided: DECISIONS.md "fix-12-telemetry-session-id — telemetry session id deferred to protocol v2"
