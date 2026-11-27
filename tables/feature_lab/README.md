@@ -50,21 +50,19 @@ From the repository root:
 tables/feature_lab/build.sh target/feature_lab_bundle
 ```
 
-The `pin_tablegen` command line does not read `backbox_layout.toml`, so the
-generation runs in the `build_feature_lab` example of `pin_app`
-(`cargo run -q -p pin_app --example build_feature_lab -- <out_dir>`), which
-uses the `pin_tablegen` library: `layout.toml` gives `playfield.glb`,
-`backbox_layout.toml` gives `backbox.glb` and `backbox_colliders.glb`, both
-merged into one `table.toml` (the generated backbox VUK keeps its generated
-exit on layer 4 above the entry hole; `aim_backbox_vuk` in the example only
-sets its eject, which the generator leaves unset; see the decisions file).
-The example then copies the
+`build.sh` builds only `pin_tablegen` (no SDL3 build headers needed) and
+runs `pin_tablegen build . --out <out_dir>`: `layout.toml` gives
+`playfield.glb`, `backbox_layout.toml` gives `backbox.glb` and
+`backbox_colliders.glb`, both merged into one `table.toml` (the generated
+backbox VUK keeps its generated exit on layer 4 above the entry hole;
+`pin_tablegen::backbox::aim_backbox_vuk` only sets its eject, which the
+generator leaves unset; see the decisions file). The command then copies the
 rules, backglass, layout, glass and scenes and writes the `pin_assetgen`
 placeholder kit (title "Feature Lab", the table's palette, seed 0).
 `build.sh` finally runs `pin_tablegen validate <out_dir>` (ball clearances of
 every declared ball, with the XL ball restricted to its area). The tests
-build the same bundle with `build_feature_lab_bundle(out_dir)`
-(`crates/pin_app/tests/feature_lab_support/`), which includes the example.
+build the same bundle through the library, `pin_tablegen::backbox::build_from`
+(`crates/pin_app/tests/feature_lab_support/`).
 
 ## Run
 
