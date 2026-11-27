@@ -272,19 +272,38 @@ fn is_candidate(path: &Path, is_dir: bool) -> bool {
             .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("pinbundle"))
 }
 
-/// Name of the tables folder next to the executable (the packaged layout:
-/// `<exe dir>/tables`, DECISIONS "7.2 — The app does not scan `<exe
-/// dir>/tables` yet (A12)").
+/// Name of the tables folder in the packaged layout (SPEC §4 Subphase 7.2):
+/// `<exe dir>/tables` on Windows and Linux, and `<Contents>/Resources/tables`
+/// inside a macOS `.app` (the executable sits in `Contents/MacOS`).
 pub const TABLES_DIR_NAME: &str = "tables";
 
-/// The folder the table browser scans (REQ-VIEW-006, Subphase 4.4):
-/// `configured` (`config.toml`'s `tables_dir`) when set, else
+/// Folder name of a macOS bundle's executable directory.
+const MACOS_DIR_NAME: &str = "MacOS";
+/// Folder name of a macOS bundle's `Contents` directory.
+const CONTENTS_DIR_NAME: &str = "Contents";
+/// Folder name of a macOS bundle's resources directory.
+const RESOURCES_DIR_NAME: &str = "Resources";
+
+/// The folder the table browser scans (REQ-VIEW-006, Subphase 4.4, SPEC §4
+/// Subphase 7.2): `configured` (`config.toml`'s `tables_dir`) when set, else
 /// [`TABLES_DIR_NAME`] next to the executable `exe` (its parent folder); an
-/// `exe` without a parent folder (a bare file name) gives `./tables`.
+/// `exe` without a parent folder (a bare file name) gives `./tables`. Inside
+/// a macOS `.app` (the executable's folder is named `MacOS` and its parent
+/// `Contents`, case-sensitive) the folder is `<Contents>/Resources/tables`.
+/// Pure path logic: the filesystem is never consulted.
 #[must_use]
 pub fn resolve_tables_dir(configured: Option<&Path>, exe: &Path) -> PathBuf {
     if let Some(dir) = configured {
         return dir.to_path_buf();
+    }
+    let macos = exe.parent();
+    let contents = macos.and_then(Path::parent);
+    if let (Some(macos), Some(contents)) = (macos, contents) {
+        let is_bundle = macos.file_name().is_some_and(|n| n == MACOS_DIR_NAME)
+            && contents.file_name().is_some_and(|n| n == CONTENTS_DIR_NAME);
+        if is_bundle {
+            return contents.join(RESOURCES_DIR_NAME).join(TABLES_DIR_NAME);
+        }
     }
     match exe.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join(TABLES_DIR_NAME),
@@ -605,6 +624,74 @@ mod tests {
             browser_dir(&a(&["--config", "c.toml", "--tables"]), None, exe),
             Some(PathBuf::from("/opt/kp/tables"))
         );
+        assert_eq!(
+            browser_dir(&[], Some(Path::new("mine")), exe),
+            Some(PathBuf::from("mine"))
+        );
+    }
+
+    /// REQ-VIEW-006, SPEC §4 Subphase 7.2: inside a macOS `.app` the tables
+    /// folder is `Contents/Resources/tables`.
+    #[test]
+    fn req_view_006_resolve_tables_dir_macos_bundle() {
+        assert_eq!(
+            resolve_tables_dir(None, Path::new("/x/K.app/Contents/MacOS/kilohertz-pinball")),
+            PathBuf::from("/x/K.app/Contents/Resources/tables")
+        );
+    }
+
+    /// REQ-VIEW-006, SPEC §4 Subphase 7.2: `MacOS` / `Contents` names alone
+    /// (wrong nesting, wrong case) do not trigger the bundle rule.
+    #[test]
+    fn req_view_006_resolve_tables_dir_non_bundle_macos_names() {
+        for (exe, want) in [
+            ("/x/MacOS/kilohertz-pinball", "/x/MacOS/tables"),
+            ("/x/Other/MacOS/kilohertz-pinball", "/x/Other/MacOS/tables"),
+            ("/x/Contents/kilohertz-pinball", "/x/Contents/tables"),
+            (
+                "/x/contents/macos/kilohertz-pinball",
+                "/x/contents/macos/tables",
+            ),
+            (
+                "/x/Contents/Other/kilohertz-pinball",
+                "/x/Contents/Other/tables",
+            ),
+        ] {
+            assert_eq!(
+                resolve_tables_dir(None, Path::new(exe)),
+                PathBuf::from(want)
+            );
+        }
+    }
+
+    /// REQ-VIEW-006, SPEC §4 Subphase 7.2: Windows and Linux layouts keep
+    /// `<exe dir>/tables`.
+    #[test]
+    fn req_view_006_resolve_tables_dir_windows_and_linux_unchanged() {
+        assert_eq!(
+            resolve_tables_dir(None, Path::new("C:/Games/K/kilohertz-pinball.exe")),
+            PathBuf::from("C:/Games/K/tables")
+        );
+        assert_eq!(
+            resolve_tables_dir(None, Path::new("/opt/k/kilohertz-pinball")),
+            PathBuf::from("/opt/k/tables")
+        );
+    }
+
+    /// REQ-VIEW-006, SPEC §4 Subphase 7.2: a configured folder wins, also
+    /// for a bundle executable path; `browser_dir` follows the same rules.
+    #[test]
+    fn req_view_006_configured_and_browser_dir_with_macos_bundle() {
+        let exe = Path::new("/x/K.app/Contents/MacOS/kilohertz-pinball");
+        assert_eq!(
+            resolve_tables_dir(Some(Path::new("/data/t")), exe),
+            PathBuf::from("/data/t")
+        );
+        assert_eq!(
+            browser_dir(&[], None, exe),
+            Some(PathBuf::from("/x/K.app/Contents/Resources/tables"))
+        );
+        assert_eq!(browser_dir(&["--table".to_owned()], None, exe), None);
         assert_eq!(
             browser_dir(&[], Some(Path::new("mine")), exe),
             Some(PathBuf::from("mine"))
