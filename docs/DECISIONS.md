@@ -10649,3 +10649,17 @@ The spec test `tests/spec_ci/tests/spec_ci_gpu_cross_cache.rs` pinned the litera
 **Rationale.** CodeRabbit round 14 follow-up 4714804098 found a further alias: a case-insensitive Unix volume combined with a symlinked parent directory spelling defeats the same-parent comparison. Every comparison-based guard has another alias. Separating the two name classes closes the whole class without touching the filesystem.
 
 **Alternatives.** Keep adding path-comparison guards (rejected: unbounded). Canonicalise both paths (rejected: racy, and fails for files not created yet). Put the trace temp in another directory (rejected: breaks the same-filesystem atomic rename).
+
+## #163 gate — third merge of main: check b gates the raw count with the gate's frame-validity rules
+
+**Decision.** Merging origin/main 13714be (#149 late snapshot latch, #136 tablegen backbox CLI) into the gate branch keeps #149's check b. The raw count `n_raw <= 2` is the only frame gate, and `frame_count`, `a_failed`, `in_flight_shifted` and the adjusted max/p99 are removed. Every gate rule from rounds 12–14 is kept around that count:
+- the run-end marker in check d, with no tail excuse or end exclusion;
+- the stall-window check;
+- rejection of a selected frame presented before `sdl_ts_ns` or before `drain_sdl_ns` (equal times pass);
+- the frame-row count against the shutdown `F frames`.
+
+In threads.rs the gate's `record_close` and #149's `record_latch` sit side by side, and the trace records `latch.drawn()`. Some of #149's new windowed test fixtures broke the round 13 rules, so their timings were made consistent: `F frames` equals the fixture's frame-table rows (`ok_shutdown_for`, and the unit tests' `verdict()` helper), the in-flight table drains 0.1 ms after the press, and the property generator drains at the applying tick's end. No assertion changed.
+
+**Rationale.** #149 removes an allowance on the count. The gate rejects frames that cannot have shown the press. A real trace satisfies both: the verified 60 s run shows raw max 2 with every check PASS. #149 supersedes the round 12 phrase "the in-flight allowance is unchanged". The fixtures described impossible traces (frames presented before the drain they draw, and a shutdown line that disagrees with the frame table), so they were corrected rather than loosening the rules (R10).
+
+**Alternatives.** Keep the in-flight allowance (rejected by #149 and its DECISIONS entry). Exempt #149's fixtures from the drain or frame-count rules (rejected: it weakens round 13).

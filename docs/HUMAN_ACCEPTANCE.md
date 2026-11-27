@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 16
-- Resolved queue lines: 323
-- Decision entries: 668
-- Run-log rows: 713
+- Open queue lines: 15
+- Resolved queue lines: 324
+- Decision entries: 683
+- Run-log rows: 727
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -37,7 +37,6 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 hardware] [5.4 CR round 1] Run the ray-query reflections on real DX12 and Metal GPUs, record whether the device reports the ray-query feature, then decide whether to enable ray-query reflections by default (D33; DECISIONS.md "5.4 — ray-query support on wgpu 30.0.1"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] Add Windows code signing and macOS signing and notarization (certificates as repository secrets, plus release steps), or accept unsigned archives (D33); after final acceptance, push the first `v*` tag and publish the draft release by hand (D39; DECISIONS.md "7.2 — Release workflow: draft-only, artifacts on dispatch"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
-- [ ] [P8 spec] [KP-002-lat001-frame-form] REQ-LAT-001's CI form ("at most two presented frames from the event to the first frame showing the bat moved") fails correct code when a present returns within the key-to-move time after a press: the in-flight frame cannot show the press and the next frame reads its snapshot before the bat moved, so the raw count is 3 (measured on #82's head: 3–10 of 170 presses per 60 s run at about 8 fps). Proposed SPEC edit: count from the first frame that started after the press took effect (at most two presented frames after the frame in flight), or state the CI form at the 99th percentile as the millisecond form does. See DECISIONS "#82 — Windowed latency check definitions". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-008-slot-meaning] SPEC Appendix A "Dynamic mesh slot convention" calls each slot a "world transform" but the per-kind rules give displacements (drop_target z above raised position; sling/kickback/plunger offset from home/rest) and absolute pivots (spinner, gate, diverter). Proposed edit: header becomes "a transform in world axes (metres, radians) applied to the part's rest pose; per kind below, translation is either an absolute position (pivot, hinge) or an offset from rest/home; the per-kind rule wins". Also say slots are published by KP-023 (#103). See DECISIONS "#163 gate round 8 — dynamic mesh slot meaning". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-009-floor-height-xy] SPEC Appendix A cabinet.toml "Frames" (REQ-BUILD-002) defines the body-bottom height as linear in y only ("mean effective leg length of the front or rear pair - body.leg_overlap, linear in y between the leg centrelines"), which cannot represent the body roll that REQ-CAB-008 derives when left and right legs differ. Proposed edit: "the body bottom is the plane through the four leg-top centres (each leg's effective length less body.leg_overlap); its height at cabinet (x, y) varies linearly with y between the front and rear leg centrelines and with x between the left and right leg centrelines". Caveat: this edit is incomplete until the owner also defines the floor-height rule for non-coplanar leg tops (independent legs, REQ-CAB-007); adoption should include that rule, and #217 waits for it. Implementation: #217 (KP-103). See DECISIONS "#163 gate round 9 — cabinet floor height must vary with x". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-009-art-optional] SPEC Appendix A.4 says a cabinet.toml without `preset` must state every key, but the code and the acceptance test treat `[art]` as optional: an absent `[art]` table means an empty art map, because A.4 defines `[art]` entries as additive. Proposed edit: add "`[art]` may be omitted; absent means no entries" to A.4. See the #163 gate round 11 disposition on PR #197. (docs/HUMAN_QUEUE.md)
@@ -647,6 +646,20 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #131: Preview byte budgets: drop instead of re-decode (docs/DECISIONS.md)
 - #131: ui_scale range, step and fallback (docs/DECISIONS.md)
 - #131: Virtualised table rows: fixed row height (docs/DECISIONS.md)
+- #149: Late snapshot latch; check b gates the raw count (docs/DECISIONS.md)
+- #149: Independent Tester: the check b property oracle (docs/DECISIONS.md)
+- #136 KP-055: pin_tablegen command line: `--backbox` and `build` (docs/DECISIONS.md)
+- #136 KP-055: VUK aim is CLI logic, not backbox_layout.toml data (docs/DECISIONS.md)
+- #136 KP-055: table.toml header comment kept byte-identical (docs/DECISIONS.md)
+- #136 KP-055: Golden digests of the Feature Lab bundle (docs/DECISIONS.md)
+- #136 KP-055: Supersedes "6.4 — build path (example, because the CLI lacks backbox)" (docs/DECISIONS.md)
+- #209 KP-100: diagnostic workflow design (docs/DECISIONS.md)
+- #209 KP-100: WARP srgb_blend_gpu heap corruption: findings (docs/DECISIONS.md)
+- #209 KP-100: Addendum: a stack from main (profiler_gpu, 13714be) (docs/DECISIONS.md)
+- #138 KP-057 (tester): How the black-box tests express the three-switch shot and the vertical flipper (docs/DECISIONS.md)
+- #138 KP-057: shot progress is cleared on every drain and serve (docs/DECISIONS.md)
+- #138 KP-057: a positionless mech switch is credited to the ball nearest its mech (docs/DECISIONS.md)
+- #138 KP-057: the bot's flipper plane comes from the table's surface_normal (docs/DECISIONS.md)
 - #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
 - #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
 - #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
@@ -718,6 +731,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate round 14: Windowed proptest oracle follows the round 13 release-tick rule (docs/DECISIONS.md)
 - #163 gate round 14: Config save scratch matched ignoring case; recovery-copy regression portable (docs/DECISIONS.md)
 - #163 gate round 14: Trace temp file suffix `.part` (docs/DECISIONS.md)
+- #163 gate: third merge of main: check b gates the raw count with the gate's frame-validity rules (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
@@ -835,6 +849,10 @@ Mentions of D33 in the run log, queue and decisions:
 | — | PR #142 bb_catch | Fixer | Opus 5.5 | 1 | done | fmt clean; clippy -p pin_app --all-targets -D warnings clean; pin_app tests pass: feature_lab_a2_catch 5, cr1 7, physics 8, a2_gate 3 (+1 ignored as before), a2_inlane 2, autoplay 1, build 17, flippers 3, modes 4, replay 2, wasm_ports_feature_lab 2, load_validated_backbox 1, sky_deck_layers 5; spec_6_4 structure 9, validate 5, physics 8, rules 13, autoplay 3, alloc 1 (built with --profile dev and no debug info so that build.sh shares their dependencies: disk); the 3 new tests fail on the unmodified table (936 pocket points, first (52, 956); stuck at (13.5, 893.2, 13.5); escape at (16.2, 832.9, -49.3)); build.sh clearance ok; sweeps on the final table, 0 returned into the pocket, 0 stuck, 0 escaped in each: nudge 4,960 (main 1 / 0 / 49), targeted nudge 53,300 (main 126 / 32 / 1,807), backbox frame 7,776 (main 419 failures), extended cr1 756 (main 46 failures), a2 145, entry channel 16, cr1 43; soak 1,000 games each, seed 1, 2 threads: novice 281 s, standard 421 s, expert 483 s, 0 findings, coverage complete, standard median game 106.9 s, median scores 122,085 < 197,405 < 237,965; spikes/spec_0_1 all pass; scripts/tests 128/134 (the 6 others stop at gate_a2.sh's 4 GB free-disk guard); human_acceptance.py --check up to date, P8 lines 10; queue recount 10 P8 + 106 DECIDED + 144 RESOLVED + 8 OBSOLETE + 22 M1 + 51 BACKLOG = 341; Gate A2 for Feature Lab NOT RUN: gate_a2.sh refuses to start under 4 GB free and the disk allowance left at most 3.4 GB (projected ~50 min cold, ~23 min with built binaries) | T2 via work-classifier: Option B, review thread r4646742192 (P6 investigator finding): bb_catch split at y 955 with bb_catch_back (x 66..462, y 955..990) and five bb_cup_* zones around the generated entry zone; static pocket test and two nudge reproductions; R10 corrections: cr1 +y drift sweep accepts a ball resting on the playfield (x 80, vy 0.4 rests at the Banana), physics no-catch edit removes every table-defined 4 -> 0 zone; queue line 6.4-a2fix pocket check Resolved; DECISIONS "PR #142 — Feature Lab bb_catch no longer returns a ball into the closed pocket" |
 
 | — | PR #142 Gate A2 Feature Lab | Orchestrator | Opus 5.5 | 1 | done | `TABLES=feature_lab THREADS=2 scripts/gate_a2.sh` (3 x 1,000 games, seed 1, 20 replays) after the e31ce77/dd5a22d fix: all 31 Feature Lab criteria PASS, no FAIL rows; StuckBall/EndlessBall/EscapedBall/NonFinite 0 at every skill; 19/19 switches, 5/5 shots, 5/5 modes; standard median game 106.7 s; median scores 122,080 / 197,250 / 237,910, strictly increasing; 20/20 replays identical; both supplemental determinism checks pass; soak wall times novice 268 s, standard 382 s, expert 458 s | final line "GATE A2 INCOMPLETE: tables not run: apex_circuit, sky_deck", as expected for a Feature Lab-only run |
+
+| 20-backlog | #138 KP-057 | Classifier | T2 Opus 5.5 | 1 | routed | — | Implementer T2 + Independent Tester T2 (autoplay bot/monitor, module blast radius); FABLE_ALLOWANCE unknown (not needed). Full Gate A2 is a post-merge Orchestrator step. Previous merge: PR #241 (#239) → bd6761e. Start sweep: nothing unblocked (#217 waits on its P8 SPEC condition); in-progress #90/#131/#136/#137 left to their live (review_ready, recently active) sessions; KP-007/032/045/046/051 skipped for path overlap with #90/#91/#163 |
+
+| 20-backlog | #138 KP-057 | Implementer | T2 Opus 5.5 | 1 | done | fmt/clippy clean; `cargo test -p pin_sim` all green; coverage bot 99.2 %, monitor 96.0 %, table 98.7 %, pin_sim 97.0 %; autoplay_alloc ok; replay hash x10 stable; Feature Lab rise 2.0, 100 games seed 1: `bb_flipper_eos` 1024 hits (main 0); 10×20-game soaks identical outside the wall-clock `timing` section; DRY Gate A2 apex all PASS, feature_lab A2.3b score order FAIL (also fails on main) | DECISIONS: shot progress cleared on every drain/serve; positionless switch → nearest ball to its mech; flipper plane from `surface_normal`. Optional requests: re-export `FlipperPlane`; pin_app profiler_support reads `rest_dir` as table x/y |
 
 ## 6. Phase 8 checklist
 
