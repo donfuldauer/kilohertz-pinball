@@ -767,6 +767,26 @@ fn is_config_path(a: &Path, a_meta: Option<&std::fs::Metadata>, b: &Path) -> boo
     }
 }
 
+/// Whether `a` and `b` are in the same (normalised) directory with file
+/// names equal ignoring ASCII case: on a case-insensitive volume they are
+/// one entry even when the paths differ (gate 163 round 14, review comment
+/// 4714559537). Conservative: a false positive only skips a temp-file
+/// candidate. Non-UTF-8 names compare exactly.
+fn same_entry_ignoring_case(a: &Path, b: &Path) -> bool {
+    let (Some(an), Some(bn)) = (a.file_name(), b.file_name()) else {
+        return false;
+    };
+    let names_match = match (an.to_str(), bn.to_str()) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        _ => an == bn,
+    };
+    names_match
+        && match (a.parent(), b.parent()) {
+            (Some(x), Some(y)) => normalised_path(x) == normalised_path(y),
+            _ => false,
+        }
+}
+
 /// The refusal when the `--latency-trace` destination `dest` (metadata
 /// `dest_meta`, `None` when it does not exist) would overwrite or replace
 /// the configuration file `config` (REQ-LAT-003, REQ-VIEW-006; gate 163
@@ -968,10 +988,10 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let mut last = None;
     for n in 0..TRACE_TMP_TRIES {
         let tmp = dir.join(trace_tmp_name(pid, n));
-        if scratch
-            .as_deref()
-            .is_some_and(|s| is_config_path(&tmp, std::fs::metadata(&tmp).ok().as_ref(), s))
-        {
+        if scratch.as_deref().is_some_and(|s| {
+            is_config_path(&tmp, std::fs::metadata(&tmp).ok().as_ref(), s)
+                || same_entry_ignoring_case(&tmp, s)
+        }) {
             continue;
         }
         match owner_only(std::fs::OpenOptions::new().write(true).create_new(true)).open(&tmp) {
@@ -3726,6 +3746,54 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Gate 163 round 14 (review comment 4714559537, REQ-LAT-003,
+    /// REQ-VIEW-006): the scratch-file skip also holds on a case-insensitive
+    /// volume: a configuration `KP-TRACE.<pid>.0` has scratch
+    /// `.KP-TRACE.<pid>.0.tmp`, the same entry as the first trace candidate
+    /// `.kp-trace.<pid>.0.tmp` there, so the trace temp file never equals
+    /// the scratch ignoring ASCII case, on any platform.
+    #[test]
+    fn gate163_r14_config_save_scratch_case_variant_is_never_the_trace_temp_file() {
+        use pin_app::ui::AppConfig;
+        let dir = fresh_dir("r14_scratch_case");
+        let pid = std::process::id();
+        let cfg = dir.join(format!("KP-TRACE.{pid}.0"));
+        let scratch = AppConfig::save_scratch_path(&cfg).unwrap();
+        let dest = dir.join("out.csv");
+        let sink = open_latency_trace(&args(&[
+            "--config",
+            cfg.to_str().unwrap(),
+            "--latency-trace",
+            dest.to_str().unwrap(),
+        ]))
+        .unwrap()
+        .unwrap();
+        let tmp_name = sink
+            .tmp
+            .as_deref()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let scratch_name = scratch.file_name().unwrap().to_str().unwrap();
+        assert!(
+            !tmp_name.eq_ignore_ascii_case(scratch_name),
+            "trace temp {tmp_name} is the scratch {scratch_name} ignoring case"
+        );
+        let saved = AppConfig {
+            wireframe: true,
+            ..AppConfig::default()
+        };
+        saved.save(&cfg).unwrap();
+        let text = saved.to_toml_string().unwrap();
+        sink.commit(b"csv,trace\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), text);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"csv,trace\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Gate 163 round 14 (review comment 4713880930, REQ-LAT-003,
     /// REQ-VIEW-006): the recovery copy a malformed configuration's load
     /// makes (`<name>.bak`, [`pin_app::ui::AppConfig::recovery_path`]) is
@@ -3762,38 +3830,54 @@ mod tests {
         refused(b);
         let dot = format!("{}/./sub/../session.toml.bak", dir.display());
         refused(&dot);
-        // A destination that becomes the recovery copy during the run
-        // (a hard link, standing in for another spelling of the entry).
-        let dest = dir.join("late.csv");
+        // A destination that becomes the recovery copy during the run: a
+        // hard link standing in for another spelling of the entry. The
+        // spelling is a case variant, so on a case-insensitive volume it is
+        // already the same entry and start-up refuses it; the hard link is
+        // made only on Unix, where `same_file` sees the shared file
+        // (elsewhere a distinct hard link is a documented limit, DECISIONS
+        // "#163 gate round 13 - Windows hard-link identity stays a
+        // documented limit").
+        let dest = dir.join("session.toml.BAK");
         let d = dest.to_str().unwrap();
         let open = |trace: &str| {
             open_latency_trace(&args(&["--config", c, "--latency-trace", trace]))
                 .unwrap()
                 .unwrap()
         };
-        let sink = open(d);
-        std::fs::hard_link(&bak, &dest).unwrap();
+        let case_insensitive = dest.exists();
+        if case_insensitive {
+            refused(d);
+        } else {
+            #[cfg(unix)]
+            {
+                let sink = open(d);
+                std::fs::hard_link(&bak, &dest).unwrap();
+                let flag = AtomicBool::new(false);
+                let mut failure = None;
+                assert_eq!(
+                    finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+                    None
+                );
+                assert_eq!(
+                    failure.as_deref(),
+                    Some(
+                        format!(
+                            "--latency-trace: {d} is the configuration recovery copy: the trace \
+                             was not published"
+                        )
+                        .as_str()
+                    )
+                );
+                assert_eq!(std::fs::read_to_string(&bak).unwrap(), "wireframe = [\n");
+                assert_eq!(
+                    names(&dir),
+                    ["session.toml", "session.toml.BAK", "session.toml.bak"]
+                );
+                std::fs::remove_file(&dest).unwrap();
+            }
+        }
         let flag = AtomicBool::new(false);
-        let mut failure = None;
-        assert_eq!(
-            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
-            None
-        );
-        assert_eq!(
-            failure.as_deref(),
-            Some(
-                format!(
-                    "--latency-trace: {d} is the configuration recovery copy: the trace was not \
-                     published"
-                )
-                .as_str()
-            )
-        );
-        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "wireframe = [\n");
-        assert_eq!(
-            names(&dir),
-            ["late.csv", "session.toml", "session.toml.bak"]
-        );
         // A separate destination publishes; both files keep their bytes.
         let other = dir.join("trace.csv");
         let sink = open(other.to_str().unwrap());
