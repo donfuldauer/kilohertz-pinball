@@ -9724,3 +9724,16 @@ timing tests pass unchanged. No branch names a table (R7): the plane comes from 
 the bat to move, and it is fragile at rest). A general projection for +Z too (rejected: `x*1 + y*0
 + z*0` can flip the sign of zero and is not guaranteed bit-identical). No slab test (rejected: a
 vertical flipper's projection collapses the whole layer onto its plane).
+
+## #216 — Follow-up to "#86 — The audio thread's placeholder telemetry encoder stays"
+
+**Decision:** The audio thread's placeholder telemetry encoder and `AudioStats.telemetry_datagrams`
+(with the private `audio_datagrams` atomic) are removed. The sim thread's `TelemetryFeed` plus the
+sender thread from `open_telemetry` are the single telemetry path. No replacement stat is added:
+the sender's `TelemetryReport` is only available at `TelemetryLink::stop()`. The audio thread keeps
+feeding haptic impulses to the SSF exciter mixer and counting them in `haptic_events`.
+`threads_run_the_table_and_feed_the_audio_thread` asserts against that remaining path.
+**Rationale:** Two telemetry paths, one of which sent nothing real, measured a placeholder. The
+removal changes no sim output and keeps the audio loop allocation-free.
+**Alternatives:** Making the stat read the sender's report (needs new live-counter plumbing between
+`audio.rs` and `threads.rs`). Keeping the placeholder (two paths, one of which sends nothing real).

@@ -1,7 +1,7 @@
 //! The engine threads: sim (1 kHz, real time), render (with a table: the
 //! 5.1 PBR playfield and the 5.3 displays, [`TableRenderer`](super::TableRenderer);
 //! without one: the 1.4 debug view), audio (sim sound triggers → 3.3 mixer,
-//! haptics → SSF exciter mix and telemetry, the 7.1 mix into an
+//! haptics → SSF exciter mix, the 7.1 mix into an
 //! [`AudioSink`]: a device, an offline recording or the null sink) and I/O
 //! (a placeholder that parks until shutdown). The main thread stays the SDL
 //! pump (D6) and only talks to these threads through rings, the triple
@@ -35,10 +35,8 @@ use crate::profiler::{
     CommandQueueOverflows, FrameRateMeter, HudRates, LoopProfiler, PresentProfiler, ProfiledSim,
     Profiler, ProfilerReader, hud_rate_lines,
 };
-use arrayvec::ArrayVec;
 use pin_audio::mixer::{MixerConfig, SoundReceiver};
 use pin_audio::ssf::{CHANNELS, SsfConfig};
-use pin_audio::telemetry::{DatagramBatch, TelemetryEncoder, TelemetryState};
 use pin_core::haptics::HapticEvent;
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::spsc::SpscConsumer;
@@ -236,8 +234,6 @@ pub struct AudioStats {
     pub haptic_events: u64,
     /// 7.1 frames (3.3 mixer + SSF) rendered into the sink.
     pub frames: u64,
-    /// Telemetry datagrams encoded (haptic impulses, kind 5).
-    pub telemetry_datagrams: u64,
     /// Frames the 3.3 mixer rendered.
     pub mixer_frames: u64,
     /// Mixer voices still playing at the end of the last block.
@@ -388,7 +384,6 @@ pub struct OrchestratorStats {
     device_rebuilds: AtomicU64,
     audio_haptic_events: AtomicU64,
     audio_frames: AtomicU64,
-    audio_datagrams: AtomicU64,
     audio_mixer_frames: AtomicU64,
     audio_mixer_voices: AtomicU64,
     audio_mixer_peak: AtomicU64,
@@ -464,7 +459,6 @@ impl Default for OrchestratorStats {
             device_rebuilds: AtomicU64::new(0),
             audio_haptic_events: AtomicU64::new(0),
             audio_frames: AtomicU64::new(0),
-            audio_datagrams: AtomicU64::new(0),
             audio_mixer_frames: AtomicU64::new(0),
             audio_mixer_voices: AtomicU64::new(0),
             audio_mixer_peak: AtomicU64::new(0),
@@ -534,7 +528,6 @@ impl OrchestratorStats {
         AudioStats {
             haptic_events: self.audio_haptic_events.load(Ordering::Relaxed),
             frames: self.audio_frames.load(Ordering::Relaxed),
-            telemetry_datagrams: self.audio_datagrams.load(Ordering::Relaxed),
             mixer_frames: self.audio_mixer_frames.load(Ordering::Relaxed),
             mixer_voices: self.audio_mixer_voices.load(Ordering::Relaxed),
             mixer_peak_voices: self.audio_mixer_peak.load(Ordering::Relaxed),
@@ -829,8 +822,9 @@ impl Drop for Threads {
     }
 }
 
-/// The audio thread: drains haptic impulses into the SSF exciter mixer and
-/// the telemetry encoder; the 3.3 mixer drains the sim's sound triggers;
+/// The audio thread: drains haptic impulses into the SSF exciter mixer (it
+/// encodes no telemetry: the sim thread's feed and the sender thread are the
+/// one telemetry path, #216); the 3.3 mixer drains the sim's sound triggers;
 /// each block (the mixer's stereo on FL/FR plus the SSF channels) goes to
 /// the sink. Unpaced sinks get one block per `period`; a device sink is
 /// kept a few blocks ahead. Allocates its buffers once, before the loop.
@@ -850,36 +844,19 @@ fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorSta
     drop(samples);
     drop(source_positions);
     let mut sink: Box<dyn AudioSink> = sink.unwrap_or_else(|| Box::new(NullSink::default()));
-    let mut encoder = TelemetryEncoder::new();
-    let mut batch = DatagramBatch::new();
-    let state = TelemetryState::new();
-    let mut impulses: ArrayVec<HapticsTelemetryEvent, 64> = ArrayVec::new();
     /// Most blocks a paced sink gets per wake-up (catch-up bound).
     const MAX_BLOCKS_PER_WAKE: usize = 8;
     while !shutdown.load(Ordering::Acquire) {
         if let Some(rx) = haptics.as_mut() {
-            loop {
-                impulses.clear();
-                while !impulses.is_full() {
-                    match rx.pop() {
-                        Some(e) => {
-                            engine.feed_haptic(HapticEvent::from(e));
-                            impulses.push(e);
-                        }
-                        None => break,
-                    }
-                }
-                if impulses.is_empty() {
-                    break;
-                }
+            let mut received = 0u64;
+            while let Some(e) = rx.pop() {
+                engine.feed_haptic(HapticEvent::from(e));
+                received += 1;
+            }
+            if received > 0 {
                 stats
                     .audio_haptic_events
-                    .fetch_add(impulses.len() as u64, Ordering::Relaxed);
-                let tick = impulses.last().map_or(0, |e| e.tick);
-                encoder.encode_tick(tick, &state, &impulses, &mut batch);
-                stats
-                    .audio_datagrams
-                    .fetch_add(batch.len() as u64, Ordering::Relaxed);
+                    .fetch_add(received, Ordering::Relaxed);
             }
         }
         let blocks = if sink.paced() { MAX_BLOCKS_PER_WAKE } else { 1 };
