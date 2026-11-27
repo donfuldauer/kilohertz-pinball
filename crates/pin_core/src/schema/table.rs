@@ -1,6 +1,7 @@
 //! `table.toml` (PLAN.md Appendix A.1). Lengths mm, masses g, angles degrees;
 //! elements referenced by name.
 
+use super::parts::{MaterialDef, PartDef, PartStyleDef, ThemeDef};
 use super::physics::{PhysicsOverrides, PhysicsParams};
 use super::{Manifest, SchemaError, manifest_io};
 use crate::flipper::{FlipperConfig, FlipperShape, FlipperStagingMode};
@@ -75,6 +76,19 @@ pub struct TableManifest {
     /// Optional `[dof]` (Subphase 3.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dof: Option<DofSection>,
+    /// Optional `[theme]`: what the art generators draw (SPEC A.5; see
+    /// [`TableManifest::effective_theme`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeDef>,
+    /// `[[materials]]`: entries added to (or replacing) the built-in material library (SPEC A.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<MaterialDef>,
+    /// `[[part_styles]]`: table part styles (SPEC A.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub part_styles: Vec<PartStyleDef>,
+    /// `[[parts]]`: placed or bound styled parts (SPEC A.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartDef>,
 }
 
 impl Manifest for TableManifest {
@@ -88,7 +102,7 @@ impl Manifest for TableManifest {
                 m.validate()?;
             }
         }
-        Ok(())
+        self.validate_parts()
     }
 }
 

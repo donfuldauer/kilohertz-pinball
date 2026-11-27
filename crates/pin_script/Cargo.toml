@@ -7,17 +7,147 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+# #164 KP-070: one feature per backend (D10 amended, REQ-WEB-001). The default
+# keeps every native build unchanged; `--no-default-features` builds only the
+# engine-neutral modules (`config`, `rng`, `budget`, the Wasm pre-scan and the
+# name tables), which compile for wasm32-unknown-unknown.
+[features]
+default = ["lua", "wasmtime"]
+# The Lua 5.4 backend (mlua with the vendored, patched Lua 5.4) and the
+# engine's libm. Hot reload (`lua::reload`) needs `wasmtime` as well (notify).
+lua = ["dep:mlua", "dep:libm"]
+# The native Wasm backend (wasmtime), WAT text input to the pre-scan and the
+# file watcher hot reload uses.
+wasmtime = ["dep:wasmtime", "dep:wat", "dep:notify"]
+# The web Wasm engine dependency only (its backend is a later unit).
+wasmi = ["dep:wasmi"]
+
 [dependencies]
 pin_core.workspace = true
-mlua.workspace = true
-notify.workspace = true
-# 4.5 fix B1: wasmtime::wasmparser (the exact version wasmtime uses) for the
-# pre-compile size scan.
-wasmtime = { workspace = true, features = ["reexport-wasmparser"] }
+# #164 KP-070: the pre-compile scan (`wasm/limits.rs`) uses wasmparser
+# directly, the exact version wasmtime 50.0.1 resolves, so it builds without
+# any backend; wasm-encoder is the same wasm-tools release.
+wasmparser.workspace = true
+wasm-encoder.workspace = true
+mlua = { workspace = true, optional = true }
+libm = { workspace = true, optional = true }
+notify = { workspace = true, optional = true }
+# `reexport-wasmparser`: the existing suites name `wasmtime::wasmparser`.
+wasmtime = { workspace = true, features = ["reexport-wasmparser"], optional = true }
 # 4.5 fix B1: WAT text -> binary before the size pre-scan. The exact version
-# wasmtime 50 already pulls in (Cargo.lock); Orchestrator may move the pin to
-# the root.
-wat.workspace = true
+# wasmtime 50 already pulls in (Cargo.lock).
+wat = { workspace = true, optional = true }
+wasmi = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
+# #164 KP-070: random valid modules for the later wasmtime/wasmi differential
+# test (the wasm-tools release of wasmparser 0.261.0).
+wasm-smith.workspace = true
+
+# #164 KP-070: the suites below predate the backend features and drive both
+# native backends; they build and run with the default features.
+
+[[test]]
+name = "callback_cost"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "cr_lua_budget"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "cr_weak_tables"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "lua_addr_free"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "lua_alloc"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "lua_backend"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_api"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_crossproc"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_determinism"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_faults"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_hardening"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_kp047_wasm_fuel"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_lua_addr_free"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_reload"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_sandbox"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_stall"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_wasm_alloc"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_wasm_api"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_wasm_parity"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_wasm_reload"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "spec_wasm_sandbox"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "wasm_alloc"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "wasm_backend"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "wasm_compile_cost"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "wasm_operator_sweep"
+required-features = ["lua", "wasmtime"]
+
+[[test]]
+name = "wasm_parity"
+required-features = ["lua", "wasmtime"]

@@ -39,6 +39,20 @@ impl Material {
         Material::Acrylic,
     ];
 
+    /// The ball materials (Appendix C), in declaration order. A material a ball can touch
+    /// needs a pair with at least one of them (REQ-BUILD-004).
+    pub const BALL: [Material; 4] = [
+        Material::Steel,
+        Material::Ceramic,
+        Material::Plastic,
+        Material::Resin,
+    ];
+
+    /// True for a ball material ([`Self::BALL`]).
+    pub fn is_ball(self) -> bool {
+        Material::BALL.contains(&self)
+    }
+
     /// The lower-case name used in TOML files.
     pub const fn name(self) -> &'static str {
         match self {
@@ -93,6 +107,13 @@ mod tests {
             assert_eq!(Material::from_name(m.name()), Some(m));
         }
         assert_eq!(Material::from_name("granite"), None);
+    }
+
+    #[test]
+    fn ball_materials() {
+        let balls: Vec<Material> = Material::ALL.into_iter().filter(|m| m.is_ball()).collect();
+        assert_eq!(balls, Material::BALL.to_vec());
+        assert!(!Material::Rubber.is_ball());
     }
 
     #[test]

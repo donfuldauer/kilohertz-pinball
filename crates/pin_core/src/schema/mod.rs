@@ -14,6 +14,7 @@ pub mod backglass;
 pub mod cabinet;
 pub mod glass;
 pub mod layout;
+pub mod parts;
 pub mod physics;
 pub mod table;
 
@@ -23,6 +24,11 @@ pub use cabinet::{
 };
 pub use glass::{GLASS_FILE, GlassManifest};
 pub use layout::LayoutManifest;
+pub use parts::{
+    MaterialDef, PartDef, PartKind, PartLibrary, PartStyleDef, Placement, ResolvedMaterial,
+    ResolvedPart, ResolvedStyle, RingSize, Shape, StyleField, StyleFields, Theme, ThemeDef,
+    check_physical_pairs,
+};
 pub use physics::{MechDefaults, PhysicsDefaults, PhysicsOverrides, PhysicsParams};
 pub use table::MechParams;
 pub use table::TableManifest;
