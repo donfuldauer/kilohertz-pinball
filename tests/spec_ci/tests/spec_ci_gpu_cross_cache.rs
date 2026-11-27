@@ -17,6 +17,7 @@ use yaml_rust2::{Yaml, YamlLoader};
 const JOB: &str = "gpu-tests-cross";
 const GPU_TEST: &str = "cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app";
 const BUILD_TIMEOUT_MIN: i64 = 32;
+const MIN_TEST_MIN: i64 = 10;
 // Step timeouts never exceed the job cap.
 const _: () = assert!(BUILD_TIMEOUT_MIN <= 45);
 
@@ -99,10 +100,17 @@ fn gpu_cross_cache_build_step_precedes_bounded_test_run() {
         build < test,
         "the --no-run build must come before the test run"
     );
+    // Gate #163 round 13: the build timeout is computed by `build_budget`, not a literal.
     assert_eq!(
-        steps[build]["timeout-minutes"].as_i64(),
-        Some(BUILD_TIMEOUT_MIN),
-        "build step timeout"
+        str_of(&steps[build], "timeout-minutes"),
+        Some("${{ fromJSON(steps.build_budget.outputs.minutes) }}"),
+        "build step timeout comes from the build_budget step"
+    );
+    let (start, _) = step_by_id(&steps, "start");
+    let (build_budget, _) = step_by_id(&steps, "build_budget");
+    assert!(
+        start < build_budget && build_budget < build,
+        "build_budget is computed after `start` and before the build"
     );
     let (budget, _) = step_by_id(&steps, "budget");
     assert!(
@@ -114,9 +122,58 @@ fn gpu_cross_cache_build_step_precedes_bounded_test_run() {
         Some("${{ fromJSON(steps.budget.outputs.minutes) }}"),
         "the test run is bounded by the computed budget"
     );
-    for i in [build, budget, test] {
+    for i in [build_budget, build, budget, test] {
         assert_eq!(str_of(&steps[i], "if"), Some("runner.os != 'Linux'"));
     }
+}
+
+/// Gate #163 round 13: the build step's cap is min(BUILD_TIMEOUT_MIN, job cap - reserve -
+/// elapsed), using the same reserve/elapsed formula as the test-step budget.
+#[test]
+fn gpu_cross_cache_build_budget_clamps_to_the_job_cap() {
+    let steps = steps();
+    let (_, bb) = step_by_id(&steps, "build_budget");
+    let (_, tb) = step_by_id(&steps, "budget");
+    let env = &bb["env"];
+    assert_eq!(
+        str_of(env, "MAX_BUILD_MIN"),
+        Some(BUILD_TIMEOUT_MIN.to_string().as_str()),
+        "the build never gets more than the old fixed cap"
+    );
+    let cap = Workflow::load("ci.yml").job(JOB).unwrap().timeout_minutes();
+    assert_eq!(
+        str_of(env, "JOB_TIMEOUT_MIN").and_then(|v| v.parse::<i64>().ok()),
+        cap,
+        "build_budget uses the job's own timeout"
+    );
+    assert_eq!(
+        str_of(env, "JOB_START"),
+        Some("${{ steps.start.outputs.epoch }}")
+    );
+    assert_eq!(
+        str_of(env, "CACHE_HIT"),
+        Some("${{ steps.rust-cache.outputs.cache-hit }}")
+    );
+    let script = str_of(bb, "run").expect("build_budget has a script");
+    let test_script = str_of(tb, "run").expect("budget has a script");
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let test_lines: Vec<&str> = test_script.lines().map(str::trim).collect();
+    for formula in [
+        r#"if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi"#,
+        "elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))",
+        "minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))",
+    ] {
+        assert!(lines.contains(&formula), "build_budget lacks `{formula}`");
+        assert!(test_lines.contains(&formula), "budget lacks `{formula}`");
+    }
+    let clamp = r#"if [ "$minutes" -gt "$MAX_BUILD_MIN" ]; then minutes=$MAX_BUILD_MIN; fi"#;
+    let pos = |l: &str| lines.iter().position(|x| *x == l);
+    let calc = pos("minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))").unwrap();
+    assert!(
+        pos(clamp).is_some_and(|c| c > calc),
+        "the MAX_BUILD_MIN clamp follows the formula"
+    );
+    assert!(script.contains(r#"echo "minutes=$minutes" >> "$GITHUB_OUTPUT""#));
 }
 
 #[test]
@@ -149,6 +206,11 @@ fn gpu_cross_cache_budget_constants_match_the_job() {
         "the budget uses the job's own timeout"
     );
     assert_eq!(
+        str_of(env, "MIN_TEST_MIN").and_then(|v| v.parse::<i64>().ok()),
+        Some(MIN_TEST_MIN),
+        "the budget declares the minimum useful test time"
+    );
+    assert_eq!(
         str_of(env, "JOB_START"),
         Some("${{ steps.start.outputs.epoch }}")
     );
@@ -158,9 +220,15 @@ fn gpu_cross_cache_budget_constants_match_the_job() {
     );
 }
 
-/// Runs the budget step's script in bash with `date` fixed at `now` and returns the
-/// `minutes=` value it writes to `$GITHUB_OUTPUT`.
-fn run_budget(start: u64, now: u64, cache_hit: &str) -> i64 {
+/// Outcome of the budget script: exit success, the `minutes=` lines written, and stdout.
+struct Budget {
+    success: bool,
+    minutes: Vec<i64>,
+    stdout: String,
+}
+
+/// Runs the budget step's script in bash with `date` fixed at `now`.
+fn run_budget(start: u64, now: u64, cache_hit: &str) -> Budget {
     let steps = steps();
     let (_, budget) = step_by_id(&steps, "budget");
     let script = str_of(budget, "run")
@@ -168,6 +236,9 @@ fn run_budget(start: u64, now: u64, cache_hit: &str) -> i64 {
         .to_owned();
     let timeout = str_of(&budget["env"], "JOB_TIMEOUT_MIN")
         .unwrap()
+        .to_owned();
+    let min_test = str_of(&budget["env"], "MIN_TEST_MIN")
+        .expect("budget declares MIN_TEST_MIN")
         .to_owned();
 
     let dir: PathBuf = std::env::temp_dir().join(format!(
@@ -189,47 +260,77 @@ fn run_budget(start: u64, now: u64, cache_hit: &str) -> i64 {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let status = Command::new("bash")
+    let res = Command::new("bash")
         .args(["--noprofile", "--norc", "-eo", "pipefail", "-c", &script])
         .env("PATH", path)
         .env("GITHUB_OUTPUT", &output)
         .env("JOB_START", start.to_string())
         .env("JOB_TIMEOUT_MIN", timeout)
+        .env("MIN_TEST_MIN", min_test)
         .env("CACHE_HIT", cache_hit)
-        .status()
+        .output()
         .expect("bash runs");
-    assert!(status.success(), "budget script failed");
     let out = std::fs::read_to_string(&output).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    out.lines()
-        .find_map(|l| l.strip_prefix("minutes="))
-        .expect("budget writes minutes=")
-        .trim()
-        .parse()
-        .expect("minutes is an integer")
+    Budget {
+        success: res.status.success(),
+        minutes: out
+            .lines()
+            .filter_map(|l| l.strip_prefix("minutes="))
+            .map(|v| v.trim().parse().expect("minutes is an integer"))
+            .collect(),
+        stdout: String::from_utf8_lossy(&res.stdout).into_owned(),
+    }
+}
+
+/// Expects a successful run writing exactly one `minutes=` value.
+fn minutes_of(start: u64, now: u64, cache_hit: &str) -> i64 {
+    let b = run_budget(start, now, cache_hit);
+    assert!(b.success, "budget script failed: {}", b.stdout);
+    assert_eq!(b.minutes.len(), 1, "one minutes= line");
+    b.minutes[0]
 }
 
 #[test]
 fn gpu_cross_cache_budget_leaves_time_for_the_cache_save() {
     const T0: u64 = 1_000_000;
-    // Cold run (no exact cache hit), build finished 30 min after the first step:
-    // elapsed rounds to 30 + 1 min set-up allowance, reserve 8 -> 45 - 8 - 31 = 6.
-    assert_eq!(run_budget(T0, T0 + 30 * 60, "false"), 6);
-    // A partial minute rounds up: 30 min 1 s counts as 31 (+1) -> 5.
-    assert_eq!(run_budget(T0, T0 + 30 * 60 + 1, ""), 5);
+    // (a) Cold run (no exact cache hit), 25 min after the first step: elapsed rounds to
+    // 25 + 1 min set-up allowance, reserve 8 -> 45 - 8 - 26 = 11.
+    assert_eq!(minutes_of(T0, T0 + 25 * 60, "false"), 11);
+    // A partial minute rounds up: 25 min 1 s counts as 26 (+1) -> 10, exactly MIN_TEST_MIN.
+    assert_eq!(minutes_of(T0, T0 + 25 * 60 + 1, ""), 10);
     // Warm run (exact hit, save skipped): 12 min used, reserve 1 -> 45 - 1 - 13 = 31,
     // which covers the 15.5-minute test run.
-    assert_eq!(run_budget(T0, T0 + 12 * 60, "true"), 31);
-    // Out of time: the step still gets the 1-minute minimum GitHub accepts.
-    assert_eq!(run_budget(T0, T0 + 44 * 60, "false"), 1);
-    // Every cold-run budget that can still fit ends at least 8 minutes before the job cap.
-    for used in 0..=35u64 {
-        let minutes = run_budget(T0, T0 + used * 60, "false");
-        assert!(minutes >= 1);
-        assert!(
-            (used as i64) + 1 + minutes <= 45 - 8,
-            "used {used} min, test step gets {minutes} min"
-        );
+    assert_eq!(minutes_of(T0, T0 + 12 * 60, "true"), 31);
+    // (b) Too little time left: the step fails before the test step (non-zero exit), writes
+    // no `minutes=` line and reports the reason. Previously the clamp wrote minutes=1 here
+    // (assert_eq!(run_budget(T0, T0 + 44 * 60, "false"), 1)), eating into the 8-minute reserve.
+    for (used, hit) in [(44u64, "false"), (30, "false"), (27, ""), (40, "true")] {
+        let b = run_budget(T0, T0 + used * 60, hit);
+        assert!(!b.success, "used {used} min, hit {hit:?} must fail");
+        assert!(b.minutes.is_empty(), "no minutes= below the threshold");
+        assert!(b.stdout.contains("::error::only "), "stdout: {}", b.stdout);
+        assert!(b.stdout.contains("min left for the tests"));
+    }
+    // (c) The reserve is never reduced: every value written ends at least `reserve` minutes
+    // before the job cap, and is at least MIN_TEST_MIN.
+    for (hit, reserve) in [("false", 8i64), ("true", 1)] {
+        for used in 0..=60u64 {
+            let b = run_budget(T0, T0 + used * 60, hit);
+            for m in &b.minutes {
+                assert!(*m >= MIN_TEST_MIN);
+                assert!(
+                    (used as i64) + 1 + m + reserve <= 45,
+                    "used {used} min, reserve {reserve}, test step gets {m} min"
+                );
+            }
+            assert_eq!(b.success, !b.minutes.is_empty(), "used {used} min");
+            assert_eq!(
+                b.success,
+                45 - reserve - (used as i64 + 1) >= MIN_TEST_MIN,
+                "used {used} min, reserve {reserve}"
+            );
+        }
     }
 }
 

@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 11
-- Resolved queue lines: 323
-- Decision entries: 533
-- Run-log rows: 570
+- Open queue lines: 15
+- Resolved queue lines: 324
+- Decision entries: 683
+- Run-log rows: 727
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -37,7 +37,11 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 hardware] [5.4 CR round 1] Run the ray-query reflections on real DX12 and Metal GPUs, record whether the device reports the ray-query feature, then decide whether to enable ray-query reflections by default (D33; DECISIONS.md "5.4 — ray-query support on wgpu 30.0.1"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] Add Windows code signing and macOS signing and notarization (certificates as repository secrets, plus release steps), or accept unsigned archives (D33); after final acceptance, push the first `v*` tag and publish the draft release by hand (D39; DECISIONS.md "7.2 — Release workflow: draft-only, artifacts on dispatch"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
-- [ ] [P8 spec] [KP-002-lat001-frame-form] REQ-LAT-001's CI form ("at most two presented frames from the event to the first frame showing the bat moved") fails correct code when a present returns within the key-to-move time after a press: the in-flight frame cannot show the press and the next frame reads its snapshot before the bat moved, so the raw count is 3 (measured on #82's head: 3–10 of 170 presses per 60 s run at about 8 fps). Proposed SPEC edit: count from the first frame that started after the press took effect (at most two presented frames after the frame in flight), or state the CI form at the 99th percentile as the millisecond form does. See DECISIONS "#82 — Windowed latency check definitions". (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-008-slot-meaning] SPEC Appendix A "Dynamic mesh slot convention" calls each slot a "world transform" but the per-kind rules give displacements (drop_target z above raised position; sling/kickback/plunger offset from home/rest) and absolute pivots (spinner, gate, diverter). Proposed edit: header becomes "a transform in world axes (metres, radians) applied to the part's rest pose; per kind below, translation is either an absolute position (pivot, hinge) or an offset from rest/home; the per-kind rule wins". Also say slots are published by KP-023 (#103). See DECISIONS "#163 gate round 8 — dynamic mesh slot meaning". (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-009-floor-height-xy] SPEC Appendix A cabinet.toml "Frames" (REQ-BUILD-002) defines the body-bottom height as linear in y only ("mean effective leg length of the front or rear pair - body.leg_overlap, linear in y between the leg centrelines"), which cannot represent the body roll that REQ-CAB-008 derives when left and right legs differ. Proposed edit: "the body bottom is the plane through the four leg-top centres (each leg's effective length less body.leg_overlap); its height at cabinet (x, y) varies linearly with y between the front and rear leg centrelines and with x between the left and right leg centrelines". Caveat: this edit is incomplete until the owner also defines the floor-height rule for non-coplanar leg tops (independent legs, REQ-CAB-007); adoption should include that rule, and #217 waits for it. Implementation: #217 (KP-103). See DECISIONS "#163 gate round 9 — cabinet floor height must vary with x". (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-009-art-optional] SPEC Appendix A.4 says a cabinet.toml without `preset` must state every key, but the code and the acceptance test treat `[art]` as optional: an absent `[art]` table means an empty art map, because A.4 defines `[art]` entries as additive. Proposed edit: add "`[art]` may be omitted; absent means no entries" to A.4. See the #163 gate round 11 disposition on PR #197. (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [#163] Gate #163 rounds 11 and 12 edited `docs/PROCESS.md` P6 to resolve CodeRabbit gate-review findings, which P8 lists as an owner edit. The edits: the gate boundary is the reviewed head, not the merge commit; only PRs into `main` are merged; review fix issues of an open gate review are not gate issues; missed-gate fixes go through ordinary PRs; the RUN_LOG-row commit is the only unreviewed commit above the reviewed head. Please ratify or revert them (DECISIONS "#163 gate round 11 — Gate review boundary is the reviewed head, not the merge commit" and the two "#163 gate round 12" process entries). (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [#163-r13] Ratify the round 13 PROCESS.md edits (DECISIONS "#163 gate round 13 — Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes"). P5 unit gate item 8 adds the gate-review owned-path union through RUN_LOG `fix paths` and the missed-gate tree check. P6 "Review PR" step 6 gains a "Missed gate" paragraph: candidate head = reviewed head; CI, verifier and automated gates on it before approval is recorded; RUN_LOG row through a documentation-only PR off main; close-out without a merge. The backstop, step 4 "Fixed" and step 7 gain pointers to it. (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -578,6 +582,156 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #103: Drop target offset clamps at −height (docs/DECISIONS.md)
 - #103: Plunger slot sign and quaternion precision (docs/DECISIONS.md)
 - #103 tester: Newton swing at rest (docs/DECISIONS.md)
+- #98: Previous camera kept inside PostChain (docs/DECISIONS.md)
+- #98: Spec tests: "behind the near plane" is tested with points behind the eye (docs/DECISIONS.md)
+- #98: Non-finite radius or shutter gives None (docs/DECISIONS.md)
+- #86: Telemetry is encoded on the sim thread (docs/DECISIONS.md)
+- #86: GI telemetry comes from `kind = "gi"` lamps (docs/DECISIONS.md)
+- #86: Coil and magnet telemetry sources (docs/DECISIONS.md)
+- #86: config.toml keys for telemetry and DOF (docs/DECISIONS.md)
+- #86: DOF requires telemetry (docs/DECISIONS.md)
+- #86: The audio thread's placeholder telemetry encoder stays (docs/DECISIONS.md)
+- #86: Rumble restarts from silence on every load, swap and session (docs/DECISIONS.md)
+- #86: Size guard: DOF delivered in the same change (docs/DECISIONS.md)
+- #110 KP-029 (tester): Scope of the rear_left length independence check (docs/DECISIONS.md)
+- #110 KP-029: lib.rs module declaration outside owned paths (docs/DECISIONS.md)
+- #110 KP-029: cabinet.glb frame, node list and material list (docs/DECISIONS.md)
+- #110 KP-029: Glass plane (docs/DECISIONS.md)
+- #110 KP-029: Leveler roll is not a body tilt (docs/DECISIONS.md)
+- #110 KP-029: Trim metal colour (docs/DECISIONS.md)
+- #110 KP-029: Tapered legs are square frusta (docs/DECISIONS.md)
+- #110 KP-029: Cabinet model design values (docs/DECISIONS.md)
+- #110 KP-029: Glass assertion: passes under the bar at the front (Orchestrator ruling) (docs/DECISIONS.md)
+- #128: Lua hook re-arm: direct C call on every reset (docs/DECISIONS.md)
+- #128: Wasm instantiation fuel: measured charges for globals and empty expression segments (docs/DECISIONS.md)
+- #128: Narrow path extension: `exact` table in `src/wasm/mod.rs` (docs/DECISIONS.md)
+- #128: Spec tests: tilt-release model and re-hold assertions (A1, A2) (docs/DECISIONS.md)
+- #128: Spec tests: init_fuel assertions are made without a start function (docs/DECISIONS.md)
+- #129 tester: placement of the release-order property and the mutation fuzz (docs/DECISIONS.md)
+- #129: Checked `DecodeBudget::release` returning `Result` instead of an RAII guard (docs/DECISIONS.md)
+- #129: A sound over the decoded-audio budget is silent; the table still loads (docs/DECISIONS.md)
+- #129: Budget plumbing: `load_app_table_with_budget` and `IoWorker::set_decoded_budget_bytes` (docs/DECISIONS.md)
+- #129: lewton floor 1: overflow is a decode error, valid values unchanged (docs/DECISIONS.md)
+- #227: Mono `Sample` equality and the roll-loop table (docs/DECISIONS.md)
+- #227: Existing budget tests keep their intent at 4 bytes per mono frame (docs/DECISIONS.md)
+- #111 KP-030 (tester): Arched top on modern_standard (docs/DECISIONS.md)
+- #111 KP-030 (tester): Grille discs 2 mm proud (docs/DECISIONS.md)
+- #111 KP-030 (tester): Value checks for position keys (docs/DECISIONS.md)
+- #111 KP-030: Backbox model: nodes, materials and design values (docs/DECISIONS.md)
+- #111 KP-030: Backbox checks beyond the contract's list (docs/DECISIONS.md)
+- #229 KP-108: Backbox width, height and depth must hold two wall-thickness panels (docs/DECISIONS.md)
+- #135: clearance spatial index (docs/DECISIONS.md)
+- #135 tester: Shipped-table verdict check builds the clearance inputs in-process (docs/DECISIONS.md)
+- #135 tester: Scaling scene uses ridged decks, not flat ones (docs/DECISIONS.md)
+- #135 tester: The 4.3 layouts run on their own base bundle (docs/DECISIONS.md)
+- #133 KP-052-T: Device-loss spec tests: fallback path and screenshot hook (docs/DECISIONS.md)
+- #133 KP-052: device-loss rebuild (docs/DECISIONS.md)
+- #239 KP-112: forced loss waits for the queue (docs/DECISIONS.md)
+- #239 KP-112: surfaces are recreated for a DX12 or Vulkan rebuild (docs/DECISIONS.md)
+- #130 (tester): Mid-play retrigger in the 10-minute equality test (docs/DECISIONS.md)
+- #130 (tester): Which state assertions are deterministic (docs/DECISIONS.md)
+- #130: One voice per streamed track, ignored while it plays (docs/DECISIONS.md)
+- #130: Rewind when a streamed voice ends or is stolen (docs/DECISIONS.md)
+- #130: Underrun is silence without skipping (docs/DECISIONS.md)
+- #130: Ring charged whole and clamped to the known length (docs/DECISIONS.md)
+- #130: 10-minute cap kept for streams (docs/DECISIONS.md)
+- #130: Polling loader, no wakeup from the audio thread (docs/DECISIONS.md)
+- #130: Additive `table_audio` instead of changing `RegisteredSound` (docs/DECISIONS.md)
+- #130: A streamed track owns its compressed bytes in memory (docs/DECISIONS.md)
+- Process: Gate reviews have a round limit (docs/DECISIONS.md)
+- #137 KP-056: validation lints (docs/DECISIONS.md)
+- #131: config.toml save: symlinks, mode and directory sync (docs/DECISIONS.md)
+- #131: Non-UTF-8 paths are left out of config.toml (docs/DECISIONS.md)
+- #131: Text form of f32 settings and preserved datetimes (docs/DECISIONS.md)
+- #131: Preview byte budgets: drop instead of re-decode (docs/DECISIONS.md)
+- #131: ui_scale range, step and fallback (docs/DECISIONS.md)
+- #131: Virtualised table rows: fixed row height (docs/DECISIONS.md)
+- #149: Late snapshot latch; check b gates the raw count (docs/DECISIONS.md)
+- #149: Independent Tester: the check b property oracle (docs/DECISIONS.md)
+- #136 KP-055: pin_tablegen command line: `--backbox` and `build` (docs/DECISIONS.md)
+- #136 KP-055: VUK aim is CLI logic, not backbox_layout.toml data (docs/DECISIONS.md)
+- #136 KP-055: table.toml header comment kept byte-identical (docs/DECISIONS.md)
+- #136 KP-055: Golden digests of the Feature Lab bundle (docs/DECISIONS.md)
+- #136 KP-055: Supersedes "6.4 — build path (example, because the CLI lacks backbox)" (docs/DECISIONS.md)
+- #209 KP-100: diagnostic workflow design (docs/DECISIONS.md)
+- #209 KP-100: WARP srgb_blend_gpu heap corruption: findings (docs/DECISIONS.md)
+- #209 KP-100: Addendum: a stack from main (profiler_gpu, 13714be) (docs/DECISIONS.md)
+- #138 KP-057 (tester): How the black-box tests express the three-switch shot and the vertical flipper (docs/DECISIONS.md)
+- #138 KP-057: shot progress is cleared on every drain and serve (docs/DECISIONS.md)
+- #138 KP-057: a positionless mech switch is credited to the ball nearest its mech (docs/DECISIONS.md)
+- #138 KP-057: the bot's flipper plane comes from the table's surface_normal (docs/DECISIONS.md)
+- #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
+- #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
+- #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
+- #163 KP-069: No separate Independent Tester (docs/DECISIONS.md)
+- #163 KP-069: First gate-review base is the PR #154 merge `5714c49` (docs/DECISIONS.md)
+- #163 gate review: windowed workflow filter, run.sh setup artifacts, spec_ci coverage (docs/DECISIONS.md)
+- #163 gate review: gate detection ordering, gate merge conditions and split reviews (docs/DECISIONS.md)
+- #163 gate review: trace stall window, trace permissions and harness hygiene (docs/DECISIONS.md)
+- #163 gate review round 2: windowed workflow trigger paths and run.sh failure summary (docs/DECISIONS.md)
+- #163 gate review round 2: gate ordering exceptions, optional blocked issues, area snapshots and commit-msg comment rule (docs/DECISIONS.md)
+- #163 gate review round 2: trace permission clamp, driver startup summary and retry deadline (docs/DECISIONS.md)
+- #163 gate review round 2: trace replacement never widens ACL access (docs/DECISIONS.md)
+- #163 gate review round 3: destination ACL probe, libc workspace pin, retry timeout and gate-process wording (docs/DECISIONS.md)
+- #163 gate review round 3: gpu-tests job time after a manifest change (docs/DECISIONS.md)
+- #163 gate review round 4: destination permission read from one inode, symlink destinations, fixture ACLs (docs/DECISIONS.md)
+- #163 gate review round 4 follow-up: pr-watch area-PR gate head and gate issue PR threads (docs/DECISIONS.md)
+- #163 gate review round 5: same-inode permission snapshot (docs/DECISIONS.md)
+- #163 gate review round 5: pr-watch gate issue PR from any review PR (docs/DECISIONS.md)
+- #163 gate review round 6: trace published owner-only (0600) (docs/DECISIONS.md)
+- #163 gate review round 6: directory-inherited ACLs on macOS and Windows (docs/DECISIONS.md)
+- #163 gate review round 6: pr-watch backstop path and disposition routing (docs/DECISIONS.md)
+- #163 gate review round 7: trace permission wording by platform; split missed-gate watch (docs/DECISIONS.md)
+- #163 gate round 8: dynamic mesh publication deferred (docs/DECISIONS.md)
+- #163 gate round 8: dynamic mesh slot meaning (docs/DECISIONS.md)
+- #163 gate round 8: Router swap also flushes owed gamepad-swap releases and resets the digital nudge (docs/DECISIONS.md)
+- #163 gate round 9: cabinet floor height must vary with x (docs/DECISIONS.md)
+- #163 gate round 9: gpu-tests-cross budget fails instead of clamping (docs/DECISIONS.md)
+- #163 gate round 9: roll clearance measured from the documented origin (docs/DECISIONS.md)
+- #163 gate round 9: Vfs opens only regular files (docs/DECISIONS.md)
+- #163 gate round 9: unregistered LCD scene images are skipped; ScoreTexture::set_image registers them (docs/DECISIONS.md)
+- #163 gate round 9: close before swap (docs/DECISIONS.md)
+- #163 gate round 9: latency trace merged across engines (docs/DECISIONS.md)
+- #163 gate round 9: browser selection must not alias the trace file (docs/DECISIONS.md)
+- #163 gate round 9: I/O worker scan coalescing and submission errors (docs/DECISIONS.md)
+- #163 gate round 9: `--table=` is rejected (docs/DECISIONS.md)
+- #163 gate round 10: trace publication blocked after a bundle alias (docs/DECISIONS.md)
+- #163 gate round 10: containment bounds the playfield above the body bottom (docs/DECISIONS.md)
+- #163 gate round 11: Gate review boundary is the reviewed head, not the merge commit (docs/DECISIONS.md)
+- #163 gate round 11: Windowed run.sh honours KP_GREYBOX_BUNDLE and fails closed on cleanup (docs/DECISIONS.md)
+- #163 gate round 11: Glass sheet length bound (docs/DECISIONS.md)
+- #163 gate round 11: trace destination vs configuration file (docs/DECISIONS.md)
+- #163 gate round 11: POSIX ACL fixture required in CI (docs/DECISIONS.md)
+- #163 gate round 11: Mip mean tolerance for chained rounding (docs/DECISIONS.md)
+- #163 gate round 11: Which rejected input events the forwarder retains (docs/DECISIONS.md)
+- #163 gate round 11: Neutral axis events when the input router is replaced (docs/DECISIONS.md)
+- #163 gate round 11: Latency trace installs only before the first tick (docs/DECISIONS.md)
+- #163 gate round 11: Captive Newton balls in the snapshot (docs/DECISIONS.md)
+- #163 gate round 11: Optional `[art]` in an unpreset cabinet.toml (docs/DECISIONS.md)
+- #163 gate round 12: Trace destination checked against the config by file identity at shutdown (docs/DECISIONS.md)
+- #163 gate round 12: Mid-run epoch change keeps the latency-trace marks (docs/DECISIONS.md)
+- #163 gate round 12: Windowed verdict: frames before the press, stall window and attempt-bounded tests (docs/DECISIONS.md)
+- #163 gate round 12: Review fix issues of an open gate review are not gate issues (docs/DECISIONS.md)
+- #163 gate round 12: The RUN_LOG-row commit is the only unreviewed commit allowed above the reviewed head (docs/DECISIONS.md)
+- #163 gate round 12: Display renderers use their owning queue; a foreign context is not rejected (docs/DECISIONS.md)
+- #163 gate round 12: Glass top checked at its own y (docs/DECISIONS.md)
+- #163 gate round 12: fmath std oracle stays bit-exact on x86_64 (docs/DECISIONS.md)
+- #163 gate round 12: #83 coverage recorded by a new row; row 575 stays (docs/DECISIONS.md)
+- #163 gate round 13: Windows hard-link identity stays a documented limit (docs/DECISIONS.md)
+- #163 gate round 13: Run limits count the current engine across table swaps (docs/DECISIONS.md)
+- #163 gate round 13: ACL fixture EPERM stays a local skip (docs/DECISIONS.md)
+- #163 gate round 13: Frame join and frame count across a same-tick re-press and an engine swap (docs/DECISIONS.md)
+- #163 gate round 13: Input forwarding reports only events that reached the ring (docs/DECISIONS.md)
+- #163 gate round 13: Score texture validates the DMD spec before allocating (docs/DECISIONS.md)
+- #163 gate round 13: Windowed verdict: run-end marker, drain bound and frame count (docs/DECISIONS.md)
+- #163 gate round 13: Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes (docs/DECISIONS.md)
+- #163 gate round 13: GPU-leg build step bounded by the cache-save reserve (docs/DECISIONS.md)
+- #163 gate round 14: merge of main: I/O worker budget seam and cabinet on a cancelled swap (docs/DECISIONS.md)
+- #163 gate round 14: Trace never published over the config save scratch, the config recovery copy, or a file of the loaded bundle (docs/DECISIONS.md)
+- #163 gate round 14: Windowed proptest oracle follows the round 13 release-tick rule (docs/DECISIONS.md)
+- #163 gate round 14: Config save scratch matched ignoring case; recovery-copy regression portable (docs/DECISIONS.md)
+- #163 gate round 14: Trace temp file suffix `.part` (docs/DECISIONS.md)
+- #163 gate: third merge of main: check b gates the raw count with the gate's frame-validity rules (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
@@ -596,6 +750,7 @@ Mentions of D33 in the run log, queue and decisions:
 - docs/DECISIONS.md: "blocked" (case-insensitive). Gate lines match `[Gg]ate A<n>` or `[Ww]ave <n> gate`. D33
 - docs/DECISIONS.md: mentions match `D33` not preceded by a letter or digit and not followed by a digit. All inputs
 - docs/DECISIONS.md: Section numbers, subphase numbers ("Subphase 2.3: …") and decision IDs D1–D33 are unchanged, so
+- docs/DECISIONS.md: **Decision:** (1) **One request path, loss state on the context.** `GpuContext::with_instance`, the new `with_instance_features` and `new_headless_with_features` all go through one private `GpuContext::build`, which asks for `device_request(adapter.features(), adapter.limits(), wanted)`: `device_features = (wanted | timestamp queries) & adapter`, downlevel limits at the adapter's resolution, acceleration-structure limits and the experimental opt-in only when ray queries are requested and offered. `build` registers the device's single device-lost callback before it returns, and the callback writes a flag shared by the context (`device_lost`, `device_lost_reason`, first reason wins). `RayQueryReflections::new` shares this flag (`Arc` clone) and no longer registers its own callback. `mark_device_lost` sets a second flag that belongs to that one source, so forwarding a loss to one source does not mark its siblings. `add_mesh`, `read_layer` and `prepare` check the loss before any other work. `GpuError::DeviceLost(reason)` carries the reason only (`"Destroyed"`, `"Unknown: <msg>"`); `fallback_reason()` still reads `"device lost: <reason>"`. `<GpuContext as RayCapability>::device_lost` returns the real flag. (2) **Timestamps on the headless-with-features path.** `new_headless_with_features` now also enables `TIMESTAMP_QUERY` / `TIMESTAMP_QUERY_INSIDE_ENCODERS` when the adapter offers them, because the request path is shared. (3) **Instance and surface reuse.** After a loss the render thread breaks the dead table presenter into its surfaces (`AppSurfaces::into_sources`: presenter threads stopped and joined, renderers, timer and menu overlay dropped, `SurfaceSource`s returned with their window guards and current pixel sizes), clones the instance from the dead context, drops the dead context (under the lifecycle lock, bounded wait), and builds a new context on the same instance with the same `GpuOptions` and `wanted` (empty in the app, D33). It then builds a new `AppSurfaces` with `try_new`, which hands the sources back if it fails. No surface is created on the render thread. (4) **Retry budget.** `RebuildPolicy` (pure) counts a loss once, allows one attempt per render-loop iteration and at most `MAX_DEVICE_REBUILD_ATTEMPTS = 3` attempts per loss, logs every attempt, and resets after a success. After the third failure it logs once, sets `gpu_error` and stops presenting. The forced-loss hook (`RenderConfig::force_device_loss`) destroys the device and then polls without blocking at most 64 times so the callback is delivered. After that, a forced loss and a real one take the same path. (5) **Debug presenter scope.** The `SurfaceSet` debug view cannot give its surfaces back (`gpu/surfaces.rs` is outside this unit). A loss there logs once, sets `gpu_error` and stops presenting. (6) **Presenter-thread surfaces.** `run_presenter` (presenter.rs, outside this unit) consumes its `PresenterTarget`, so a surface owned by a presenter thread cannot be taken back. The thread is stopped and its window guard is kept (the slot now holds a clone, `UnrecoveredSurface`). Each rebuild attempt with such a surface fails with a message naming the window, so a cabinet with a presenter-thread backglass or score window stops presenting after three attempts, as the brief requires. Surfaces skipped for lack of an 8-bit format are now kept in `AppSurfaces` (never drawn) so they can be returned as well. (7) **Display state across a rebuild.** `AppSurfaces` records the sim's `DisplayCommand`s in a `DisplayMemory`: the last scene with its start time and each player's latest score (players below `MAX_PLAYERS`). Commands that arrive while a rebuild is pending go into the same memory. Replaying it (`restore_state`) gives the new renderers the same scene state and score state, and minimised windows stay hidden. The last menu state is shown again on a rebuilt menu overlay. Things that reset: the renderers' `display_commands` counters (they count the replayed commands), `AppSurfaces::frames`, per-renderer GPU history (post chain temporal state, reflection probes rebuilt from scratch), and the HUD text until its next 250 ms refresh. GPU frame timing is not resumed: `GpuFrameTimer::new` consumes the profiler's `PresentProfiler`, and `gpu_timer.rs` provides no way to get it back. One stderr line says so.
 - docs/HUMAN_QUEUE.md: - ~~[3.5] DOF bridge choices to confirm (DECISIONS "3.5 — DOF bridge design choices"): resolved map passed as a temp JSON file, stop = stdin EOF + 1.5 s grace then kill, GI driven via `lamp =` mappings to `kind = "gi"` lamps (no `gi =` key in `[dof]`), lamp value round(v·255). Real DOF hosting (reflection on `DirectOutput.Pinball`) is unverified on hardware (D33) — please try it on a cabinet.~~ Kept open as the P8 line below.
 - docs/HUMAN_QUEUE.md: - [P8 hardware] [3.5] On a Windows cabinet with DOF devices, try the DOF bridge for real (the real DOF host library, spawn and stop, lamp and GI mappings) once the app starts it (cabinet-feedback issue); it ships marked unverified on hardware until then (DECISIONS.md "3.5 — DOF bridge design choices"; D33).
 - docs/HUMAN_QUEUE.md: - ~~[3.5 review round 1, non-blocking] (N2) A late datagram of an OLDER full state arriving after a newer one is taken as a new session (protocol §6 mandates it) and regresses elements until the next full state; needs ~1 s of reordering — known limitation. (N3) After a restart, map entries carried by a lost full-state datagram are forwarded later only if their value differs (DOF state stays consistent; deviation from "sends everything"). (N10) The real Windows spawn path (CREATE_NO_WINDOW, stdin-EOF stop, kill after grace, .exe quoting) is not run by any CI job — unverified, like real DOF (D33). (N12) --parent-pid is open to pid reuse and treats access-denied as dead; stdin EOF covers the normal case.~~ Decided: DECISIONS.md "fix-12-telemetry-session-id — telemetry session id deferred to protocol v2"
@@ -694,6 +849,10 @@ Mentions of D33 in the run log, queue and decisions:
 | — | PR #142 bb_catch | Fixer | Opus 5.5 | 1 | done | fmt clean; clippy -p pin_app --all-targets -D warnings clean; pin_app tests pass: feature_lab_a2_catch 5, cr1 7, physics 8, a2_gate 3 (+1 ignored as before), a2_inlane 2, autoplay 1, build 17, flippers 3, modes 4, replay 2, wasm_ports_feature_lab 2, load_validated_backbox 1, sky_deck_layers 5; spec_6_4 structure 9, validate 5, physics 8, rules 13, autoplay 3, alloc 1 (built with --profile dev and no debug info so that build.sh shares their dependencies: disk); the 3 new tests fail on the unmodified table (936 pocket points, first (52, 956); stuck at (13.5, 893.2, 13.5); escape at (16.2, 832.9, -49.3)); build.sh clearance ok; sweeps on the final table, 0 returned into the pocket, 0 stuck, 0 escaped in each: nudge 4,960 (main 1 / 0 / 49), targeted nudge 53,300 (main 126 / 32 / 1,807), backbox frame 7,776 (main 419 failures), extended cr1 756 (main 46 failures), a2 145, entry channel 16, cr1 43; soak 1,000 games each, seed 1, 2 threads: novice 281 s, standard 421 s, expert 483 s, 0 findings, coverage complete, standard median game 106.9 s, median scores 122,085 < 197,405 < 237,965; spikes/spec_0_1 all pass; scripts/tests 128/134 (the 6 others stop at gate_a2.sh's 4 GB free-disk guard); human_acceptance.py --check up to date, P8 lines 10; queue recount 10 P8 + 106 DECIDED + 144 RESOLVED + 8 OBSOLETE + 22 M1 + 51 BACKLOG = 341; Gate A2 for Feature Lab NOT RUN: gate_a2.sh refuses to start under 4 GB free and the disk allowance left at most 3.4 GB (projected ~50 min cold, ~23 min with built binaries) | T2 via work-classifier: Option B, review thread r4646742192 (P6 investigator finding): bb_catch split at y 955 with bb_catch_back (x 66..462, y 955..990) and five bb_cup_* zones around the generated entry zone; static pocket test and two nudge reproductions; R10 corrections: cr1 +y drift sweep accepts a ball resting on the playfield (x 80, vy 0.4 rests at the Banana), physics no-catch edit removes every table-defined 4 -> 0 zone; queue line 6.4-a2fix pocket check Resolved; DECISIONS "PR #142 — Feature Lab bb_catch no longer returns a ball into the closed pocket" |
 
 | — | PR #142 Gate A2 Feature Lab | Orchestrator | Opus 5.5 | 1 | done | `TABLES=feature_lab THREADS=2 scripts/gate_a2.sh` (3 x 1,000 games, seed 1, 20 replays) after the e31ce77/dd5a22d fix: all 31 Feature Lab criteria PASS, no FAIL rows; StuckBall/EndlessBall/EscapedBall/NonFinite 0 at every skill; 19/19 switches, 5/5 shots, 5/5 modes; standard median game 106.7 s; median scores 122,080 / 197,250 / 237,910, strictly increasing; 20/20 replays identical; both supplemental determinism checks pass; soak wall times novice 268 s, standard 382 s, expert 458 s | final line "GATE A2 INCOMPLETE: tables not run: apex_circuit, sky_deck", as expected for a Feature Lab-only run |
+
+| 20-backlog | #138 KP-057 | Classifier | T2 Opus 5.5 | 1 | routed | — | Implementer T2 + Independent Tester T2 (autoplay bot/monitor, module blast radius); FABLE_ALLOWANCE unknown (not needed). Full Gate A2 is a post-merge Orchestrator step. Previous merge: PR #241 (#239) → bd6761e. Start sweep: nothing unblocked (#217 waits on its P8 SPEC condition); in-progress #90/#131/#136/#137 left to their live (review_ready, recently active) sessions; KP-007/032/045/046/051 skipped for path overlap with #90/#91/#163 |
+
+| 20-backlog | #138 KP-057 | Implementer | T2 Opus 5.5 | 1 | done | fmt/clippy clean; `cargo test -p pin_sim` all green; coverage bot 99.2 %, monitor 96.0 %, table 98.7 %, pin_sim 97.0 %; autoplay_alloc ok; replay hash x10 stable; Feature Lab rise 2.0, 100 games seed 1: `bb_flipper_eos` 1024 hits (main 0); 10×20-game soaks identical outside the wall-clock `timing` section; DRY Gate A2 apex all PASS, feature_lab A2.3b score order FAIL (also fails on main) | DECISIONS: shot progress cleared on every drain/serve; positionless switch → nearest ball to its mech; flipper plane from `surface_normal`. Optional requests: re-export `FlipperPlane`; pin_app profiler_support reads `rest_dir` as table x/y |
 
 ## 6. Phase 8 checklist
 

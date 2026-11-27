@@ -23,11 +23,15 @@
 //! * **Render to texture** ([`BackglassTexture`], [`ScoreTexture`];
 //!   KP-017, REQ-VIEW-002): the translite and the score display drawn by the
 //!   renderers above into their own sampleable [`DISPLAY_TEXTURE_FORMAT`]
-//!   texture with a full mip chain (2 × 2 box average of the stored bytes),
+//!   texture with a full mip chain (area-weighted average of the stored
+//!   bytes; the 2 × 2 box average for exact 2:1 reductions),
 //!   for the 3D backbox to sample as emissive surfaces behind glass. The
 //!   texture object lives as long as the display, so a material bound to it
 //!   is never rebuilt; sampling it in the scene belongs to the backbox
-//!   consumer, not to this module.
+//!   consumer, not to this module. The owner of an LCD [`ScoreTexture`]
+//!   registers the scenes' images with [`ScoreTexture::set_image`]; an LCD
+//!   image item whose file is not registered is skipped (a missing bundle
+//!   image never aborts rendering).
 //! * **Change detection**: displays redraw only on change
 //!   ([`DmdRenderer::set_frame`], [`LcdRenderer::set_draw_list`],
 //!   [`BackglassRenderer::needs_redraw`], [`ChangeTracker`],

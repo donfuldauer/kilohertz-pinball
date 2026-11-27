@@ -23,13 +23,14 @@ use pin_render::gpu::{
 };
 use pin_render::topology::{Rect, SurfaceRole};
 use pin_sim::SimConfig;
-use std::time::{Duration, Instant};
-
 use support::{greybox_bundle, on_big_stack};
 
-/// Wall-clock bound on a window becoming presentable (DECISIONS 1.4); a
-/// warm-up bound, never an assertion on timing.
-const DEADLINE: Duration = Duration::from_secs(15);
+/// Render calls one phase may make before a surface that never presents
+/// is reported: a count, not a time (R6; a hang is the CI job's timeout).
+/// Generous, so a window that needs a long warm-up (raised and drained on
+/// macOS before its Metal surface stops reporting `Occluded`) still gets
+/// there.
+const MAX_ATTEMPTS: u64 = 1_000_000;
 
 /// One frame: drains SDL events (as the app's main thread does), renders,
 /// yields when the frame was not paced; returns the playfield status.
@@ -47,9 +48,10 @@ fn render_frame(
     st[0]
 }
 
-/// Renders until `n` playfield frames returned `Presented` and returns `n`;
-/// panics with the phase, the count so far and the status-change history
-/// when that takes longer than [`DEADLINE`].
+/// Renders until `n` playfield frames returned `Presented` and returns `n`.
+/// No wall-clock condition: the loop ends on presented frames only and
+/// panics with the phase, the counts so far and the status-change history
+/// after [`MAX_ATTEMPTS`] render calls without `n` presented frames.
 fn render_presented(
     n: u64,
     surfaces: &mut AppSurfaces,
@@ -57,10 +59,16 @@ fn render_presented(
     frame: &mut FrameStateSnapshot,
     phase: &str,
 ) -> u64 {
-    let start = Instant::now();
     let mut presented = 0;
+    let mut attempts: u64 = 0;
     let mut history: Vec<SurfaceStatus> = Vec::new();
     while presented < n {
+        assert!(
+            attempts < MAX_ATTEMPTS,
+            "[{phase}] only {presented} of {n} playfield frames presented in {attempts} render \
+             calls; status changes {history:?}"
+        );
+        attempts += 1;
         let st = render_frame(surfaces, pump, frame);
         if history.last() != Some(&st) {
             history.push(st);
@@ -68,11 +76,6 @@ fn render_presented(
         if st == SurfaceStatus::Presented {
             presented += 1;
         }
-        assert!(
-            start.elapsed() < DEADLINE || presented >= n,
-            "[{phase}] only {presented} of {n} playfield frames presented within {DEADLINE:?}; \
-             status changes {history:?}"
-        );
     }
     n
 }

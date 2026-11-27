@@ -44,6 +44,14 @@ pin_assetgen = { path = "../pin_assetgen" }
 # Wave 8 additions (w8h-h): shared libtest args for the harness = false targets.
 pin_testmain.workspace = true
 
+# Linux tests only: xattr helpers (`removexattr`, `setxattr`, `fgetxattr`)
+# for the latency-trace POSIX ACL tests. The trace commit itself reads and
+# changes no permissions (#163 gate review round 6: always 0600), so libc is
+# not a production dependency. libc is already in Cargo.lock through other
+# crates.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc.workspace = true
+
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.
 [[test]]

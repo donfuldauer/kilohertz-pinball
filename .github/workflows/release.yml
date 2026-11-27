@@ -225,6 +225,21 @@ jobs:
         shell: bash
         run: cargo test --release --workspace ${{ matrix.cargo_args }}
 
+      # D9 (KP-069): the x86_64-apple-darwin pin_sim, run under Rosetta 2, must reproduce the
+      # committed x86_64-linux replay-hash golden (record, 10 replays, assert). The build below
+      # is a no-op after the workspace build above (same target, profile and RUSTFLAGS).
+      - name: replay-hash x86_64-apple-darwin under Rosetta 2 (assert the golden)
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        env:
+          REPLAY_HASH_TARGET: x86_64-apple-darwin (Rosetta 2)
+          FIXTURE: crates/pin_sim/tests/fixtures/replay_table
+          TICKS: "10000"
+        run: |
+          set -euo pipefail
+          cargo build --release -p pin_sim --bin pin_sim --target x86_64-apple-darwin
+          bash scripts/ci/replay_hash_assert.sh target/x86_64-apple-darwin/release/pin_sim "/usr/bin/arch -x86_64" crates/pin_sim/tests/fixtures/replay_table.golden
+
   # Resolves the package version once: the tag without its leading `v` on a tag push, the
   # dispatch input or Cargo.toml otherwise. A tag/Cargo.toml mismatch is only a warning.
   version:

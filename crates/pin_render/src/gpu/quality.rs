@@ -4,7 +4,10 @@
 //! The playfield surface queues at most one frame ahead of the display; the
 //! secondary surfaces keep the default of two. On a CPU (software) adapter the
 //! app warns once and starts with [`LeanQuality::lean`] settings, which the
-//! Low quality preset takes over later.
+//! Low quality preset takes over later. Only MSAA, bloom and motion blur are
+//! applied at startup ([`LeanQuality::apply_to_post`]); the probe-capture and
+//! render-scale fields are carried as data with no consumer yet, so the
+//! warning does not claim them.
 
 use crate::post::{AaMode, PostConfig};
 use crate::topology::SurfaceRole;
@@ -75,7 +78,8 @@ impl LeanQuality {
 }
 
 /// Lean settings for `info`: on a CPU adapter, calls `warn` exactly once
-/// (naming the adapter and what starts reduced) and returns
+/// (naming the adapter and the reductions applied at startup: MSAA, bloom
+/// and motion blur off) and returns
 /// `Some(LeanQuality::lean())`; on any other adapter returns `None` and never
 /// calls `warn`.
 pub fn lean_quality_for(
@@ -85,13 +89,14 @@ pub fn lean_quality_for(
     if !is_cpu_adapter(info) {
         return None;
     }
-    let q = LeanQuality::lean();
+    // Only what startup applies (`apply_to_post`); probe captures and the
+    // render scale have no consumer yet and are not claimed.
     warn(&format!(
         "software graphics adapter \"{}\": starting with lean quality \
-         (MSAA off, bloom off, motion blur off, probe captures off, render scale {})",
-        info.name, q.render_scale
+         (MSAA off, bloom off, motion blur off)",
+        info.name
     ));
-    Some(q)
+    Some(LeanQuality::lean())
 }
 
 #[cfg(test)]
@@ -150,16 +155,25 @@ mod tests {
         assert_eq!(q.render_scale, 0.5);
     }
 
-    /// REQ-LAT-006: a CPU adapter warns exactly once and gets lean settings.
+    /// REQ-LAT-006: a CPU adapter warns exactly once and gets lean
+    /// settings; the warning names the reductions applied at startup (MSAA,
+    /// bloom and motion blur off) and claims neither a render scale nor
+    /// probe captures, which nothing applies yet (gate 30, M13).
     #[test]
     fn req_lat_006_cpu_adapter_warns_once() {
         let mut msgs: Vec<String> = Vec::new();
         let q = lean_quality_for(&info(DeviceType::Cpu), &mut |m| msgs.push(m.to_string()));
         assert_eq!(q, Some(LeanQuality::lean()));
         assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].contains("test-adapter"), "{}", msgs[0]);
-        assert!(msgs[0].contains("0.5"), "{}", msgs[0]);
-        assert!(msgs[0].contains("probe"), "{}", msgs[0]);
+        let m = &msgs[0];
+        assert!(m.contains("test-adapter"), "{m}");
+        for applied in ["MSAA off", "bloom off", "motion blur off"] {
+            assert!(m.contains(applied), "{m}");
+        }
+        let lower = m.to_lowercase();
+        for unapplied in ["render scale", "probe", "0.5"] {
+            assert!(!lower.contains(unapplied), "{m}");
+        }
     }
 
     /// REQ-LAT-006: other adapters get no lean settings and no warning; and

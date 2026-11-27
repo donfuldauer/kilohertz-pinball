@@ -204,8 +204,13 @@ pub(super) const WHITE: usize = 0;
 /// Stroke half-width of the vector font, glyph units.
 pub(super) const STROKE_HALF_WIDTH: f32 = 0.42;
 
+/// Instanced quad compositor. Its textures live on the device of the
+/// context it was created with, and every upload goes through that
+/// context's queue (stored here), never a caller's (#163 round 12, finding
+/// 21): a queue of another device would panic wgpu or lose the write.
 pub(super) struct QuadRenderer {
     device: wgpu::Device,
+    queue: wgpu::Queue,
     over: wgpu::RenderPipeline,
     add: wgpu::RenderPipeline,
     globals_layout: wgpu::BindGroupLayout,
@@ -558,6 +563,7 @@ impl QuadRenderer {
         let white = upload_rgba8(device, ctx.queue(), "display white", 1, 1, &[255; 4]);
         QuadRenderer {
             device: device.clone(),
+            queue: ctx.queue().clone(),
             over,
             add,
             globals_layout,
@@ -588,23 +594,20 @@ impl QuadRenderer {
     /// Uploads `image` and returns its texture index. Colour is
     /// premultiplied by alpha on upload (lamp masks too: a mask's value is
     /// its red channel times its alpha). Invalid or oversized images are
-    /// refused with [`GpuError::InvalidArgument`], never a wgpu panic.
-    pub(super) fn add_image(
-        &mut self,
-        queue: &wgpu::Queue,
-        image: &RgbaImage,
-    ) -> Result<usize, GpuError> {
-        let view = self.upload(queue, image)?;
+    /// refused with [`GpuError::InvalidArgument`], never a wgpu panic. The
+    /// upload uses the renderer's own queue.
+    pub(super) fn add_image(&mut self, image: &RgbaImage) -> Result<usize, GpuError> {
+        let view = self.upload(image)?;
         self.textures.push(view);
         Ok(self.textures.len() - 1)
     }
 
     /// Replaces texture `index` (from [`add_image`](Self::add_image)) with
     /// `image`; the old texture is released and cached bind groups that
-    /// used it are dropped.
+    /// used it are dropped. Nothing changes when `image` is refused. The
+    /// upload uses the renderer's own queue.
     pub(super) fn replace_image(
         &mut self,
-        queue: &wgpu::Queue,
         index: usize,
         image: &RgbaImage,
     ) -> Result<(), GpuError> {
@@ -613,7 +616,7 @@ impl QuadRenderer {
                 "no display texture {index}"
             )));
         }
-        let view = self.upload(queue, image)?;
+        let view = self.upload(image)?;
         self.textures[index] = view;
         self.groups.retain(|k, _| k.0 != index && k.1 != index);
         Ok(())
@@ -624,15 +627,11 @@ impl QuadRenderer {
         self.textures.len()
     }
 
-    fn upload(
-        &self,
-        queue: &wgpu::Queue,
-        image: &RgbaImage,
-    ) -> Result<wgpu::TextureView, GpuError> {
+    fn upload(&self, image: &RgbaImage) -> Result<wgpu::TextureView, GpuError> {
         self.check_image(image)?;
         let tex = upload_rgba8(
             &self.device,
-            queue,
+            &self.queue,
             "display image",
             image.width,
             image.height,

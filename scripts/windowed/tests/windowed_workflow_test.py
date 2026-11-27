@@ -13,6 +13,7 @@ depend on it. RunShPathsTest runs scripts/windowed/run.sh --print-paths
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -69,10 +70,11 @@ class WindowedWorkflowTest(unittest.TestCase):
         self.assertEqual(
             paths,
             [
-                "crates/pin_app/**",
-                "crates/pin_render/**",
-                "crates/pin_input/**",
+                "crates/**",
+                "Cargo.toml",
+                "Cargo.lock",
                 "tables/**",
+                "scripts/windowed/**",
                 ".github/workflows/windowed.yml",
             ],
         )
@@ -145,8 +147,14 @@ class RunShPathsTest(unittest.TestCase):
     """run.sh resolves a relative CARGO_TARGET_DIR and out_dir against the
     repository root before Cargo runs (--print-paths stops before building)."""
 
-    def paths(self, env_target, *args):
-        env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
+    def paths(self, env_target, *args, env_bundle=None):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "KP_GREYBOX_BUNDLE")
+        }
+        if env_bundle is not None:
+            env["KP_GREYBOX_BUNDLE"] = env_bundle
         if env_target is not None:
             env["CARGO_TARGET_DIR"] = env_target
         with tempfile.TemporaryDirectory() as cwd:
@@ -176,11 +184,160 @@ class RunShPathsTest(unittest.TestCase):
         self.assertEqual(p["target"], str(ROOT) + "/target")
         self.assertEqual(p["out"], str(ROOT) + "/target/windowed")
 
+    def test_bundle_defaults_to_the_target_greybox_and_honours_the_override(self):
+        p = self.paths("/abs/t", "/abs/o")
+        self.assertEqual(p["bundle"], "/abs/t/greybox")
+        p = self.paths("/abs/t", "/abs/o", env_bundle="/abs/other")
+        self.assertEqual(p["bundle"], "/abs/other")
+        p = self.paths("/abs/t", "/abs/o", env_bundle="rel/bundle")
+        self.assertEqual(p["bundle"], str(ROOT) + "/rel/bundle")
+        self.assertEqual(p["app"], "/abs/t/release/pin_app")
+
+    def test_exports_the_effective_bundle_for_the_driver(self):
+        text = RUN_SH.read_text(encoding="utf-8")
+        self.assertIn("bundle=${KP_GREYBOX_BUNDLE:-$target/greybox}", text)
+        self.assertIn('export KP_GREYBOX_BUNDLE="$bundle"', text)
+
     def test_exports_the_absolute_target_before_cargo(self):
         text = RUN_SH.read_text(encoding="utf-8")
         export = text.index('export CARGO_TARGET_DIR="$target"')
         self.assertLess(export, text.index("cargo build --release -p pin_app"))
         self.assertLess(text.index("*) target=$root/$target ;;"), export)
+
+
+class RunShSetupTest(unittest.TestCase):
+    """CARGO_BUILD_TARGET is rejected and a failed setup never leaves the
+    previous run's artifacts (gate review of #163, findings M11 and M12)."""
+
+    def run_sh(self, env, *args, cwd=None):
+        return subprocess.run(
+            ["sh", str(RUN_SH), *args],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_build_target_is_rejected_with_and_without_print_paths(self):
+        env = dict(os.environ, CARGO_BUILD_TARGET="x86_64-unknown-linux-gnu")
+        with tempfile.TemporaryDirectory() as out:
+            for args in (["--print-paths", out], [out]):
+                r = self.run_sh(env, *args)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn(
+                    "run.sh: CARGO_BUILD_TARGET is not supported (the app is measured at ",
+                    r.stderr,
+                )
+                self.assertIn("/release/pin_app); unset it", r.stderr)
+                self.assertEqual(r.stdout, "")
+            self.assertEqual(os.listdir(out), [], "rejection touches nothing")
+
+    def test_print_paths_without_build_target_is_unchanged_and_read_only(self):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("CARGO_BUILD_TARGET", "KP_GREYBOX_BUNDLE")
+        }
+        env["CARGO_TARGET_DIR"] = "/abs/t"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "new_out"
+            stale = pathlib.Path(tmp) / "keep"
+            stale.mkdir()
+            (stale / "summary.txt").write_text("verdict: PASS\n")
+            r = self.run_sh(env, "--print-paths", str(stale))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(
+                r.stdout,
+                f"target=/abs/t\nout={stale}\nbundle=/abs/t/greybox\napp=/abs/t/release/pin_app\n",
+            )
+            self.assertEqual((stale / "summary.txt").read_text(), "verdict: PASS\n")
+            self.run_sh(env, "--print-paths", str(out))
+            self.assertFalse(out.exists(), "--print-paths creates nothing")
+
+    def tool_dir(self, tmp, rm_stub=None):
+        """A PATH holding only the tools run.sh needs up to the tool check;
+        Xvfb is a stub, xdotool is absent, so setup fails at `xdotool`."""
+        bindir = pathlib.Path(tmp) / "bin"
+        bindir.mkdir()
+        for tool in ["sh", "dirname", "cat", "rm", "mkdir", "printf", "env"]:
+            found = shutil.which(tool, path="/usr/bin:/bin")
+            self.assertIsNotNone(found, tool)
+            if tool == "rm" and rm_stub is not None:
+                real = found
+                (bindir / "rm").write_text(rm_stub.replace("@REAL@", real))
+                (bindir / "rm").chmod(0o755)
+            else:
+                (bindir / tool).symlink_to(found)
+        stub = bindir / "Xvfb"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        return bindir
+
+    def test_failed_setup_clears_stale_artifacts_and_publishes_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = self.tool_dir(tmp)
+            out = pathlib.Path(tmp) / "out"
+            out.mkdir()
+            (out / "summary.txt").write_text("verdict: PASS\n")
+            (out / "latency_trace.csv").write_text("stale\n")
+            (out / "pin_app_stderr.log").write_text("stale\n")
+            (out / "frame_0.png").write_text("stale\n")
+            (out / "unrelated.txt").write_text("keep\n")
+            env = {"PATH": str(bindir), "CARGO_TARGET_DIR": str(pathlib.Path(tmp) / "t")}
+            r = self.run_sh(env, str(out))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse((out / "latency_trace.csv").exists())
+            self.assertFalse((out / "pin_app_stderr.log").exists())
+            self.assertFalse((out / "frame_0.png").exists())
+            self.assertTrue((out / "unrelated.txt").exists())
+            summary = (out / "summary.txt").read_text()
+            self.assertTrue(
+                summary.startswith("verdict: FAIL (windowed setup:"), summary
+            )
+            self.assertIn("xdotool", summary)
+            self.assertNotIn("PASS", summary)
+
+    def test_leftover_directories_with_artifact_names_are_removed_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = self.tool_dir(tmp)
+            out = pathlib.Path(tmp) / "out"
+            (out / "frame_debug.png").mkdir(parents=True)
+            (out / "frame_debug.png" / "inner").write_text("x\n")
+            (out / "pin_app_stderr.log").mkdir()
+            (out / "summary.txt").write_text("verdict: PASS\n")
+            (out / "unrelated.txt").write_text("keep\n")
+            env = {"PATH": str(bindir), "CARGO_TARGET_DIR": str(pathlib.Path(tmp) / "t")}
+            r = self.run_sh(env, str(out))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(
+                sorted(os.listdir(out)), ["summary.txt", "unrelated.txt"]
+            )
+            self.assertEqual(
+                (out / "summary.txt").read_text(),
+                "verdict: FAIL (windowed setup: xdotool not found)\n",
+            )
+
+    def test_cleanup_failure_never_leaves_the_old_summary(self):
+        # rm refuses to remove frame_* entries; the stale summary is removed
+        # first and the trap reports the cleanup stage.
+        stub = (
+            "#!/bin/sh\n"
+            'for a in "$@"; do case $a in */frame_*) exit 1;; esac; done\n'
+            'exec @REAL@ "$@"\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = self.tool_dir(tmp, rm_stub=stub)
+            out = pathlib.Path(tmp) / "out"
+            (out / "frame_debug.png").mkdir(parents=True)
+            (out / "summary.txt").write_text("verdict: PASS\n")
+            env = {"PATH": str(bindir), "CARGO_TARGET_DIR": str(pathlib.Path(tmp) / "t")}
+            r = self.run_sh(env, str(out))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(
+                (out / "summary.txt").read_text(),
+                "verdict: FAIL (windowed setup: cleanup)\n",
+            )
 
 
 if __name__ == "__main__":

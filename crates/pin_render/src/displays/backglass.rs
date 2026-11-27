@@ -126,6 +126,9 @@ impl BackglassRenderer {
     /// Uploads the layers of `desc` for targets of `format`. An image that is
     /// invalid ([`RgbaImage::is_valid`]) or has a side above the device's
     /// `max_texture_dimension_2d` is refused with [`GpuError::InvalidArgument`].
+    /// Every upload goes through `ctx`'s queue (kept by the renderer); an
+    /// encoder given to [`encode`](Self::encode) must come from `ctx`'s
+    /// device.
     pub fn new(
         ctx: &GpuContext,
         format: wgpu::TextureFormat,
@@ -135,13 +138,10 @@ impl BackglassRenderer {
         let mut layers = Vec::with_capacity(desc.layers.len());
         for l in &desc.layers {
             // `add_image` refuses invalid or oversized images (D25).
-            let image = quads.add_image(ctx.queue(), &l.image)?;
+            let image = quads.add_image(&l.image)?;
             let (mask, lamp) = match &l.lamp {
                 None => (WHITE, None),
-                Some(ll) => (
-                    quads.add_image(ctx.queue(), &ll.mask)?,
-                    Some((ll.lamp, ll.blend)),
-                ),
+                Some(ll) => (quads.add_image(&ll.mask)?, Some((ll.lamp, ll.blend))),
             };
             layers.push(GpuLayer {
                 tex: (image, mask),
@@ -163,20 +163,27 @@ impl BackglassRenderer {
 
     /// The lamps the layers depend on, in layer order (repeats kept).
     pub fn lamps(&self) -> Vec<LampId> {
-        self.layers
-            .iter()
-            .filter_map(|l| l.lamp.map(|(id, _)| id))
-            .collect()
+        self.lamp_ids().collect()
+    }
+
+    /// [`lamps`](Self::lamps) without collecting them.
+    fn lamp_ids(&self) -> impl Iterator<Item = LampId> + '_ {
+        self.layers.iter().filter_map(|l| l.lamp.map(|(id, _)| id))
     }
 
     /// Whether the backglass must be redrawn for `lamps`: never drawn, marked
     /// dirty, or a referenced lamp moved by at least [`LAMP_REDRAW_EPSILON`]
     /// (or reached 0 / 1 exactly) since the last [`encode`](Self::encode).
+    ///
+    /// Allocation-free (a hot path of the frame loop, #163 round 12, finding
+    /// 25): the layers' lamp ids are walked in place, in the order and with
+    /// the repeats of [`lamps`](Self::lamps), which is how the levels of the
+    /// last draw are stored.
     pub fn needs_redraw(&self, lamps: &[f32]) -> bool {
         let Some(drawn) = &self.drawn else {
             return true;
         };
-        self.lamps().iter().zip(drawn).any(|(&id, &old)| {
+        self.lamp_ids().zip(drawn).any(|(id, &old)| {
             let new = lamp_level(lamps, id);
             (new - old).abs() >= LAMP_REDRAW_EPSILON || (new != old && (new == 0.0 || new == 1.0))
         })
@@ -273,12 +280,7 @@ impl BackglassRenderer {
         }
         self.quads
             .encode(encoder, view, target_size, viewport, &draws);
-        self.drawn = Some(
-            self.lamps()
-                .into_iter()
-                .map(|id| lamp_level(lamps, id))
-                .collect(),
-        );
+        self.drawn = Some(self.lamp_ids().map(|id| lamp_level(lamps, id)).collect());
     }
 }
 
