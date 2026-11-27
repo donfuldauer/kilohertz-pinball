@@ -793,7 +793,7 @@ fn same_entry_ignoring_case(a: &Path, b: &Path) -> bool {
 /// round 11, review comment 4705691334): `dest` is the configuration file
 /// ([`is_config_path`]; also a path that does not exist yet, so a first
 /// save is protected too), or `config` is one of the trace's sibling
-/// temp-file names (`.kp-trace.<pid>.<n>.tmp` beside `dest`, which the
+/// temp-file names (`.kp-trace.<pid>.<n>.part` beside `dest`, which the
 /// commit would move away). The text is `--latency-trace: <dest> is the
 /// configuration file`. A `dest` that is the configuration's recovery copy
 /// ([`AppConfig::recovery_path`], the same [`is_config_path`] test; gate
@@ -841,9 +841,15 @@ fn trace_dir(dest: &Path) -> PathBuf {
 
 /// The trace temp file's name for attempt `n` of process `pid`: a short
 /// fixed prefix, never the destination's name, so a destination name at
-/// the file-name limit still gets a temp file.
+/// the file-name limit still gets a temp file. The suffix is `.part`, never
+/// `.tmp`: the configuration save scratch ([`AppConfig::save_scratch_path`])
+/// always ends in `.tmp`, and no case folding or path spelling (symlinked
+/// parent, case-insensitive volume) maps `part` to `tmp`, so the trace temp
+/// file can never be the same directory entry as a config scratch (gate 163
+/// round 14, review comment 4714804098). The path comparisons in
+/// [`config_alias`] stay as defence in depth.
 fn trace_tmp_name(pid: u32, n: u32) -> String {
-    format!(".kp-trace.{pid}.{n}.tmp")
+    format!(".kp-trace.{pid}.{n}.part")
 }
 
 /// Opens an existing non-regular `--latency-trace` destination (a device)
@@ -2706,7 +2712,7 @@ mod tests {
         let tmp = sink.tmp.clone().unwrap();
         let tmp_name = tmp.file_name().unwrap().to_str().unwrap().to_owned();
         assert!(
-            tmp_name.starts_with(".kp-trace.") && tmp_name.ends_with(".tmp"),
+            tmp_name.starts_with(".kp-trace.") && tmp_name.ends_with(".part"),
             "{tmp_name}"
         );
         assert!(!tmp_name.contains(&name));
@@ -3706,7 +3712,7 @@ mod tests {
     /// REQ-VIEW-006): a configuration file named so that its save scratch
     /// (`.<name>.tmp`, [`pin_app::ui::AppConfig::save_scratch_path`]) is a
     /// trace temp-file candidate (`kp-trace.<pid>.0` gives
-    /// `.kp-trace.<pid>.0.tmp`) never shares that file with the trace: the
+    /// `.kp-trace.<pid>.0.tmp`; the trace temp name ends in `.part`) never shares that file with the trace: the
     /// trace takes the next candidate, so a menu save during the run writes
     /// the configuration and the trace still publishes to its destination.
     #[test]
@@ -3716,7 +3722,8 @@ mod tests {
         let pid = std::process::id();
         let cfg = dir.join(format!("kp-trace.{pid}.0"));
         let scratch = AppConfig::save_scratch_path(&cfg).unwrap();
-        assert_eq!(scratch, dir.join(super::trace_tmp_name(pid, 0)));
+        assert_eq!(scratch, dir.join(format!(".kp-trace.{pid}.0.tmp")));
+        assert_ne!(scratch, dir.join(super::trace_tmp_name(pid, 0)));
         let dest = dir.join("out.csv");
         let sink = open_latency_trace(&args(&[
             "--config",
@@ -3746,11 +3753,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Gate 163 round 14 (review comment 4714804098, REQ-LAT-003): the trace
+    /// temp name never ends in `.tmp` (ignoring ASCII case), so it is never a
+    /// config save scratch name, whatever the config is called.
+    #[test]
+    fn gate163_r14_trace_temp_suffix_is_never_a_config_scratch() {
+        use pin_app::ui::AppConfig;
+        let dir = std::path::Path::new("cfgdir");
+        for pid in [0u32, 1, 4242, u32::MAX] {
+            for n in [0u32, 1, 7, 99] {
+                let tmp = super::trace_tmp_name(pid, n);
+                assert!(!tmp.to_ascii_lowercase().ends_with(".tmp"), "{tmp}");
+                let cfg = dir.join(format!("kp-trace.{pid}.{n}"));
+                let scratch = AppConfig::save_scratch_path(&cfg).unwrap();
+                let scratch_name = scratch.file_name().unwrap().to_str().unwrap();
+                assert!(
+                    !tmp.eq_ignore_ascii_case(scratch_name),
+                    "{tmp} {scratch_name}"
+                );
+            }
+        }
+    }
+
     /// Gate 163 round 14 (review comment 4714559537, REQ-LAT-003,
     /// REQ-VIEW-006): the scratch-file skip also holds on a case-insensitive
     /// volume: a configuration `KP-TRACE.<pid>.0` has scratch
-    /// `.KP-TRACE.<pid>.0.tmp`, the same entry as the first trace candidate
-    /// `.kp-trace.<pid>.0.tmp` there, so the trace temp file never equals
+    /// `.KP-TRACE.<pid>.0.tmp`, which would be the same entry as a trace
+    /// candidate `.kp-trace.<pid>.0.tmp` there, so the trace temp file never equals
     /// the scratch ignoring ASCII case, on any platform.
     #[test]
     fn gate163_r14_config_save_scratch_case_variant_is_never_the_trace_temp_file() {

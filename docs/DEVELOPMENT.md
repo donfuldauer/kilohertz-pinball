@@ -440,7 +440,7 @@ table, so it uses that path; `--debug-overlay` only draws the debug lines over t
 used (the playfield offers no 8-bit format); it lives in `pin_render`, so there `present_ns` is read
 after the whole render call, late by that frame's remaining work and, on a suboptimal surface, one
 reconfigure. The trace is written to a sibling temp
-file (`.kp-trace.<pid>.<n>.tmp`, created exclusively; the name never contains the destination's,
+file (`.kp-trace.<pid>.<n>.part`, created exclusively; the name never contains the destination's and never ends in `.tmp`, the config save scratch suffix,
 so a destination name at the file-name limit works) and renamed over the destination at shutdown; the destination is never truncated, so a
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
