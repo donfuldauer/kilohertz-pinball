@@ -45,11 +45,23 @@ egui = "=0.37.0"
 egui-wgpu = "=0.37.0"        # requires wgpu ^30 — matches the wgpu pin
 libm = "=0.2.16"
 
+# Web engine (#164 KP-070; DECISIONS.md "#164 KP-070 — Web dependency pins").
+wasmi = "=2.0.2"             # the web Wasm backend (D10); default features off, see [features]
+wasmparser = "=0.261.0"      # the pre-compile scan; the version wasmtime 50.0.1 resolves
+wasm-encoder = "=0.261.0"    # same wasm-tools release as wasmparser
+wasm-smith = "=0.261.0"      # dev-dependency: random valid modules (same wasm-tools release)
+arbitrary = "=1.5.0"         # wasm-smith's input type (Unstructured); the version it resolves
+wasm-bindgen = "=0.2.130"    # wasm32 only in the crates that use it
+js-sys = "=0.3.107"
+web-sys = "=0.3.107"         # features chosen by the crates that use it
+wasm-bindgen-futures = "=0.4.80"
+
 [features]
 # Feature sets the spikes were verified with.
 sdl3 = ["build-from-source-static", "raw-window-handle"]
 mlua = ["lua54", "vendored"]
 serde = ["derive"]
+wasmi = ["std", "validate", "auto-dispatch", "deterministic"]  # with default-features = false
 # wgpu: default features (dx12, metal, vulkan, gles, wgsl, ...); DX12 shader compiler Auto falls back to FXC.
 
 [notes]

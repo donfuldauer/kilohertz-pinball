@@ -7,12 +7,16 @@
 //! (`overflow_count`), never raised.
 
 use super::bridge::Bridge;
+#[cfg(test)]
+use crate::rng::project;
+use crate::rng::{next_u64, range, unit_float};
 use mlua::{Function, Lua, Table, Value};
 use pin_core::ids::{
     CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
     SoundId, SwitchId,
 };
 use pin_core::script::MAX_PERSIST;
+#[cfg(test)]
 use pin_core::{Pcg32, Rng};
 use std::rc::Rc;
 
@@ -70,44 +74,6 @@ fn persist_key(v: &Value, f: &str) -> mlua::Result<PersistKey> {
             &format!("persist key {k} out of range 0..{MAX_PERSIST}"),
         ))
     }
-}
-
-/// A 64-bit draw from the host PCG (two 32-bit outputs).
-fn next_u64(rng: &mut Pcg32) -> u64 {
-    rng.next_u64()
-}
-
-/// Lua 5.4's `project`: a uniform integer in `[0, n]` by masked rejection.
-pub(crate) fn project(mut ran: u64, n: u64, rng: &mut Pcg32) -> u64 {
-    if n & n.wrapping_add(1) == 0 {
-        return ran & n;
-    }
-    let mut lim = n;
-    lim |= lim >> 1;
-    lim |= lim >> 2;
-    lim |= lim >> 4;
-    lim |= lim >> 8;
-    lim |= lim >> 16;
-    lim |= lim >> 32;
-    loop {
-        ran &= lim;
-        if ran <= n {
-            return ran;
-        }
-        ran = next_u64(rng);
-    }
-}
-
-/// A uniform integer in `[lo, hi]` (`lo <= hi`).
-pub(crate) fn range(lo: i64, hi: i64, rng: &mut Pcg32) -> i64 {
-    let r = next_u64(rng);
-    let span = hi.wrapping_sub(lo) as u64;
-    lo.wrapping_add(project(r, span, rng) as i64)
-}
-
-/// A float in `[0, 1)` with 53 random bits (Lua 5.4's `I2d`).
-pub(crate) fn unit_float(rng: &mut Pcg32) -> f64 {
-    (next_u64(rng) >> 11) as f64 * (0.5 / (1u64 << 52) as f64)
 }
 
 /// `random` with Lua 5.4 semantics over `count` arguments, drawing from the
