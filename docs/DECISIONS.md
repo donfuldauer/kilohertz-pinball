@@ -9049,6 +9049,191 @@ verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the ap
 **Rationale:** wgpu-core's `configure_surface` never unconfigures the old hal surface. The DX12 hal reuses the existing swap chain through `ResizeBuffers`, and that swap chain is bound to the dead device's queue, so the new device is removed at the first present and wgpu-core 30.0.1 panics in `PendingWrites::activate` (seen on Windows WARP in run 45880540056). Vulkan passes the old swap chain as `oldSwapchain` across devices, which is invalid usage that lavapipe happens to tolerate. Only dropping the `wgpu::Surface` releases the swap chain; wgpu 30 has no public unconfigure. Metal's hal `configure` rebinds the layer to the new device, and a Metal surface must not be created off the main thread, so Metal keeps the old behaviour. A registry keyed by the surface's identity keeps `create_surface` and `SurfaceSource` source-compatible.
 **Alternatives:** Asking the main thread to recreate the surfaces (rejected as the heavier option: it needs a new main-thread channel and blocks the loss path on the main thread's event pump). Dropping the surfaces without recreating them (rejected: nothing to present to). Adding a handles field to `SurfaceSource` (rejected: it breaks the struct literals in the unowned test helpers). Working around the panic inside wgpu-core (rejected: a vendored dependency). The wgpu-core panic at present on a lost device is tracked separately by #242 (KP-113).
 
+## #130 (tester) — Mid-play retrigger in the 10-minute equality test
+
+**Decision:** The brief asks for "one retrigger mid-play on the resident and the streamed mixer alike" in the LONG test, and also (S7) that a trigger for a stream while its voice plays is ignored. The AC1 test sends the mid-play retrigger to the streamed mixer only; the resident reference mixer gets no trigger at that point, and the outputs must stay bit-identical (which proves the trigger was ignored). A retrigger "alike" on both mixers is done after the end of the track (rewind, compared for 8 blocks).
+**Rationale:** On a resident music sound a second trigger starts a second voice (or steals the first with one voice), so sending it to both mixers cannot give equal outputs under S7. Sending it to the stream only is the reading that keeps S3 (equality) and S7 (ignored) both true; the rewind trigger after the end covers the "both mixers alike" part.
+**Alternatives:** Sending the retrigger to both mixers (rejected: S3 and S7 contradict). Dropping the mid-play retrigger (rejected: weaker; S7 would not be exercised on the long track).
+
+## #130 (tester) — Which state assertions are deterministic
+
+**Decision:** `is_finished()` is asserted false only when the track is longer than the ring (the loader cannot reach the end of the pass before the ring drains), and true after `wait_filled()` only when the track is shorter than the ring; for a track exactly the ring length it is not asserted. `buffered_frames()` after `wait_filled()` before any trigger must equal `min(track_frames, ring_frames)`. A zero-length track must open (`Ok`), buffer 0 frames and start no voice; `ring_frames()` for it is only bounded (`<= requested`). The hostile-input loop stops at 1 000 000 renders of `min(ring_frames, 4096)` frames (at least 1).
+**Rationale:** The brief allows the ring to be clamped to the known length and leaves "end of source" detection for a track that exactly fills the ring open; asserting only the cases the semantics force keeps the tests free of thread timing (R6, R3).
+**Alternatives:** Asserting `is_finished()` for the exact-fit case (rejected: depends on whether the loader probes past the last frame, which the brief does not fix).
+
+## #130 — One voice per streamed track, ignored while it plays
+
+**Decision:** A streamed track has one ring and one read position, so it plays at most one voice. A trigger for a streamed sound whose voice is active is ignored: no new voice, no steal, nothing counted. A track whose header gives a length of 0 starts no voice, as a resident zero-length sample does.
+**Rationale:** A second voice would need a second decode and ring (twice the budget and loader work) or a shared read position (wrong output). Music retriggers while playing are rare and usually unintended, and ignoring them keeps the current track playing.
+**Alternatives:** Restarting the track on retrigger (rejected: stale frames would have to be dropped on the audio thread mid-play, and an underrun at every retrigger). Opening a second ring per voice (rejected: doubles the memory the issue wants to bound).
+
+## #130 — Rewind when a streamed voice ends or is stolen
+
+**Decision:** When a streamed voice ends (end of source, loader failure, or it is stolen), the audio thread bumps the track's pass number (an atomic epoch) and drops the buffered values. The loader sees the new epoch, restarts the decode at source frame 0 and records where the new pass starts in the ring, so values of an older pass are dropped unplayed. `is_finished()` reads false from the bump on. A retrigger before the loader has refilled underruns.
+**Rationale:** The next trigger then plays the track from the start, as a resident sample does. Only atomics and ring pops are used on the audio thread (D5); the work to drop old values is bounded by the ring capacity.
+**Alternatives:** Resuming where the stolen voice stopped (rejected: differs from resident playback). Keeping the first ring of frames resident for an instant restart (rejected: more memory per track, and more code paths; can be added later).
+
+## #130 — Underrun is silence without skipping
+
+**Decision:** Frames the ring cannot supply while the pass has not ended render as silence, count one per frame in `StreamHandle::underrun_frames` and `Mixer::stream_underruns`, and the voice resumes with the next real frame. The loader publishes a frame only once it knows another frame follows, or together with the end-of-pass flag in the same atomic store, so the frames after the last real frame are never counted as underruns.
+**Rationale:** Not skipping keeps the music intact. Publishing the last frame with the end flag means "ring empty and not ended" is always a real gap (the tester's invariant: underruns equal the silent frames inserted).
+**Alternatives:** Skipping ahead to stay in time (rejected: needs the loader to discard on demand; music would jump). Ending the voice on underrun (rejected: one slow disk read would stop the music).
+
+## #130 — Ring charged whole and clamped to the known length
+
+**Decision:** `open_stream` charges `ring_frames x 4 x channels` bytes to the bundle's `DecodeBudget` at open, all or nothing, and returns them when the track drops. The ring is the requested size clamped to at least 1 frame, at most the 10-minute cap at the mixer rate and, when the header gives it, at most the output length (WAV data-chunk size bounded by the bytes present, last Ogg granule). The decoded length is not charged.
+**Rationale:** The ring is the only decoded PCM a streamed track holds, so it is what the D25 budget must bound. Clamping to the known length means a short track never holds a ring larger than itself. Header values only shrink the allocation, never grow it.
+**Alternatives:** Charging the ring in growth steps (rejected: the ring is allocated once). Charging the decoded length (rejected: that is what streaming removes).
+
+## #130 — 10-minute cap kept for streams
+
+**Decision:** Streams keep the `MAX_SECONDS` (600 s) cap: checked at open from the header (exactly 600 s accepted) and again while decoding through the shared resampler, where a longer stream fails the pass (`failed()`), plays what was buffered, then ends.
+**Rationale:** R11: an untrusted bundle must not make the loader decode forever, for example with a missing or wrong length in the header. One rule for resident and streamed sounds.
+**Alternatives:** No cap for streams (rejected: unbounded loader work per untrusted file). A larger cap for music (rejected: not asked for; can be raised later through the constant).
+
+## #130 — Polling loader, no wakeup from the audio thread
+
+**Decision:** The loader parks with `park_timeout` (2 ms) between checks of free ring space, the epoch and the stop flag. The audio thread never signals, locks or waits on it. `StreamHandle::wait_filled` (load and test threads only) unparks the loader and waits on a condition variable that only the loader and the waiters use.
+**Rationale:** D5 forbids syscalls and locks on the audio thread; `unpark` can be a syscall. A 2 ms poll against a 1.37 s default ring leaves a wide margin.
+**Alternatives:** Unparking the loader from `render` (rejected: syscall on the audio thread). A semaphore (rejected: same problem).
+
+## #130 — Additive `table_audio` instead of changing `RegisteredSound`
+
+**Decision:** pin_app gets `TableAudio`, `table_audio` and `AudioEngine::with_streams` next to `table_samples`, `RegisteredSound` and `AudioEngine::new`, which are unchanged. Routing the loader (table.rs, threads.rs, the orchestrator mod.rs re-exports) through them is a follow-up outside this issue's owned paths.
+**Rationale:** Existing unowned tests use `table_samples` and the `RegisteredSound` tuple; an additive API keeps them passing without edits (R1, R10).
+**Alternatives:** Making `RegisteredSound` an enum of resident or streamed (rejected: breaks unowned call sites and tests).
+
+## #130 — A streamed track owns its compressed bytes in memory
+
+**Decision:** `open_stream` takes the file's compressed bytes as a `Vec<u8>` that the track owns; the loader decodes from memory and never touches the filesystem.
+**Rationale:** The bundle snapshot already hands out whole compressed files, and the I/O worker is the only thread that reads files (R4). Compressed music is about a tenth of its decoded size, and the decoded-audio budget bounds decoded PCM only, as the human ruling on the 512 MiB budget says.
+**Alternatives:** Reading the file in chunks on the loader thread (rejected: a second thread touching the filesystem, and the snapshot is an in-memory view). Charging the compressed bytes to the budget (rejected: the budget is defined as decoded audio).
+
+## Process — Gate reviews have a round limit
+
+**Decision:** At the owner's direction (2026-11-26), PROCESS.md P6 gets a round limit for gate
+reviews. Rounds 1 to 5 run as before. From round 6 on, only blocking findings are fixed (R11
+security, verified correctness defects, R3/R4 violations, contract mismatches, failing required
+checks); every other finding is deferred without a fix attempt into one new `work-unit` issue per
+round, and its thread is resolved. After round 8, a gate whose threads are all resolved, with no
+blocking finding open, merges as `capped` (recorded in `docs/RUN_LOG.md`) even if CodeRabbit still
+withholds approval. `main` is no longer merged into an open gate branch unless the gate issue's PR
+conflicts with it or a required check needs it. The limit applies to gate reviews already open
+when it merges, counting their earlier rounds.
+**Rationale:** Gate reviews run one at a time, and the 30-web-prereq review (PR #197) reached
+round 13 in about 33 hours with finding counts rising (3, 6, 7, 20), while the 11-contracts gate
+(#90, PR #214) waited behind it. Each fix and each merge of `main` added new code for CodeRabbit to
+review, so the loop did not converge. Blocking defects are still never deferred.
+**Alternatives:** No limit (rejected: one gate can stall every later gate indefinitely). Running
+gate reviews in parallel (rejected: the next gate's base is the previous gate's reviewed commit).
+A smaller limit such as 3 rounds (rejected: early rounds still find real defects worth fixing in
+place).
+
+## #137 KP-056 — validation lints
+
+**Decision:** (1) **Shared layer-exit core.** The rule has one implementation,
+`layout::entry::layer_exit_findings(transitions, supports_of)` (now `pub(crate)`, with
+`pub(crate) mod entry`). It takes each target layer's support triangles from its caller through
+`entry::Support::new([[x, y, z]; 3] m)`, which applies the 1 mm² plan-area threshold, and returns
+`(transition index, message)` pairs. The message text comes from one function, so it is
+byte-identical in both paths. The generator's `layer_exit_warnings(transitions, nodes)` wraps it
+with the glb node triangles. `clearance::checks::layer_exits` wraps it with `World.tris`
+(playfield and backbox colliders, node-transformed) and runs from `validate_clearance_indexed_for`,
+so `pin_tablegen validate <bundle>` prints the generator's warning. This supersedes the
+w7pre-ramp-entry "Where the lint lives" note and its HUMAN_QUEUE follow-up. (2) **`Feature::LayerExit`**
+(label `"layer exit"`) is a new additive variant of the public `Feature` enum. Each finding is
+a warning with `name` set to the transition id, an empty profile, file `table.toml`, path
+`layer_transitions[i]` and 0 mm values. It does not depend on the ball: it is emitted once per
+offending transition, outside the per-ball loops, and `is_ok` is unaffected. (3) **Wireform
+near-cusp lint** (`pin_assets/src/validate/wireform_lint.rs`): per segment, sample `|dP/dt|` at
+64 + 1 parameters of the segment's Bézier derivative in `f64` and take the minimum. Divide that
+by the chord between the two through-points. A reversal (the dot product of neighbouring samples
+below 0) counts as 0. The worst segment (the first one on a tie) warns at `splines[i]` when its
+ratio is below `NEAR_CUSP_SPEED_RATIO = 0.05`. The ratio is computed before `Wireform::new`
+consumes the spline, and the warning is reported only when the wireform builds. Guides are never
+checked. Calibration, measured by `wireform_lint::tests::shipped_wireforms_are_not_near_cusps`:
+greybox `ramp_wire` 0.8345 (segment 3), apex_circuit `ramp_wire` 0.8295 (segment 3), sky_deck
+`ramp_wire` 0.8288 (segment 4), apex fixture `return_wireform` 0.9004 (segment 1). feature_lab
+declares no wireform. Hand-derived cases, confirmed by running them: 61 mm then 300 mm collinear
+gives 1.25 / 61 = 0.0205, which warns; 40 mm then 300 mm back is a reversal, ratio 0, which warns;
+equal steps give 1.0, which does not warn. 0.05 lies inside the brief's 0.03..0.10 range. It is
+2.4 times the 61/300 case, and the smallest shipped ratio is 16 times it. (4) **`table.toml`
+size error.** It counts the generated `table.toml` entries (ids with the `tablegen:` prefix: lane
+rails and ramp entry transitions) per `kind_of` kind and names the kind with the most entries,
+with the count. On a tie it names the kind that appears first; lane rails come before ramp
+transitions. With no generated entries it names `table.toml` and says the hand-written base is
+too big. Walls and posts add nothing to `table.toml`, so the issue's "walls-heavy layout names
+`walls`" is covered by the glb JSON guard, which counts nodes. That guard now shares the same
+`most_common_kind` helper, with unchanged semantics: strict majority, first kind on a tie, and
+the `layout.toml` fallback. (5) **Seam.** The private `generate_with_limits(layout, base,
+GltfLimits)` is what `generate` calls with the defaults. The tests lower `max_json_bytes` through
+it. The issue's case is used at full size: 12,000 inserts referencing a 1,500-character lamp id.
+`generate` applies no schema cap to either, and the case gives 18,000,000 bytes of extras against
+the 16 MiB budget with 12,001 nodes. (6) **Module declaration.** `wireform_lint` is declared from
+`rules.rs` with `#[path = "wireform_lint.rs"] mod wireform_lint;`, so the module list in
+`validate/mod.rs` (not owned) stays as it is.
+**Rationale:** One core with caller-supplied support keeps the generator and the validator from
+drifting apart. Generated nodes have identity transforms, and `f32` to `f64` conversion is exact,
+so both paths give the same verdict and text on a generated bundle. A test checks this: the
+generator warnings equal the `validate` warnings on an edited grey-box. Dividing the minimum speed
+by the chord does not depend on scale and is 1 for a uniform straight parametrization. The
+threshold sits between real near-cusps (about 0.02 or less) and the shipped ramps (at least
+0.83). Counting generated entries names the element the author can change. The base-only case
+cannot be fixed by changing the layout, so it names the file.
+**Alternatives:** Copying the 3 × 3 sample rule into `clearance/` (rejected: the brief forbids it,
+and the copies would drift apart). Emitting `LayerExit` once per ball profile (rejected: the rule
+does not depend on the ball). A curvature-based cusp lint (rejected: a collinear near-stop has
+zero curvature, and the speed is what makes the frame ill-defined). Keeping "lanes" as the
+table.toml error element (rejected by the issue). Naming the kind by bytes instead of by entry
+count (rejected: the brief asks for the count, which is simpler to reason about).
+
+### #137 KP-056 — owned paths extended to the spec_2_8 test helpers (Orchestrator, 2026-11-26)
+
+`pin_tablegen validate` now reports the layer-exit lint as a `Feature::LayerExit` warning with no
+ball profile and 0 mm, because the check does not depend on ball size. Three existing tests
+(`spec_2_8_random` ×2, `spec_2_8_validator` ×1) asserted that every finding carries a declared
+profile and `required_mm > 0`, so they failed. The Orchestrator extended #137's owned paths to
+`crates/pin_tablegen/tests/fixtures/spec_2_8/support.rs`, `spec_2_8_random.rs` and
+`spec_2_8_validator.rs` (no other live issue reserves them). A T1 Fixer (triage fast path) made the
+helpers assert LayerExit's own shape, including that it never appears in `errors`. Every other
+feature keeps its assertions (R10: the expectation changed with the feature; the tests were not
+weakened).
+## #131 — config.toml save: symlinks, mode and directory sync
+
+**Decision:** `AppConfig::save` follows a symlinked path (single or chained, relative targets resolved against the link's own directory) for at most 40 hops (`MAX_SYMLINK_HOPS`, the usual OS limit). A loop or a longer chain is an `InvalidInput` error and nothing is written. A dangling link creates its target. The temporary file `.<name>.tmp` is created next to the final target and renamed over it, so the link stays a link. On Unix any stale temporary file is removed first, and the new one is created exclusively with mode `0600`. Before the rename it gets the existing target's permission bits (`mode & 0o7777`; nothing when the target is missing or not a regular file), so a new `config.toml` is `0600` and an existing one keeps its mode. After the rename, Unix opens the parent directory and calls `sync_all`. A directory that cannot be opened because of permissions, or a file system that refuses directory syncs (`InvalidInput`/`Unsupported`, i.e. `EINVAL`), is ignored. Any other directory-sync error is returned. By then the temporary file is already gone, because the rename has happened. Non-Unix targets skip the mode copy and the directory sync.
+**Rationale:** The brief asks for mode preservation that never widens the mode, even transiently, and a unit test that a new file is not world-readable. Creating every temp file as `0600` and narrowing or restoring to the target's mode meets both. The brief's "a new file keeps the default" is read as this restrictive default, because the umask default (`0644`) would fail the required test. The settings name local paths, so private-by-default is the safer choice. For directory sync the brief recommends ignoring platform refusals but reporting real I/O errors. Returning those errors tells the caller that the new settings may not survive a power cut. A real error is never swallowed. A permission-only refusal is treated like a platform refusal, because the file itself was saved.
+**Alternatives:** Writing a temp file next to the link and renaming over the link (rejected: it replaces the link with a plain file, which is the reported bug). `canonicalize` on the whole path (rejected: it fails on a dangling link and resolves parent-directory links, which is not needed). Creating new files with the umask default (rejected: world-readable). Ignoring every directory-sync error (rejected by the brief).
+
+## #131 — Non-UTF-8 paths are left out of config.toml
+
+**Decision:** When `tables_dir` or `last_table` is not valid UTF-8, it is skipped during serialisation (`skip_serializing_if`). Every other setting is written, the in-memory value is unchanged and `to_toml_string` does not fail. A reload therefore sees no value for that key: `tables_dir` falls back to `<exe dir>/tables` and there is no last table.
+**Rationale:** TOML text cannot hold such a path. Failing the whole save, which was the old behaviour, lost every other setting change. A lossy conversion (U+FFFD) would store a path that names a different, probably missing, file. Leaving the key out has the same effect as a missing file entry and is the classifier's recommendation (a).
+**Alternatives:** A lossy string (rejected: wrong path). A byte-array or escaped encoding (rejected: a new file format for a rare case; older builds would read it as a corrupt value). Failing the save (rejected: the reported defect).
+
+## #131 — Text form of f32 settings and preserved datetimes
+
+**Decision:** `to_toml_string` rewrites every `f32` setting (an explicit list of 13 dotted keys: PiP widths, calibration values, `ui_scale`) to the `f64` parsed from the `f32`'s shortest round-trip decimal (Rust `Display`). If that `f64` does not narrow back to the same bits, the exactly widened value is used instead; a proptest over all finite bit patterns shows this fallback never fires. Preserved top-level unknown keys are taken from the raw `toml::Table` parse rather than from the `#[serde(flatten)]` copy.
+**Rationale:** The serialiser widens `f32` to `f64`, so `0.1` was written as `0.10000000149011612`. Reloading reads `f64` and narrows it, so the shortest `f32` decimal always round-trips bit-exactly. An explicit key list leaves `f64` values in `extra` untouched. The flatten copy goes through serde's buffered `Content`, which turns TOML datetimes into `{ "$__toml_private_datetime" = "…" }` tables and wrote them back as tables or strings. The raw parse keeps `toml::Value::Datetime` (nested unknown keys already came from the raw parse).
+**Alternatives:** Rounding every float in the document (rejected: it would also change preserved `f64` values). A custom serialiser for `f32` fields (rejected: much more code for the same result).
+
+## #131 — Preview byte budgets: drop instead of re-decode
+
+**Decision:** One scan keeps at most `PREVIEW_BUDGET_BYTES` (64 MiB) of decoded RGBA. Previews are decoded in list order while the running total fits. The first preview that does not fit is dropped, as is every later one, and no further preview is decoded (`preview: None`, `preview_error` unchanged, which is `None` for an undecoded preview). Such a table stays `Ready` and loadable, and the details show "(no preview)". The view keeps uploaded preview textures in an LRU cache of at most `PREVIEW_TEXTURE_BUDGET_BYTES` (64 MiB). It evicts the least recently shown texture first (ties in path order, so eviction is deterministic) and never evicts the one shown this frame. Each frame it drops textures of unlisted tables using a `HashSet` of current paths (membership only; iteration order never matters).
+**Rationale:** These are the classifier's recommendation (b) and D25. A folder of 4,096 crafted bundles must not pin about 1 GiB of thumbnails. Dropping is simple and bounded, and re-decoding on demand would put file I/O on the render path. "First miss stops decoding" keeps the transient peak at the budget plus one thumbnail and makes the scan result equal to `enforce_preview_budget` applied to the same list. Only the focused table's details upload a texture, so the texture cache grows by at most one entry per frame.
+**Alternatives:** Lazy re-decode of dropped previews on focus (rejected: I/O worker round trip and new UI state for a rare case). Skipping an oversized preview and continuing with smaller later ones (rejected: the decode count would no longer be bounded by the budget, and the order rule would be less predictable).
+
+## #131 — ui_scale range, step and fallback
+
+**Decision:** `ui_scale` is a top-level `f32` key (default 1.0, accepted range 0.5–4.0). The menu row "UI scale" sits after "Score display" and before the audio budget row. It steps by 0.25 and shows its value as `1.25x`. A non-finite, out-of-range or wrong-type value in the file is reset to 1.0 with one `InvalidValue { key: "ui_scale" }` warning. A menu edit clamps the value, and a non-finite edit gives 1.0. The overlay lays out at `effective_pixels_per_point(MENU_PIXELS_PER_POINT, ui_scale)` = `sanitize_pixels_per_point(base × scale)`, read from the shown state every frame, so a change applies live.
+**Rationale:** These are the classifier's recommendation (c). Resetting a bad value with a warning matches every other numeric setting. 0.5 keeps the panel readable on small windows, and 4.0 covers a 4K monitor viewed from cabinet distance within the 8× ppp clamp. Scaling pixels per point enlarges the whole panel, text, widgets and the 960 × 720-point cap together.
+**Alternatives:** Scaling only the font sizes (rejected: widgets and the panel cap would not follow). A free (unstepped) value (rejected: cabinet Left/Right needs a step).
+
+## #131 — Virtualised table rows: fixed row height
+
+**Decision:** Every table-list row is `ceil(2 × 2 + body text height + item_spacing.y + max(small text height, interact_size.y))` points high: a 2-point vertical margin, then the title (one line, truncated with an ellipsis), then a second line with the author (truncated) and as many whole badges as fit, or, for a broken table, its first error line (truncated). Everything is clipped to the row. The list uses `ScrollArea::show_rows` with that height. When the focus changes, the focused row's rect is computed from its index and passed to `scroll_to_rect`, so a row that is not laid out is still scrolled into view. Rows keep their click ids (`("pin_menu_table_row", path)`).
+**Rationale:** `show_rows` needs one constant height. Computing it from the active text styles keeps the row legible at every `ui_scale`. Badges that do not fit are shown in full, wrapped, in the details column, so nothing is lost, and the existing layout tests (no text beyond the panel's inner edge) still hold.
+**Alternatives:** Wrapped badge rows of varying height (rejected: they cannot be virtualised with `show_rows`). A fixed height in points regardless of style (rejected: it would clip text if the style changes).
+
 ## #138 KP-057 (tester) — How the black-box tests express the three-switch shot and the vertical flipper
 
 **Decision:** (1) The `drop_bank` shot on the scratch copy of `clean` is

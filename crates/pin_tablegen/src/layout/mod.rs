@@ -53,9 +53,21 @@
 //! an error. [`GeneratedTable::warnings`] holds findings that do not stop
 //! generation: a transition leading to a layer `N > 0` that has no exit
 //! zone (a transition from `N`) over area without a layer-`N` deck under it.
+//! The same layer-exit lint (one implementation, in `entry.rs`) also runs
+//! from `pin_tablegen validate <bundle>` as a `Feature::LayerExit` warning
+//! of the clearance report, so hand-edited and older bundles get it too.
+//!
+//! The outputs must fit the loader's budgets. A generated `table.toml`
+//! over `pin_assets::validate::MAX_MANIFEST_BYTES` is an error naming the
+//! kind with the most generated entries (`lanes`: two rail splines each;
+//! `ramps`: one entry transition each; `table.toml` when the hand-written
+//! base alone is too big). A `playfield.glb` over a default
+//! [`GltfLimits`] budget is an error naming the element (nodes, vertices,
+//! indices, geometry bytes) or, for its JSON chunk, the kind with the most
+//! nodes (`walls`, `inserts`, ...).
 
 mod cli;
-mod entry;
+pub(crate) mod entry;
 mod geom;
 mod glb;
 mod guides;
@@ -371,6 +383,28 @@ fn kind_of(node: &str) -> &str {
     e.split('[').next().unwrap_or(e)
 }
 
+/// The element kind ([`kind_of`]) most of `names` belong to, with its
+/// count; ties go to the kind that appears first, and no names give
+/// `(empty, 0)`. Deterministic: kinds are counted in order of first
+/// appearance.
+fn most_common_kind<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    empty: &'a str,
+) -> (&'a str, usize) {
+    let mut kinds: Vec<(&str, usize)> = Vec::new();
+    for name in names {
+        let k = kind_of(name);
+        match kinds.iter_mut().find(|(n, _)| *n == k) {
+            Some(entry) => entry.1 += 1,
+            None => kinds.push((k, 1)),
+        }
+    }
+    kinds
+        .iter()
+        .copied()
+        .fold((empty, 0), |a, b| if b.1 > a.1 { b } else { a })
+}
+
 /// Generates `playfield.glb` and the merged `table.toml` from `layout` and
 /// the hand-written `base` manifest (see the [module docs](self)).
 ///
@@ -380,9 +414,21 @@ fn kind_of(node: &str) -> &str {
 /// closed wall or deck outline, a lane too tight for its width or with
 /// more than 4096 through-points per rail, a ramp whose spline is not in
 /// `base` or starts vertically, a ramp entry zone overlapping a transition
-/// from the ramp's layer to layer 0, or an insert whose lamp is not in
-/// `base`.
+/// from the ramp's layer to layer 0, an insert whose lamp is not in
+/// `base`, or outputs over the loader's budgets (see the
+/// [module docs](self)).
 pub fn generate(layout: &LayoutManifest, base: &TableManifest) -> Result<GeneratedTable, GenError> {
+    generate_with_limits(layout, base, GltfLimits::default())
+}
+
+/// [`generate`] against the glb budgets `limits` instead of the loader's
+/// defaults (a test seam: a lowered `max_json_bytes` exercises the JSON
+/// guard without a huge layout).
+fn generate_with_limits(
+    layout: &LayoutManifest,
+    base: &TableManifest,
+    limits: GltfLimits,
+) -> Result<GeneratedTable, GenError> {
     let mut b = Builder {
         layout,
         base,
@@ -390,7 +436,7 @@ pub fn generate(layout: &LayoutManifest, base: &TableManifest) -> Result<Generat
         materials: Materials::default(),
         splines: Vec::new(),
         transitions: Vec::new(),
-        limits: GltfLimits::default(),
+        limits,
         vertices: 0,
         indices: 0,
         bin_bytes: 0,
@@ -823,14 +869,32 @@ impl Builder<'_> {
         let table = TableManifest::from_toml_str(&table_toml)
             .map_err(|e| GenError::new("table.toml", format!("does not parse back: {e}")))?;
         if table_toml.len() > MAX_MANIFEST_BYTES {
-            return Err(GenError::new(
-                "lanes",
+            // Name the kind with the most generated entries (lanes add two
+            // rail splines each, ramps one entry transition each; the
+            // base's own generated entries were dropped above).
+            let ids = table
+                .splines
+                .iter()
+                .map(|s| s.id.as_str())
+                .chain(table.layer_transitions.iter().map(|t| t.id.as_str()))
+                .filter(|id| id.starts_with(GENERATED_PREFIX));
+            let (kind, count) = most_common_kind(ids, TABLE_FILE);
+            let message = if count == 0 {
                 format!(
-                    "the generated table.toml would be {} bytes, more than the {MAX_MANIFEST_BYTES} \
-                     the loader reads; use fewer or shorter lanes",
+                    "the generated table.toml would be {} bytes, more than the \
+                     {MAX_MANIFEST_BYTES} the loader reads, with no generated entries: the \
+                     hand-written base table.toml is too big",
                     table_toml.len()
-                ),
-            ));
+                )
+            } else {
+                format!(
+                    "the generated table.toml would be {} bytes, more than the \
+                     {MAX_MANIFEST_BYTES} the loader reads ({count} {kind} entries); use fewer \
+                     or shorter {kind}",
+                    table_toml.len()
+                )
+            };
+            return Err(GenError::new(kind, message));
         }
         let warnings = entry::layer_exit_warnings(&table.layer_transitions, &self.nodes);
         let glb = glb::write(&self.nodes, &self.materials.list);
@@ -839,18 +903,8 @@ impl Builder<'_> {
             .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         if u64::from(json) > self.limits.max_json_bytes {
             // Name the kind with the most nodes: it carries most of the JSON.
-            let mut kinds: Vec<(&str, usize)> = Vec::new();
-            for node in &self.nodes {
-                let k = kind_of(&node.name);
-                match kinds.iter_mut().find(|(n, _)| *n == k) {
-                    Some(entry) => entry.1 += 1,
-                    None => kinds.push((k, 1)),
-                }
-            }
-            let (kind, count) = kinds
-                .iter()
-                .copied()
-                .fold(("layout.toml", 0), |a, b| if b.1 > a.1 { b } else { a });
+            let (kind, count) =
+                most_common_kind(self.nodes.iter().map(|n| n.name.as_str()), "layout.toml");
             return Err(GenError::new(
                 kind,
                 format!(

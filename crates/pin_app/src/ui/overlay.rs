@@ -4,7 +4,8 @@
 //! * [`MenuFrames`] (GPU-free): the latest menu state received from the
 //!   main thread ([`MenuShare`](super::MenuShare)) and an egui context;
 //!   while the menu is open it lays out one [`MenuView`] frame per call
-//!   at 1 pixel per point, centred in
+//!   at [`MENU_PIXELS_PER_POINT`] × the state's `ui_scale` pixels per point
+//!   ([`effective_pixels_per_point`]), centred in
 //!   [`menu_panel_rect_px`](pin_render::ui::menu_panel_rect_px). A closed
 //!   menu produces nothing.
 //! * [`MenuOverlay`]: [`MenuFrames`] plus `pin_render`'s
@@ -24,7 +25,9 @@ use super::menu::MenuState;
 use super::view::MenuView;
 use pin_render::gpu::{SurfaceFrameHooks, wgpu};
 use pin_render::topology::SurfaceRole;
-use pin_render::ui::{OverlayFrame, OverlayPainter, egui, overlay_style, raw_input};
+use pin_render::ui::{
+    OverlayFrame, OverlayPainter, effective_pixels_per_point, egui, overlay_style, raw_input,
+};
 
 /// Pixels per point the overlay is laid out at (the render thread does not
 /// know the display's content scale; 1 matches the HUD).
@@ -91,7 +94,10 @@ impl MenuFrames {
     }
 
     /// One tessellated menu frame for a target of `size_px`, or `None` when
-    /// the menu is closed (or the target is empty). The inputs the widgets
+    /// the menu is closed (or the target is empty). The frame is laid out at
+    /// [`effective_pixels_per_point`]`(`[`MENU_PIXELS_PER_POINT`]`, ui_scale)`
+    /// with the shown state's `ui_scale` (applied live), so its panel is
+    /// `menu_panel_rect_px(size_px, that ppp)`. The inputs the widgets
     /// produce are dropped: the main thread owns the menu (no pointer input
     /// reaches this context).
     pub fn frame(&mut self, size_px: [u32; 2]) -> Option<OverlayFrame> {
@@ -99,7 +105,8 @@ impl MenuFrames {
             return None;
         }
         let state = self.state.as_mut()?;
-        let raw = raw_input(size_px, MENU_PIXELS_PER_POINT, Vec::new(), None);
+        let ppp = effective_pixels_per_point(MENU_PIXELS_PER_POINT, state.config().ui_scale);
+        let raw = raw_input(size_px, ppp, Vec::new(), None);
         let (out, _inputs) = self.view.run_frame(&self.ctx, raw, state);
         self.frames += 1;
         Some(OverlayFrame::new(&self.ctx, out))
@@ -333,6 +340,55 @@ mod tests {
             }
         }
         assert_eq!(f.frames(), 2);
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): an open menu at `ui_scale = 2.0` is laid
+    /// out at 2 pixels per point in the panel `menu_panel_rect_px(size, 2.0)`
+    /// and every primitive stays inside it; switching the scale applies on
+    /// the next frame.
+    #[test]
+    fn ui_scale_lays_out_in_the_scaled_panel() {
+        let size = [1600u32, 1200];
+        let mut f = MenuFrames::new();
+        for scale in [2.0f32, 1.0, 1.5] {
+            let cfg = AppConfig {
+                ui_scale: scale,
+                ..AppConfig::default()
+            };
+            let mut open = MenuState::new(cfg);
+            open.apply(MenuInput::Toggle);
+            f.set_state(open);
+            let frame = f.frame(size).expect("an open menu draws");
+            assert_eq!(frame.pixels_per_point, scale);
+            let [x0, y0, x1, y1] = pin_render::ui::menu_panel_rect_px(size, scale);
+            // Primitives are in points: the panel in points is px / ppp.
+            let pts = [x0, y0, x1, y1].map(|v| v as f32 / scale);
+            for p in &frame.primitives {
+                let r = p.clip_rect;
+                let clip_inside = r.min.x >= pts[0] - 0.5
+                    && r.min.y >= pts[1] - 0.5
+                    && r.max.x <= pts[2] + 0.5
+                    && r.max.y <= pts[3] + 0.5;
+                let verts_inside = match &p.primitive {
+                    egui::epaint::Primitive::Mesh(m) => m.vertices.iter().all(|v| {
+                        v.pos.x >= pts[0] - 0.5
+                            && v.pos.y >= pts[1] - 0.5
+                            && v.pos.x <= pts[2] + 0.5
+                            && v.pos.y <= pts[3] + 0.5
+                    }),
+                    egui::epaint::Primitive::Callback(_) => false,
+                };
+                assert!(
+                    clip_inside || verts_inside || r.width() <= 0.0 || r.height() <= 0.0,
+                    "primitive outside the panel at scale {scale}: {r:?}"
+                );
+            }
+        }
+        // 1600x1200 px at 2x = 800x600 points: the 2x panel in pixels.
+        assert_eq!(
+            pin_render::ui::menu_panel_rect_px(size, 2.0),
+            [160, 120, 1440, 1080]
+        );
     }
 
     /// Whether every vertex of a mesh primitive lies inside `rect`.
