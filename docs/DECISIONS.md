@@ -9390,7 +9390,6 @@ holds.
 **Alternatives:** Keep the example as a thin wrapper (keeps the SDL3 build-header requirement for
 build.sh).
 
-
 ## #209 KP-100 — diagnostic workflow design
 
 **Decision:** Phase 1 of #209 adds one stand-alone workflow, `.github/workflows/diag-srgb-blend-warp.yml`.
