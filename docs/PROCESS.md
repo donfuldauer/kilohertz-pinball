@@ -468,7 +468,14 @@ explicitly on a gate review PR.)
      a re-sync;
    - `main`'s last push CI is green; if it is red, only a PR that fixes or reverts the failing
      `main` run may merge (it must still meet every other condition here), and all other merges
-     stay blocked until `main` is green;
+     stay blocked until `main` is green. **Red-`main` ownership:** a session that finds `main`'s
+     last push CI red checks for (i) an open PR that fixes or reverts the failing run, and (ii) a
+     fix issue for the failure with a live governing claim (P1 claim rules). If neither exists,
+     it takes the fix first: it claims the existing fix issue, or creates a `work-unit` fix issue
+     for the failure under P7 and claims it, and works that issue to merge with priority over its
+     own PR (its own PR waits, and its own claim stays live), then resumes its own work. A session
+     started with no issue number that finds `main` red chooses that fix issue before any other
+     candidate;
    - the work-verifier's last result is `pass` for the head commit;
    - the issue is not a gate issue, or its gate review is approved (below).
 
