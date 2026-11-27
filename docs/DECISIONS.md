@@ -9108,3 +9108,128 @@ verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the ap
 **Decision:** `open_stream` takes the file's compressed bytes as a `Vec<u8>` that the track owns; the loader decodes from memory and never touches the filesystem.
 **Rationale:** The bundle snapshot already hands out whole compressed files, and the I/O worker is the only thread that reads files (R4). Compressed music is about a tenth of its decoded size, and the decoded-audio budget bounds decoded PCM only, as the human ruling on the 512 MiB budget says.
 **Alternatives:** Reading the file in chunks on the loader thread (rejected: a second thread touching the filesystem, and the snapshot is an in-memory view). Charging the compressed bytes to the budget (rejected: the budget is defined as decoded audio).
+
+## Process — Gate reviews have a round limit
+
+**Decision:** At the owner's direction (2026-11-26), PROCESS.md P6 gets a round limit for gate
+reviews. Rounds 1 to 5 run as before. From round 6 on, only blocking findings are fixed (R11
+security, verified correctness defects, R3/R4 violations, contract mismatches, failing required
+checks); every other finding is deferred without a fix attempt into one new `work-unit` issue per
+round, and its thread is resolved. After round 8, a gate whose threads are all resolved, with no
+blocking finding open, merges as `capped` (recorded in `docs/RUN_LOG.md`) even if CodeRabbit still
+withholds approval. `main` is no longer merged into an open gate branch unless the gate issue's PR
+conflicts with it or a required check needs it. The limit applies to gate reviews already open
+when it merges, counting their earlier rounds.
+**Rationale:** Gate reviews run one at a time, and the 30-web-prereq review (PR #197) reached
+round 13 in about 33 hours with finding counts rising (3, 6, 7, 20), while the 11-contracts gate
+(#90, PR #214) waited behind it. Each fix and each merge of `main` added new code for CodeRabbit to
+review, so the loop did not converge. Blocking defects are still never deferred.
+**Alternatives:** No limit (rejected: one gate can stall every later gate indefinitely). Running
+gate reviews in parallel (rejected: the next gate's base is the previous gate's reviewed commit).
+A smaller limit such as 3 rounds (rejected: early rounds still find real defects worth fixing in
+place).
+
+## #137 KP-056 — validation lints
+
+**Decision:** (1) **Shared layer-exit core.** The rule has one implementation,
+`layout::entry::layer_exit_findings(transitions, supports_of)` (now `pub(crate)`, with
+`pub(crate) mod entry`). It takes each target layer's support triangles from its caller through
+`entry::Support::new([[x, y, z]; 3] m)`, which applies the 1 mm² plan-area threshold, and returns
+`(transition index, message)` pairs. The message text comes from one function, so it is
+byte-identical in both paths. The generator's `layer_exit_warnings(transitions, nodes)` wraps it
+with the glb node triangles. `clearance::checks::layer_exits` wraps it with `World.tris`
+(playfield and backbox colliders, node-transformed) and runs from `validate_clearance_indexed_for`,
+so `pin_tablegen validate <bundle>` prints the generator's warning. This supersedes the
+w7pre-ramp-entry "Where the lint lives" note and its HUMAN_QUEUE follow-up. (2) **`Feature::LayerExit`**
+(label `"layer exit"`) is a new additive variant of the public `Feature` enum. Each finding is
+a warning with `name` set to the transition id, an empty profile, file `table.toml`, path
+`layer_transitions[i]` and 0 mm values. It does not depend on the ball: it is emitted once per
+offending transition, outside the per-ball loops, and `is_ok` is unaffected. (3) **Wireform
+near-cusp lint** (`pin_assets/src/validate/wireform_lint.rs`): per segment, sample `|dP/dt|` at
+64 + 1 parameters of the segment's Bézier derivative in `f64` and take the minimum. Divide that
+by the chord between the two through-points. A reversal (the dot product of neighbouring samples
+below 0) counts as 0. The worst segment (the first one on a tie) warns at `splines[i]` when its
+ratio is below `NEAR_CUSP_SPEED_RATIO = 0.05`. The ratio is computed before `Wireform::new`
+consumes the spline, and the warning is reported only when the wireform builds. Guides are never
+checked. Calibration, measured by `wireform_lint::tests::shipped_wireforms_are_not_near_cusps`:
+greybox `ramp_wire` 0.8345 (segment 3), apex_circuit `ramp_wire` 0.8295 (segment 3), sky_deck
+`ramp_wire` 0.8288 (segment 4), apex fixture `return_wireform` 0.9004 (segment 1). feature_lab
+declares no wireform. Hand-derived cases, confirmed by running them: 61 mm then 300 mm collinear
+gives 1.25 / 61 = 0.0205, which warns; 40 mm then 300 mm back is a reversal, ratio 0, which warns;
+equal steps give 1.0, which does not warn. 0.05 lies inside the brief's 0.03..0.10 range. It is
+2.4 times the 61/300 case, and the smallest shipped ratio is 16 times it. (4) **`table.toml`
+size error.** It counts the generated `table.toml` entries (ids with the `tablegen:` prefix: lane
+rails and ramp entry transitions) per `kind_of` kind and names the kind with the most entries,
+with the count. On a tie it names the kind that appears first; lane rails come before ramp
+transitions. With no generated entries it names `table.toml` and says the hand-written base is
+too big. Walls and posts add nothing to `table.toml`, so the issue's "walls-heavy layout names
+`walls`" is covered by the glb JSON guard, which counts nodes. That guard now shares the same
+`most_common_kind` helper, with unchanged semantics: strict majority, first kind on a tie, and
+the `layout.toml` fallback. (5) **Seam.** The private `generate_with_limits(layout, base,
+GltfLimits)` is what `generate` calls with the defaults. The tests lower `max_json_bytes` through
+it. The issue's case is used at full size: 12,000 inserts referencing a 1,500-character lamp id.
+`generate` applies no schema cap to either, and the case gives 18,000,000 bytes of extras against
+the 16 MiB budget with 12,001 nodes. (6) **Module declaration.** `wireform_lint` is declared from
+`rules.rs` with `#[path = "wireform_lint.rs"] mod wireform_lint;`, so the module list in
+`validate/mod.rs` (not owned) stays as it is.
+**Rationale:** One core with caller-supplied support keeps the generator and the validator from
+drifting apart. Generated nodes have identity transforms, and `f32` to `f64` conversion is exact,
+so both paths give the same verdict and text on a generated bundle. A test checks this: the
+generator warnings equal the `validate` warnings on an edited grey-box. Dividing the minimum speed
+by the chord does not depend on scale and is 1 for a uniform straight parametrization. The
+threshold sits between real near-cusps (about 0.02 or less) and the shipped ramps (at least
+0.83). Counting generated entries names the element the author can change. The base-only case
+cannot be fixed by changing the layout, so it names the file.
+**Alternatives:** Copying the 3 × 3 sample rule into `clearance/` (rejected: the brief forbids it,
+and the copies would drift apart). Emitting `LayerExit` once per ball profile (rejected: the rule
+does not depend on the ball). A curvature-based cusp lint (rejected: a collinear near-stop has
+zero curvature, and the speed is what makes the frame ill-defined). Keeping "lanes" as the
+table.toml error element (rejected by the issue). Naming the kind by bytes instead of by entry
+count (rejected: the brief asks for the count, which is simpler to reason about).
+
+### #137 KP-056 — owned paths extended to the spec_2_8 test helpers (Orchestrator, 2026-11-26)
+
+`pin_tablegen validate` now reports the layer-exit lint as a `Feature::LayerExit` warning with no
+ball profile and 0 mm, because the check does not depend on ball size. Three existing tests
+(`spec_2_8_random` ×2, `spec_2_8_validator` ×1) asserted that every finding carries a declared
+profile and `required_mm > 0`, so they failed. The Orchestrator extended #137's owned paths to
+`crates/pin_tablegen/tests/fixtures/spec_2_8/support.rs`, `spec_2_8_random.rs` and
+`spec_2_8_validator.rs` (no other live issue reserves them). A T1 Fixer (triage fast path) made the
+helpers assert LayerExit's own shape, including that it never appears in `errors`. Every other
+feature keeps its assertions (R10: the expectation changed with the feature; the tests were not
+weakened).
+## #131 — config.toml save: symlinks, mode and directory sync
+
+**Decision:** `AppConfig::save` follows a symlinked path (single or chained, relative targets resolved against the link's own directory) for at most 40 hops (`MAX_SYMLINK_HOPS`, the usual OS limit). A loop or a longer chain is an `InvalidInput` error and nothing is written. A dangling link creates its target. The temporary file `.<name>.tmp` is created next to the final target and renamed over it, so the link stays a link. On Unix any stale temporary file is removed first, and the new one is created exclusively with mode `0600`. Before the rename it gets the existing target's permission bits (`mode & 0o7777`; nothing when the target is missing or not a regular file), so a new `config.toml` is `0600` and an existing one keeps its mode. After the rename, Unix opens the parent directory and calls `sync_all`. A directory that cannot be opened because of permissions, or a file system that refuses directory syncs (`InvalidInput`/`Unsupported`, i.e. `EINVAL`), is ignored. Any other directory-sync error is returned. By then the temporary file is already gone, because the rename has happened. Non-Unix targets skip the mode copy and the directory sync.
+**Rationale:** The brief asks for mode preservation that never widens the mode, even transiently, and a unit test that a new file is not world-readable. Creating every temp file as `0600` and narrowing or restoring to the target's mode meets both. The brief's "a new file keeps the default" is read as this restrictive default, because the umask default (`0644`) would fail the required test. The settings name local paths, so private-by-default is the safer choice. For directory sync the brief recommends ignoring platform refusals but reporting real I/O errors. Returning those errors tells the caller that the new settings may not survive a power cut. A real error is never swallowed. A permission-only refusal is treated like a platform refusal, because the file itself was saved.
+**Alternatives:** Writing a temp file next to the link and renaming over the link (rejected: it replaces the link with a plain file, which is the reported bug). `canonicalize` on the whole path (rejected: it fails on a dangling link and resolves parent-directory links, which is not needed). Creating new files with the umask default (rejected: world-readable). Ignoring every directory-sync error (rejected by the brief).
+
+## #131 — Non-UTF-8 paths are left out of config.toml
+
+**Decision:** When `tables_dir` or `last_table` is not valid UTF-8, it is skipped during serialisation (`skip_serializing_if`). Every other setting is written, the in-memory value is unchanged and `to_toml_string` does not fail. A reload therefore sees no value for that key: `tables_dir` falls back to `<exe dir>/tables` and there is no last table.
+**Rationale:** TOML text cannot hold such a path. Failing the whole save, which was the old behaviour, lost every other setting change. A lossy conversion (U+FFFD) would store a path that names a different, probably missing, file. Leaving the key out has the same effect as a missing file entry and is the classifier's recommendation (a).
+**Alternatives:** A lossy string (rejected: wrong path). A byte-array or escaped encoding (rejected: a new file format for a rare case; older builds would read it as a corrupt value). Failing the save (rejected: the reported defect).
+
+## #131 — Text form of f32 settings and preserved datetimes
+
+**Decision:** `to_toml_string` rewrites every `f32` setting (an explicit list of 13 dotted keys: PiP widths, calibration values, `ui_scale`) to the `f64` parsed from the `f32`'s shortest round-trip decimal (Rust `Display`). If that `f64` does not narrow back to the same bits, the exactly widened value is used instead; a proptest over all finite bit patterns shows this fallback never fires. Preserved top-level unknown keys are taken from the raw `toml::Table` parse rather than from the `#[serde(flatten)]` copy.
+**Rationale:** The serialiser widens `f32` to `f64`, so `0.1` was written as `0.10000000149011612`. Reloading reads `f64` and narrows it, so the shortest `f32` decimal always round-trips bit-exactly. An explicit key list leaves `f64` values in `extra` untouched. The flatten copy goes through serde's buffered `Content`, which turns TOML datetimes into `{ "$__toml_private_datetime" = "…" }` tables and wrote them back as tables or strings. The raw parse keeps `toml::Value::Datetime` (nested unknown keys already came from the raw parse).
+**Alternatives:** Rounding every float in the document (rejected: it would also change preserved `f64` values). A custom serialiser for `f32` fields (rejected: much more code for the same result).
+
+## #131 — Preview byte budgets: drop instead of re-decode
+
+**Decision:** One scan keeps at most `PREVIEW_BUDGET_BYTES` (64 MiB) of decoded RGBA. Previews are decoded in list order while the running total fits. The first preview that does not fit is dropped, as is every later one, and no further preview is decoded (`preview: None`, `preview_error` unchanged, which is `None` for an undecoded preview). Such a table stays `Ready` and loadable, and the details show "(no preview)". The view keeps uploaded preview textures in an LRU cache of at most `PREVIEW_TEXTURE_BUDGET_BYTES` (64 MiB). It evicts the least recently shown texture first (ties in path order, so eviction is deterministic) and never evicts the one shown this frame. Each frame it drops textures of unlisted tables using a `HashSet` of current paths (membership only; iteration order never matters).
+**Rationale:** These are the classifier's recommendation (b) and D25. A folder of 4,096 crafted bundles must not pin about 1 GiB of thumbnails. Dropping is simple and bounded, and re-decoding on demand would put file I/O on the render path. "First miss stops decoding" keeps the transient peak at the budget plus one thumbnail and makes the scan result equal to `enforce_preview_budget` applied to the same list. Only the focused table's details upload a texture, so the texture cache grows by at most one entry per frame.
+**Alternatives:** Lazy re-decode of dropped previews on focus (rejected: I/O worker round trip and new UI state for a rare case). Skipping an oversized preview and continuing with smaller later ones (rejected: the decode count would no longer be bounded by the budget, and the order rule would be less predictable).
+
+## #131 — ui_scale range, step and fallback
+
+**Decision:** `ui_scale` is a top-level `f32` key (default 1.0, accepted range 0.5–4.0). The menu row "UI scale" sits after "Score display" and before the audio budget row. It steps by 0.25 and shows its value as `1.25x`. A non-finite, out-of-range or wrong-type value in the file is reset to 1.0 with one `InvalidValue { key: "ui_scale" }` warning. A menu edit clamps the value, and a non-finite edit gives 1.0. The overlay lays out at `effective_pixels_per_point(MENU_PIXELS_PER_POINT, ui_scale)` = `sanitize_pixels_per_point(base × scale)`, read from the shown state every frame, so a change applies live.
+**Rationale:** These are the classifier's recommendation (c). Resetting a bad value with a warning matches every other numeric setting. 0.5 keeps the panel readable on small windows, and 4.0 covers a 4K monitor viewed from cabinet distance within the 8× ppp clamp. Scaling pixels per point enlarges the whole panel, text, widgets and the 960 × 720-point cap together.
+**Alternatives:** Scaling only the font sizes (rejected: widgets and the panel cap would not follow). A free (unstepped) value (rejected: cabinet Left/Right needs a step).
+
+## #131 — Virtualised table rows: fixed row height
+
+**Decision:** Every table-list row is `ceil(2 × 2 + body text height + item_spacing.y + max(small text height, interact_size.y))` points high: a 2-point vertical margin, then the title (one line, truncated with an ellipsis), then a second line with the author (truncated) and as many whole badges as fit, or, for a broken table, its first error line (truncated). Everything is clipped to the row. The list uses `ScrollArea::show_rows` with that height. When the focus changes, the focused row's rect is computed from its index and passed to `scroll_to_rect`, so a row that is not laid out is still scrolled into view. Rows keep their click ids (`("pin_menu_table_row", path)`).
+**Rationale:** `show_rows` needs one constant height. Computing it from the active text styles keeps the row legible at every `ui_scale`. Badges that do not fit are shown in full, wrapped, in the details column, so nothing is lost, and the existing layout tests (no text beyond the panel's inner edge) still hold.
+**Alternatives:** Wrapped badge rows of varying height (rejected: they cannot be virtualised with `show_rows`). A fixed height in points regardless of style (rejected: it would clip text if the style changes).

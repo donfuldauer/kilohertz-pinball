@@ -10,8 +10,27 @@
 //!   written back by [`AppConfig::save`], so a newer build's settings survive a
 //!   round trip through an older one. Each unknown key is also reported as a
 //!   warning so typos are visible.
-//! * [`AppConfig::save`] is atomic: the text is written to a temporary file in
-//!   the same directory, flushed to disk, then renamed over the target.
+//! * [`AppConfig::save`] is atomic and durable: the text is written to a
+//!   temporary file in the same directory, flushed to disk, renamed over the
+//!   target, and (on Unix) the directory itself is synced so the rename
+//!   survives a power cut. The temporary file never outlives a save.
+//!   * A symlinked `config.toml` (single or chained, relative or absolute
+//!     links) is written **through**: the temporary file is created next to
+//!     the link's final target and renamed over that target, so the link stays
+//!     a link. A dangling link creates its target. At most
+//!     [`MAX_SYMLINK_HOPS`] links are followed; a loop is an error.
+//!   * The file mode is kept: on Unix the temporary file is created `0600`
+//!     (never wider than the result, even transiently), then given the
+//!     existing target's permissions before the rename. A new file stays
+//!     `0600` (DECISIONS.md "#131 — config.toml save: symlinks, mode and
+//!     directory sync").
+//!   * A `tables_dir` / `last_table` that is not valid UTF-8 cannot be written
+//!     as TOML text; it is left out of the file (the in-memory value is
+//!     unchanged) instead of failing the save.
+//! * Text form: every `f32` setting is written as its shortest round-trip
+//!   decimal (`deadzone = 0.1`, not `0.10000000149011612`), so a reload gives
+//!   the bit-identical value; preserved unknown keys are written back exactly
+//!   as read (datetimes stay TOML datetimes, `f64` values are untouched).
 //!
 //! Units follow the input layer (full-scale units, Hz, ms); `config.toml` is
 //! not a table manifest, so the mm/g/deg rule (D17) does not apply.
@@ -508,6 +527,13 @@ pub struct AppConfig {
     pub calibration: CalibrationConfig,
     /// Debug wireframe overlay on the playfield.
     pub wireframe: bool,
+    /// Menu scale factor, [`MIN_UI_SCALE`]..=[`MAX_UI_SCALE`] (default
+    /// [`DEFAULT_UI_SCALE`]): the menu is laid out at
+    /// `pixels_per_point × ui_scale`, so it appears this many times larger
+    /// (e.g. 2.0 on a 4K cabinet monitor). Applied live. A non-finite,
+    /// out-of-range or wrong-type value falls back to the default with a
+    /// warning.
+    pub ui_scale: f32,
     /// Audio settings (`[audio]`).
     pub audio: AudioConfig,
     /// UDP telemetry settings (`[telemetry]`).
@@ -515,11 +541,13 @@ pub struct AppConfig {
     /// DOF bridge settings (`[dof]`).
     pub dof: DofConfig,
     /// Folder scanned for table bundles; `None` = `tables/` next to the
-    /// executable (resolved by the app).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// executable (resolved by the app). A path that is not valid UTF-8 is
+    /// kept in memory but left out of the saved file.
+    #[serde(skip_serializing_if = "skip_path")]
     pub tables_dir: Option<PathBuf>,
-    /// The table loaded last (set when a load succeeds).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The table loaded last (set when a load succeeds). A path that is not
+    /// valid UTF-8 is kept in memory but left out of the saved file.
+    #[serde(skip_serializing_if = "skip_path")]
     pub last_table: Option<PathBuf>,
     /// Keys this build does not know, preserved verbatim at their place in
     /// the file: unknown top-level keys and tables, and unknown keys inside
@@ -528,6 +556,12 @@ pub struct AppConfig {
     /// [`AppConfig::save`] wherever they do not clash with a known setting.
     #[serde(flatten)]
     pub extra: toml::Table,
+}
+
+/// Whether an optional path is left out of the saved file: `None`, or a path
+/// TOML text cannot hold (not valid UTF-8).
+fn skip_path(p: &Option<PathBuf>) -> bool {
+    p.as_deref().is_none_or(|p| p.to_str().is_none())
 }
 
 /// A `[*_pip]` table as written: every key optional.
@@ -575,6 +609,7 @@ impl Default for AppConfig {
             staging_mode: StagingMode::Table,
             calibration: CalibrationConfig::default(),
             wireframe: false,
+            ui_scale: DEFAULT_UI_SCALE,
             audio: AudioConfig::default(),
             telemetry: TelemetryConfig::default(),
             dof: DofConfig::default(),
@@ -654,11 +689,30 @@ const TOP_KEYS: &[&str] = &[
     "staging_mode",
     "calibration",
     "wireframe",
+    "ui_scale",
     "audio",
     "telemetry",
     "dof",
     "tables_dir",
     "last_table",
+];
+
+/// Dotted paths of every `f32` setting, written as shortest round-trip
+/// decimals by [`AppConfig::to_toml_string`].
+const F32_KEYS: [&[&str]; 13] = [
+    &["backglass_pip", "width_fraction"],
+    &["score_pip", "width_fraction"],
+    &["calibration", "plunger", "deadzone"],
+    &["calibration", "plunger", "rest_tracking_per_s"],
+    &["calibration", "plunger", "release_min_speed"],
+    &["calibration", "nudge", "high_pass_hz"],
+    &["calibration", "nudge", "gain"],
+    &["calibration", "nudge", "curve_exponent"],
+    &["calibration", "nudge", "deadzone"],
+    &["calibration", "nudge", "max"],
+    &["calibration", "dual_stage_lower"],
+    &["calibration", "dual_stage_upper"],
+    &["ui_scale"],
 ];
 const PIP_KEYS: &[&str] = &["corner", "width_fraction"];
 const CALIBRATION_KEYS: &[&str] = &["plunger", "nudge", "dual_stage_lower", "dual_stage_upper"];
@@ -675,6 +729,18 @@ const DOF_KEYS: &[&str] = &["enabled"];
 
 /// Largest monitor index the config accepts.
 pub const MAX_DISPLAY_INDEX: u32 = 15;
+
+/// Default menu scale ([`AppConfig::ui_scale`]): the menu at its designed size.
+pub const DEFAULT_UI_SCALE: f32 = 1.0;
+/// Smallest accepted [`AppConfig::ui_scale`].
+pub const MIN_UI_SCALE: f32 = 0.5;
+/// Largest accepted [`AppConfig::ui_scale`] (a 4K cabinet monitor viewed
+/// from a distance).
+pub const MAX_UI_SCALE: f32 = 4.0;
+
+/// Most symbolic links [`AppConfig::save`] follows from the given path to the
+/// file it writes (the usual OS limit); more, or a loop, is an error.
+pub const MAX_SYMLINK_HOPS: u32 = 40;
 
 impl AppConfig {
     /// Loads `path`. Never fails; see the module docs for the fallback rules.
@@ -808,24 +874,45 @@ impl AppConfig {
     /// The TOML text [`save`](Self::save) writes.
     ///
     /// Preserved unknown keys ([`extra`](Self::extra)) are merged in where
-    /// they do not clash with a known setting. Fails only for a path
-    /// (`tables_dir`, `last_table`) that is not valid UTF-8.
+    /// they do not clash with a known setting, exactly as they were read
+    /// (datetimes stay datetimes). Every `f32` setting is written as its
+    /// shortest round-trip decimal. A `tables_dir` / `last_table` that is not
+    /// valid UTF-8 is left out (DECISIONS.md "#131 — Non-UTF-8 paths are
+    /// left out of config.toml"). No error is expected; the `Result` is the
+    /// TOML serialiser's.
     pub fn to_toml_string(&self) -> Result<String, toml::ser::Error> {
         let mut known = self.clone();
         let extra = std::mem::take(&mut known.extra);
         let mut doc = toml::Table::try_from(&known)?;
+        for path in F32_KEYS {
+            shorten_f32(&mut doc, path);
+        }
         merge_missing(&mut doc, &extra);
         toml::to_string(&doc)
     }
 
-    /// Writes the settings to `path` atomically: a temporary file next to it
-    /// (`.<name>.tmp`), `sync_all`, then a rename over `path`. On error the
-    /// previous file is untouched and the temporary file is removed.
+    /// Writes the settings to `path` atomically and durably: a temporary
+    /// file (`.<name>.tmp`) next to the file finally written, `sync_all`, a
+    /// rename over that file, then (Unix) a sync of its directory.
+    ///
+    /// * `path` may be a symlink (chained, relative or absolute, or
+    ///   dangling): the link's final target is written and the link stays
+    ///   a link. More than [`MAX_SYMLINK_HOPS`] links (or a loop) is an
+    ///   error and nothing is written.
+    /// * Unix: the temporary file is created with mode `0600` and given the
+    ///   existing target's permissions before the rename, so the file mode
+    ///   is kept (a new file is `0600`) and never widened, even transiently.
+    /// * On error before the rename the previous file is untouched; the
+    ///   temporary file is removed in every case. A failure to sync the
+    ///   directory after the rename is reported (the new settings are in
+    ///   place but may not survive a power cut), except where the platform
+    ///   or file system refuses directory syncs (ignored).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let text = self
             .to_toml_string()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let name = path.file_name().ok_or_else(|| {
+        let target = resolve_symlinks(path)?;
+        let name = target.file_name().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "config path has no file name",
@@ -834,19 +921,21 @@ impl AppConfig {
         let mut tmp_name = std::ffi::OsString::from(".");
         tmp_name.push(name);
         tmp_name.push(".tmp");
-        let tmp = path.with_file_name(tmp_name);
+        let tmp = target.with_file_name(tmp_name);
         let write = || -> std::io::Result<()> {
-            let mut f = std::fs::File::create(&tmp)?;
+            let mut f = create_temp(&tmp)?;
             f.write_all(text.as_bytes())?;
+            keep_mode(&f, &target)?;
             f.sync_all()?;
             drop(f);
-            std::fs::rename(&tmp, path)
+            std::fs::rename(&tmp, &target)
         };
         let result = write();
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
-        result
+        result?;
+        sync_parent_dir(&target)
     }
 
     /// The display topology these settings describe.
@@ -889,7 +978,14 @@ impl AppConfig {
         let (pw, sw) = (MIN_PIP_WIDTH, MAX_PIP_WIDTH);
         let c = &mut self.calibration;
         let dc = &d.calibration;
-        let checks: [(&str, &mut f32, f32, f32, f32); 12] = [
+        let checks: [(&str, &mut f32, f32, f32, f32); 13] = [
+            (
+                "ui_scale",
+                &mut self.ui_scale,
+                MIN_UI_SCALE,
+                MAX_UI_SCALE,
+                d.ui_scale,
+            ),
             (
                 "backglass_pip.width_fraction",
                 &mut self.backglass_pip.width_fraction,
@@ -1031,6 +1127,138 @@ impl AppConfig {
             self.input_profile = d.input_profile;
         }
     }
+}
+
+/// The `f32` `x` as the TOML float whose shortest decimal form reads back as
+/// exactly `x`: the shortest round-trip decimal of `x` as an `f32` (Rust's
+/// `Display`), parsed as `f64`. If that `f64` would not narrow back to the
+/// same bits (never observed; kept as a guard), `x` widened exactly is used.
+fn f32_value(x: f32) -> f64 {
+    if !x.is_finite() {
+        return f64::from(x);
+    }
+    match x.to_string().parse::<f64>() {
+        Ok(d) if (d as f32).to_bits() == x.to_bits() => d,
+        _ => f64::from(x),
+    }
+}
+
+/// Rewrites the float at the dotted `path` of `doc` (an `f32` setting
+/// widened to `f64` by the serialiser) as its shortest round-trip decimal.
+fn shorten_f32(doc: &mut toml::Table, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut t = doc;
+    for key in parents {
+        match t.get_mut(*key) {
+            Some(toml::Value::Table(next)) => t = next,
+            _ => return,
+        }
+    }
+    if let Some(toml::Value::Float(v)) = t.get_mut(*last) {
+        *v = f32_value(*v as f32);
+    }
+}
+
+/// The file `path` names after following symbolic links (at most
+/// [`MAX_SYMLINK_HOPS`]): `path` itself when it is not a link, else the final
+/// target (which may not exist yet: a dangling link). Relative link targets
+/// are resolved against the link's directory.
+fn resolve_symlinks(path: &Path) -> std::io::Result<PathBuf> {
+    let mut p = path.to_path_buf();
+    let mut hops = 0;
+    loop {
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {
+                if hops == MAX_SYMLINK_HOPS {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "{}: more than {MAX_SYMLINK_HOPS} symbolic links (a loop?)",
+                            path.display()
+                        ),
+                    ));
+                }
+                hops += 1;
+                let link = std::fs::read_link(&p)?;
+                p = match p.parent() {
+                    Some(dir) if !link.is_absolute() => dir.join(link),
+                    _ => link,
+                };
+            }
+            Ok(_) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(p),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Creates the temporary file of a save. Unix: a left-over temporary file is
+/// removed first and the new one is created exclusively with mode `0600`, so
+/// its content is never readable by others, whatever the umask.
+#[cfg(unix)]
+fn create_temp(tmp: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = std::fs::remove_file(tmp);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(tmp)
+}
+
+/// Creates the temporary file of a save.
+#[cfg(not(unix))]
+fn create_temp(tmp: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::create(tmp)
+}
+
+/// Gives the temporary file `f` the permission bits of the existing regular
+/// file `target` (Unix; nothing when `target` does not exist yet).
+#[cfg(unix)]
+fn keep_mode(f: &std::fs::File, target: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(target) {
+        Ok(m) if m.is_file() => f.set_permissions(std::fs::Permissions::from_mode(
+            m.permissions().mode() & 0o7777,
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Keeps the file mode (Unix only; nothing to do elsewhere).
+#[cfg(not(unix))]
+fn keep_mode(_f: &std::fs::File, _target: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Syncs the directory holding `target` so a rename into it is durable
+/// (Unix). A directory that cannot be opened for reading (permission) or a
+/// file system that refuses directory syncs (`EINVAL`, unsupported) is
+/// ignored; other errors are returned.
+#[cfg(unix)]
+fn sync_parent_dir(target: &Path) -> std::io::Result<()> {
+    use std::io::ErrorKind;
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let d = match std::fs::File::open(dir) {
+        Ok(d) => d,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    match d.sync_all() {
+        Err(e) if matches!(e.kind(), ErrorKind::InvalidInput | ErrorKind::Unsupported) => Ok(()),
+        r => r,
+    }
+}
+
+/// Directory sync is a Unix step; elsewhere the rename is the last step.
+#[cfg(not(unix))]
+fn sync_parent_dir(_target: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Drops an `[audio]` value that would not deserialize (wrong type, negative,
@@ -1219,9 +1447,13 @@ fn merge_missing(dst: &mut toml::Table, src: &toml::Table) {
 /// Reports unknown keys and stores the nested ones in `config.extra` at their
 /// paths (top-level ones are already there through `#[serde(flatten)]`).
 fn collect_unknown(raw: &toml::Table, config: &mut AppConfig, warnings: &mut Vec<ConfigWarning>) {
-    for key in raw.keys() {
+    for (key, value) in raw {
         if !TOP_KEYS.contains(&key.as_str()) {
             warnings.push(ConfigWarning::UnknownKey(key.clone()));
+            // Kept exactly as parsed: the copy `#[serde(flatten)]` made went
+            // through serde's buffered form, which turns TOML datetimes
+            // into tables (so they would be written back as tables).
+            config.extra.insert(key.clone(), value.clone());
         }
     }
     for (path, known) in SECTIONS {
@@ -1336,5 +1568,393 @@ mod tests {
                 l.warnings
             );
         }
+    }
+
+    /// A fresh scratch directory under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "kp_cfg131_{tag}_{}_{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn join(&self, p: impl AsRef<Path>) -> PathBuf {
+            self.0.join(p)
+        }
+
+        /// Sorted entry names (to spot a left-over temporary file).
+        fn names(&self, sub: &str) -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(self.0.join(sub))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn custom() -> AppConfig {
+        let mut c = AppConfig {
+            wireframe: true,
+            ui_scale: 2.0,
+            ..AppConfig::default()
+        };
+        c.calibration.plunger.deadzone = 0.1;
+        c
+    }
+
+    fn invalid_keys(w: &[ConfigWarning]) -> Vec<&str> {
+        w.iter()
+            .filter_map(|w| match w {
+                ConfigWarning::InvalidValue { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): saving through a symlink writes the
+    /// link's target, the link stays a link and no temporary file is left in
+    /// either directory.
+    #[cfg(unix)]
+    #[test]
+    fn spec_4_4_save_writes_through_a_symlink() {
+        let s = Scratch::new("symlink");
+        std::fs::create_dir_all(s.join("real")).unwrap();
+        std::fs::create_dir_all(s.join("links")).unwrap();
+        let target = s.join("real/config.toml");
+        AppConfig::default().save(&target).unwrap();
+        let link = s.join("links/config.toml");
+        // Relative link target.
+        std::os::unix::fs::symlink("../real/config.toml", &link).unwrap();
+        custom().save(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(AppConfig::load(&target).config, custom());
+        assert_eq!(AppConfig::load(&link).config, custom());
+        assert_eq!(s.names("real"), ["config.toml"]);
+        assert_eq!(s.names("links"), ["config.toml"]);
+        // Absolute link target.
+        let abs = s.join("abs.toml");
+        std::os::unix::fs::symlink(&target, &abs).unwrap();
+        AppConfig::default().save(&abs).unwrap();
+        assert!(std::fs::symlink_metadata(&abs).unwrap().is_symlink());
+        assert_eq!(AppConfig::load(&target).config, AppConfig::default());
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): chained links are followed to the end; a
+    /// dangling link creates its target.
+    #[cfg(unix)]
+    #[test]
+    fn spec_4_4_save_follows_chained_and_dangling_symlinks() {
+        let s = Scratch::new("chain");
+        let target = s.join("final.toml");
+        std::os::unix::fs::symlink("final.toml", s.join("b.toml")).unwrap();
+        std::os::unix::fs::symlink(s.join("b.toml"), s.join("a.toml")).unwrap();
+        // Dangling: `final.toml` does not exist yet.
+        custom().save(&s.join("a.toml")).unwrap();
+        assert!(target.is_file());
+        for l in ["a.toml", "b.toml"] {
+            assert!(std::fs::symlink_metadata(s.join(l)).unwrap().is_symlink());
+        }
+        assert_eq!(AppConfig::load(&target).config, custom());
+        assert_eq!(s.names(""), ["a.toml", "b.toml", "final.toml"]);
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): a symlink loop (or a chain longer than
+    /// `MAX_SYMLINK_HOPS`) is an error and writes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn spec_4_4_save_rejects_a_symlink_loop() {
+        let s = Scratch::new("loop");
+        std::os::unix::fs::symlink("y.toml", s.join("x.toml")).unwrap();
+        std::os::unix::fs::symlink("x.toml", s.join("y.toml")).unwrap();
+        assert!(custom().save(&s.join("x.toml")).is_err());
+        assert_eq!(s.names(""), ["x.toml", "y.toml"]);
+        // A chain of exactly MAX_SYMLINK_HOPS links is fine, one more is not.
+        let n = MAX_SYMLINK_HOPS as usize;
+        for i in 0..=n {
+            std::os::unix::fs::symlink(format!("l{}", i + 1), s.join(format!("l{i}"))).unwrap();
+        }
+        assert!(custom().save(&s.join("l1")).is_ok());
+        assert!(s.join(format!("l{}", n + 1)).is_file());
+        std::fs::remove_file(s.join(format!("l{}", n + 1))).unwrap();
+        assert!(custom().save(&s.join("l0")).is_err());
+        assert!(!s.join(format!("l{}", n + 1)).exists());
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): an existing file's mode is kept (0600
+    /// stays 0600, also through a symlink); a new file is not readable by
+    /// group or others.
+    #[cfg(unix)]
+    #[test]
+    fn spec_4_4_save_keeps_the_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("mode");
+        let path = s.join("config.toml");
+        custom().save(&path).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path) & 0o077, 0, "new file is {:o}", mode(&path));
+        for m in [0o600, 0o640, 0o644] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m)).unwrap();
+            AppConfig::default().save(&path).unwrap();
+            assert_eq!(mode(&path), m);
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = s.join("link.toml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        custom().save(&link).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(AppConfig::load(&path).config, custom());
+        assert_eq!(s.names(""), ["config.toml", "link.toml"]);
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): no temporary file survives a save, a
+    /// failed save, or a stale one left by a crash.
+    #[test]
+    fn spec_4_4_no_temp_file_remains() {
+        let s = Scratch::new("tmp");
+        let path = s.join("config.toml");
+        // A stale temp file from a crashed save is replaced, not appended.
+        std::fs::write(s.join(".config.toml.tmp"), b"garbage").unwrap();
+        custom().save(&path).unwrap();
+        assert_eq!(s.names(""), ["config.toml"]);
+        assert_eq!(AppConfig::load(&path).config, custom());
+        // The target is a non-empty directory: the rename fails.
+        std::fs::create_dir_all(s.join("blocked/child")).unwrap();
+        assert!(custom().save(&s.join("blocked")).is_err());
+        assert_eq!(s.names(""), ["blocked", "config.toml"]);
+        // No file name.
+        assert!(custom().save(Path::new("/")).is_err());
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): a `last_table` / `tables_dir` that is
+    /// not valid UTF-8 does not fail the save; it is left out, every other
+    /// setting is written and the in-memory value is unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn spec_4_4_non_utf8_paths_do_not_fail_the_save() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/t/bad_\xff\xfe.pinbundle"));
+        let mut c = custom();
+        c.last_table = Some(bad.clone());
+        c.tables_dir = Some(bad.clone());
+        let text = c.to_toml_string().expect("non-UTF-8 paths are left out");
+        assert!(!text.contains("last_table") && !text.contains("tables_dir"));
+        assert!(text.contains("wireframe = true"), "{text}");
+        let s = Scratch::new("utf8");
+        let path = s.join("config.toml");
+        c.save(&path).unwrap();
+        assert_eq!(c.last_table.as_deref(), Some(bad.as_path()));
+        let back = AppConfig::load(&path);
+        assert_eq!(back.warnings, []);
+        let mut want = c.clone();
+        want.last_table = None;
+        want.tables_dir = None;
+        assert_eq!(back.config, want);
+        // A valid path next to a bad one is still written.
+        c.tables_dir = Some("/t".into());
+        let text = c.to_toml_string().unwrap();
+        assert!(text.contains("tables_dir = \"/t\"") && !text.contains("last_table"));
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): preserved unknown keys keep datetimes as
+    /// TOML datetimes (offset, local datetime, local date, local time; at the
+    /// top level, in unknown tables, in arrays and in known sections).
+    #[test]
+    fn spec_4_4_unknown_datetimes_stay_datetimes() {
+        let text = "released = 2024-05-06T07:08:09Z\n\
+                    local = 2024-05-06T07:08:09\n\
+                    day = 2024-05-06\n\
+                    at = 07:08:09\n\
+                    list = [2024-01-02, 1, \"s\"]\n\
+                    [future]\n\
+                    when = 1999-12-31T23:59:59.5+01:00\n\
+                    [future.deep]\n\
+                    t = 12:00:00\n\
+                    [calibration]\n\
+                    stamp = 2020-02-02\n";
+        let l = AppConfig::from_toml_str(text);
+        assert!(
+            l.warnings
+                .iter()
+                .all(|w| matches!(w, ConfigWarning::UnknownKey(_))),
+            "{:?}",
+            l.warnings
+        );
+        let saved = l.config.to_toml_string().unwrap();
+        let doc: toml::Table = saved.parse().unwrap();
+        let want: toml::Table = text.parse().unwrap();
+        let dt = |v: Option<&toml::Value>| matches!(v, Some(toml::Value::Datetime(_)));
+        for k in ["released", "local", "day", "at"] {
+            assert!(dt(doc.get(k)), "{k} in\n{saved}");
+            assert_eq!(doc.get(k), want.get(k), "{k}");
+        }
+        assert_eq!(doc.get("list"), want.get("list"));
+        assert!(dt(doc["list"].as_array().unwrap().first()));
+        assert_eq!(doc.get("future"), want.get("future"), "{saved}");
+        assert!(dt(doc["future"].get("when")));
+        assert!(dt(doc["future"]["deep"].get("t")));
+        assert!(dt(doc["calibration"].get("stamp")), "{saved}");
+        assert!(saved.contains("released = 2024-05-06T07:08:09Z"), "{saved}");
+        // And the second round trip is stable.
+        let again = AppConfig::from_toml_str(&saved);
+        assert_eq!(again.config.to_toml_string().unwrap(), saved);
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): `deadzone = 0.1` is written as `0.1`
+    /// and reloads bit-identical; `f64` values in unknown keys are untouched.
+    #[test]
+    fn spec_4_4_f32_written_as_shortest_decimal() {
+        let l = AppConfig::from_toml_str(
+            "ui_scale = 1.25\nfuture = 0.10000000149011612\n[calibration.plunger]\ndeadzone = 0.1\n",
+        );
+        assert_eq!(
+            l.warnings,
+            [ConfigWarning::UnknownKey("future".into())],
+            "{:?}",
+            l.warnings
+        );
+        assert_eq!(l.config.calibration.plunger.deadzone, 0.1f32);
+        let text = l.config.to_toml_string().unwrap();
+        assert!(text.contains("deadzone = 0.1\n"), "{text}");
+        assert!(!text.contains("0.10000000149011612\n[") || text.contains("future"));
+        assert!(text.contains("future = 0.10000000149011612"), "{text}");
+        assert!(text.contains("ui_scale = 1.25"), "{text}");
+        let back = AppConfig::from_toml_str(&text).config;
+        assert_eq!(
+            back.calibration.plunger.deadzone.to_bits(),
+            0.1f32.to_bits()
+        );
+        // The defaults print short too (no 17-digit noise anywhere).
+        let d = AppConfig::default().to_toml_string().unwrap();
+        for line in d.lines() {
+            if let Some((_, v)) = line.split_once(" = ")
+                && let Ok(x) = v.parse::<f64>()
+            {
+                assert!(v.len() <= 12, "{line}");
+                assert!(x.is_finite());
+            }
+        }
+        assert_eq!(f32_value(-0.0).to_bits(), (-0.0f64).to_bits());
+        assert!(f32_value(f32::NAN).is_nan());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 512,
+            failure_persistence: None,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// SPEC §4 Subphase 4.4 (#131): every in-range f32 setting saves
+        /// and reloads bit-identical.
+        #[test]
+        fn spec_4_4_f32_settings_round_trip_exactly(
+            dz in 0.0f32..=0.5,
+            gain in 0.0f32..=10.0,
+            rest in 0.0f32..=100.0,
+            speed in 0.0f32..=1000.0,
+            pip in MIN_PIP_WIDTH..=MAX_PIP_WIDTH,
+            scale in MIN_UI_SCALE..=MAX_UI_SCALE,
+            bits in proptest::prelude::any::<u32>(),
+        ) {
+            let mut c = AppConfig::default();
+            c.calibration.plunger.deadzone = dz;
+            c.calibration.nudge.gain = gain;
+            c.calibration.plunger.rest_tracking_per_s = rest;
+            c.calibration.plunger.release_min_speed = speed;
+            c.backglass_pip.width_fraction = pip;
+            c.ui_scale = scale;
+            // Any finite f32 bit pattern, mapped into the deadzone range of
+            // the nudge filter (0..=1) without losing low mantissa bits.
+            let any = f32::from_bits(bits & 0x3f7f_ffff);
+            c.calibration.nudge.deadzone = any;
+            let text = c.to_toml_string().unwrap();
+            let r = AppConfig::from_toml_str(&text);
+            proptest::prop_assert!(r.warnings.is_empty(), "{:?}\n{}", r.warnings, text);
+            let b = &r.config;
+            for (x, y) in [
+                (b.calibration.plunger.deadzone, dz),
+                (b.calibration.nudge.gain, gain),
+                (b.calibration.plunger.rest_tracking_per_s, rest),
+                (b.calibration.plunger.release_min_speed, speed),
+                (b.backglass_pip.width_fraction, pip),
+                (b.ui_scale, scale),
+                (b.calibration.nudge.deadzone, any),
+            ] {
+                proptest::prop_assert_eq!(x.to_bits(), y.to_bits(), "{}", text);
+            }
+            proptest::prop_assert_eq!(b.to_toml_string().unwrap(), text);
+        }
+
+        /// SPEC §4 Subphase 4.4 (#131): `f32_value` is exact for every
+        /// finite f32 bit pattern.
+        #[test]
+        fn spec_4_4_f32_value_is_exact(bits in proptest::prelude::any::<u32>()) {
+            let x = f32::from_bits(bits);
+            proptest::prop_assume!(x.is_finite());
+            let d = f32_value(x);
+            proptest::prop_assert_eq!((d as f32).to_bits(), x.to_bits());
+            let printed: f64 = toml::Value::Float(d).to_string().parse().unwrap();
+            proptest::prop_assert_eq!((printed as f32).to_bits(), x.to_bits());
+        }
+    }
+
+    /// SPEC §4 Subphase 4.4 (#131): `ui_scale` defaults to 1.0 (also when
+    /// missing), keeps an in-range value, and resets a value that is out of
+    /// range, NaN or of the wrong type with one `InvalidValue` warning.
+    #[test]
+    fn spec_4_4_ui_scale_key() {
+        assert_eq!(AppConfig::default().ui_scale, DEFAULT_UI_SCALE);
+        assert_eq!(DEFAULT_UI_SCALE, 1.0);
+        assert!(TOP_KEYS.contains(&"ui_scale"));
+        let l = AppConfig::from_toml_str("wireframe = true\n");
+        assert_eq!((l.config.ui_scale, l.warnings.len()), (1.0, 0));
+        for (v, want) in [("0.5", 0.5), ("2", 2.0), ("2.5", 2.5), ("4.0", 4.0)] {
+            let l = AppConfig::from_toml_str(&format!("ui_scale = {v}\n"));
+            assert_eq!(l.warnings, [], "{v}");
+            assert_eq!(l.config.ui_scale, want);
+        }
+        for v in [
+            "0.49", "4.01", "-1.0", "0", "nan", "inf", "-inf", "\"big\"", "[2.0]", "{}", "true",
+        ] {
+            let l = AppConfig::from_toml_str(&format!("ui_scale = {v}\nwireframe = true\n"));
+            assert_eq!(l.config.ui_scale, DEFAULT_UI_SCALE, "{v}");
+            assert!(l.config.wireframe, "{v}: the rest of the file is kept");
+            assert_eq!(
+                invalid_keys(&l.warnings),
+                ["ui_scale"],
+                "{v}: {:?}",
+                l.warnings
+            );
+        }
+        let mut c = AppConfig {
+            ui_scale: f32::NAN,
+            ..AppConfig::default()
+        };
+        let mut w = Vec::new();
+        c.sanitize(&mut w);
+        assert_eq!((c.ui_scale, invalid_keys(&w)), (1.0, vec!["ui_scale"]));
+        let text = custom().to_toml_string().unwrap();
+        assert!(text.contains("ui_scale = 2.0"), "{text}");
     }
 }

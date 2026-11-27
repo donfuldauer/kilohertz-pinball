@@ -364,3 +364,293 @@ fn entry_zone_needs_a_plan_direction() {
     };
     assert!(!entry::overlaps(&z, &apart));
 }
+
+/// The JSON chunk length of a generated glb.
+fn json_len(glb: &[u8]) -> u64 {
+    u64::from(u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]))
+}
+
+/// The number after `would be ` in a budget message.
+fn would_be(message: &str) -> u64 {
+    let rest = message.split("would be ").nth(1).unwrap();
+    rest.split(' ').next().unwrap().parse().unwrap()
+}
+
+/// SPEC §4 4.3 (#137, test A): 12,000 inserts whose lamp id is 1,500
+/// characters long carry 18,000,000 bytes of lamp extras, over the
+/// loader's 16 MiB glb JSON budget (with 12,001 nodes, under the 16,384
+/// node cap): the error names `inserts`, the JSON size and the node count.
+#[test]
+fn json_budget_names_inserts() {
+    let lamp = "l".repeat(1_500);
+    let mut b = base();
+    let mut def = b.lamps[0].clone();
+    def.id = lamp.clone();
+    def.number = 3;
+    b.lamps.push(def);
+    let mut lay = empty();
+    lay.inserts = (0..12_000)
+        .map(|i| Insert {
+            lamp: lamp.clone(),
+            position: [20.0 + (i % 100) as f32 * 4.0, 20.0 + (i / 100) as f32 * 4.0],
+            shape: InsertShape::Rect,
+            size: 3.0,
+        })
+        .collect();
+    assert!(12_000 * 1_500 > GltfLimits::default().max_json_bytes);
+    assert!(12_001 < GltfLimits::default().max_meshes);
+    let e = generate(&lay, &b).unwrap_err();
+    assert_eq!(e.element, "inserts", "{e}");
+    assert!(e.message.contains("playfield.glb JSON"), "{e}");
+    assert!(e.message.contains("(12000 inserts nodes)"), "{e}");
+    assert!(
+        e.message
+            .contains(&format!("more than the {}", 16u64 << 20)),
+        "{e}"
+    );
+    assert!(would_be(&e.message) > 18_000_000, "{e}");
+}
+
+/// A walls-heavy layout: `walls` walls and three posts.
+fn walls_heavy(walls: usize) -> LayoutManifest {
+    let mut lay = empty();
+    lay.walls = (0..walls)
+        .map(|i| Wall {
+            points: vec![[10.0 + i as f32, 10.0], [10.0 + i as f32, 60.0]],
+            closed: false,
+            material: Material::Wood,
+        })
+        .collect();
+    lay.posts = (0..3)
+        .map(|i| Post {
+            position: [300.0, 200.0 + 50.0 * i as f32],
+            radius: 5.0,
+            rubber: false,
+        })
+        .collect();
+    lay
+}
+
+/// SPEC §4 4.3 (#137, test B): an oversized walls-heavy layout names
+/// `walls` (the kind with the most nodes) and its count; exactly at the
+/// budget it generates.
+#[test]
+fn json_budget_names_walls() {
+    let lay = walls_heavy(200);
+    let g = generate(&lay, &base()).unwrap();
+    let json = json_len(&g.glb);
+    let limits = |max_json_bytes| GltfLimits {
+        max_json_bytes,
+        ..GltfLimits::default()
+    };
+    // At the budget: fine, and the same output as `generate`.
+    assert_eq!(
+        generate_with_limits(&lay, &base(), limits(json)).unwrap(),
+        g
+    );
+    let e = generate_with_limits(&lay, &base(), limits(json - 1)).unwrap_err();
+    assert_eq!(e.element, "walls", "{e}");
+    assert!(e.message.contains("playfield.glb JSON"), "{e}");
+    assert!(e.message.contains("(200 walls nodes)"), "{e}");
+    assert_eq!(would_be(&e.message), json, "{e}");
+}
+
+/// SPEC §4 4.3 (#137, test C): a layout under the budget generates.
+#[test]
+fn layout_under_the_budgets_generates() {
+    let g = generate(&walls_heavy(20), &base()).unwrap();
+    assert!(json_len(&g.glb) < GltfLimits::default().max_json_bytes);
+    assert!(g.table_toml.len() < MAX_MANIFEST_BYTES);
+}
+
+/// SPEC §4 4.3 (#137): the kind with the most generated entries: ties go
+/// to the kind that appears first, nothing names the fallback.
+#[test]
+fn most_common_kind_picks_the_majority() {
+    assert_eq!(most_common_kind([], TABLE_FILE), (TABLE_FILE, 0));
+    let ids = [
+        "tablegen:lanes[0].left",
+        "tablegen:lanes[0].right",
+        "tablegen:ramps[0].entry",
+        "tablegen:ramps[1].entry",
+    ];
+    assert_eq!(most_common_kind(ids, TABLE_FILE), ("lanes", 2));
+    assert_eq!(
+        most_common_kind(ids[1..].iter().copied(), TABLE_FILE),
+        ("ramps", 2)
+    );
+    assert_eq!(
+        most_common_kind(["walls[0]", "posts[0]", "walls[1]", "floor"], "layout.toml"),
+        ("walls", 2)
+    );
+}
+
+/// A base whose hand-written part alone is over the manifest budget.
+fn oversized_base() -> TableManifest {
+    let mut b = base();
+    b.meta.name = "n".repeat(MAX_MANIFEST_BYTES);
+    b
+}
+
+/// SPEC §4 4.3 (#137): an oversized `table.toml` names the kind with the
+/// most generated entries: `table.toml` with none (the base alone), `ramps`
+/// when ramps outnumber lane rails, `lanes` on a tie (lane rails come
+/// first).
+#[test]
+fn table_toml_budget_names_the_kind_with_most_entries() {
+    let big = oversized_base();
+    let e = generate(&empty(), &big).unwrap_err();
+    assert_eq!(e.element, TABLE_FILE, "{e}");
+    assert!(e.message.contains("hand-written base"), "{e}");
+    assert!(would_be(&e.message) > MAX_MANIFEST_BYTES as u64, "{e}");
+    let ramp = Ramp {
+        spline: "wire".into(),
+        entry_width: 40.0,
+    };
+    let lane = Lane {
+        kind: LaneKind::Inlane,
+        points: vec![[100.0, 100.0], [100.0, 300.0]],
+        width: 30.0,
+    };
+    let mut lay = empty();
+    lay.ramps = vec![ramp.clone(); 3];
+    lay.lanes = vec![lane];
+    let e = generate(&lay, &big).unwrap_err();
+    assert_eq!(e.element, "ramps", "{e}");
+    assert!(
+        e.message
+            .contains("(3 ramps entries); use fewer or shorter ramps"),
+        "{e}"
+    );
+    lay.ramps.truncate(2);
+    let e = generate(&lay, &big).unwrap_err();
+    assert_eq!(e.element, "lanes", "{e}");
+    assert!(e.message.contains("(2 lanes entries)"), "{e}");
+}
+
+/// SPEC §4 4.3 (#137): enough long lanes push the generated `table.toml`
+/// over the loader's 4 MiB on their own: the error names `lanes` and their
+/// rail count.
+#[test]
+fn table_toml_budget_names_lanes() {
+    let layout = |lanes: usize| {
+        let mut lay = empty();
+        lay.playfield.length = MAX_COORD_MM;
+        lay.lanes = (0..lanes)
+            .map(|i| Lane {
+                kind: LaneKind::Orbit,
+                points: vec![
+                    [10.0 + 2.5 * i as f32, 0.0],
+                    [10.0 + 2.5 * i as f32, MAX_COORD_MM],
+                ],
+                width: 2.0,
+            })
+            .collect();
+        lay
+    };
+    // Size the layout from one lane's share of the manifest.
+    let size = |lanes| generate(&layout(lanes), &base()).unwrap().table_toml.len();
+    let (none, one) = (size(0), size(1));
+    let lanes = (MAX_MANIFEST_BYTES - none) / (one - none) + 2;
+    let e = match generate(&layout(lanes), &base()) {
+        Ok(g) => panic!("{lanes} lanes generated {} bytes", g.table_toml.len()),
+        Err(e) => e,
+    };
+    assert_eq!(e.element, "lanes", "{e}");
+    assert!(
+        e.message.contains(&format!(
+            "({} lanes entries); use fewer or shorter lanes",
+            2 * lanes
+        )),
+        "{e}"
+    );
+    assert!(would_be(&e.message) > MAX_MANIFEST_BYTES as u64, "{e}");
+}
+
+mod random_bytes {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A valid layout with one of each element (the mutation seed).
+    const VALID: &str = r#"schema_version = 1
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+[[walls]]
+points = [[10.0, 10.0], [10.0, 300.0], [60.0, 400.0]]
+material = "wood"
+[[posts]]
+position = [200.0, 300.0]
+radius = 5.0
+rubber = true
+[[lanes]]
+kind = "inlane"
+points = [[100.0, 100.0], [120.0, 300.0]]
+width = 30.0
+[[ramps]]
+spline = "wire"
+entry_width = 40.0
+[[decks]]
+layer = 2
+z = 50.0
+material = "wood"
+outline = [[300.0, 600.0], [480.0, 600.0], [480.0, 1000.0], [300.0, 1000.0]]
+[[inserts]]
+lamp = "l1"
+position = [250.0, 500.0]
+shape = "circle"
+size = 20.0
+"#;
+
+    /// Parses `bytes` as `layout.toml` and, when it parses, generates
+    /// against the test base: never panics (an `Err` is fine).
+    fn run(bytes: &[u8]) {
+        if let Ok(l) = parse_layout_bytes(bytes) {
+            let _ = generate(&l, &base());
+        }
+        if let Ok(text) = core::str::from_utf8(bytes)
+            && let Ok(l) = LayoutManifest::from_toml_str(text)
+        {
+            let _ = generate(&l, &base());
+        }
+    }
+
+    #[test]
+    fn seed_layout_generates() {
+        let l = parse_layout(VALID).unwrap();
+        generate(&l, &base()).unwrap();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// SPEC §4 4.3, R11 (#137): arbitrary bytes (up to 2,048) never
+        /// panic the layout parse or the generator.
+        #[test]
+        fn arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+            run(&bytes);
+        }
+
+        /// SPEC §4 4.3, R11 (#137): byte-mutated copies of a valid layout
+        /// (overwrites, inserts and truncation, up to 2,048 bytes) never
+        /// panic.
+        #[test]
+        fn mutated_layouts_never_panic(
+            edits in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>(), 0u8..3), 1..16),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let mut bytes = VALID.as_bytes().to_vec();
+            for (at, byte, op) in edits {
+                let i = at.index(bytes.len().max(1));
+                match op {
+                    0 if !bytes.is_empty() => bytes[i] = byte,
+                    1 => bytes.insert(i.min(bytes.len()), byte),
+                    _ => if !bytes.is_empty() { bytes.remove(i); },
+                }
+            }
+            bytes.truncate(cut.index(bytes.len() + 1).min(2048));
+            run(&bytes);
+        }
+    }
+}
