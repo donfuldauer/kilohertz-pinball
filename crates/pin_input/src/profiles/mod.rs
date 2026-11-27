@@ -55,7 +55,7 @@
 //!   `left_paddle2`, `touchpad`),
 //! * `axis:<name>`: SDL standard gamepad axis (`left_x`, `left_y`, `right_x`,
 //!   `right_y`, `left_trigger`, `right_trigger`); used as a button it is
-//!   pressed while its normalised value is at least 0.5.
+//!   pressed while its normalised value is at least `AXIS_BUTTON_THRESHOLD` (0.5).
 //!
 //! Axis mapping: the raw reading is normalised (sticks `raw / 32767` clamped to
 //! `-1..=1`, triggers clamped to `0..=1`). `invert` mirrors it within its raw
@@ -78,7 +78,7 @@ use pin_core::input::{CabinetAxis, CabinetInput};
 use std::fmt;
 use std::sync::OnceLock;
 
-pub use mapper::ProfileMapper;
+pub use mapper::{AXIS_BUTTON_THRESHOLD, ProfileMapper};
 pub use parse::{MAX_PROFILE_BYTES, parse_profile};
 
 /// An SDL joystick GUID (16 bytes, SDL3 layout).
@@ -307,7 +307,7 @@ pub enum RawInput {
     Key(u32),
     /// Standard gamepad button.
     Button(GamepadButton),
-    /// Standard gamepad axis used digitally (pressed at ≥ 0.5).
+    /// Standard gamepad axis used digitally (pressed at ≥ `AXIS_BUTTON_THRESHOLD`, 0.5).
     Axis(GamepadAxis),
 }
 
