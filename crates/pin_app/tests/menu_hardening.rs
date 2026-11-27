@@ -36,6 +36,7 @@ fn dir_names(dir: &Path) -> Vec<String> {
     v
 }
 
+#[cfg(unix)]
 fn no_tmp_files(dir: &Path) {
     for n in dir_names(dir) {
         assert!(!n.contains("tmp"), "temporary file {n:?} left in {dir:?}");
