@@ -95,6 +95,106 @@ impl Tri {
     pub fn closest(&self, q: DVec3) -> DVec3 {
         closest_on_triangle(q, self.p[0], self.p[1], self.p[2])
     }
+
+    /// Bounds `(lo, hi)` on the value [`Tri::z_at`] computes (f64, rounding
+    /// included) at any finite plan point inside the triangle's plan
+    /// bounding box. NaN results (overflow) are outside the claim.
+    ///
+    /// * Level plane (`n.x` and `n.y` both zero): `z_at` multiplies the
+    ///   zeros by finite offsets and returns `p[0].z` exactly, so the
+    ///   bounds are `(p[0].z, p[0].z)`, with no margin.
+    /// * Otherwise: the plane is linear, so over the box it lies between
+    ///   its values at the four box corners. With `T = (|n.x| w + |n.y| h)
+    ///   / |n.z|` (`w`, `h` the box size), `z_at` is within `3 ε (|p[0].z| +
+    ///   T)` of the exact plane value anywhere in the box (four roundings
+    ///   on the offset term, one on the subtraction); the corners are
+    ///   evaluated with the same error, so a `16 ε (|p[0].z| + T)` margin
+    ///   (plus the smallest normal number, for subnormal offsets) around
+    ///   the computed corner values covers both, and the rounding of the
+    ///   margin itself.
+    /// * Anything not finite gives `(-inf, +inf)`.
+    pub fn z_at_bounds(&self) -> (f64, f64) {
+        let a = self.p[0];
+        if self.n.x == 0.0 && self.n.y == 0.0 {
+            return (a.z, a.z);
+        }
+        let (lo, hi) = (self.min, self.max);
+        let mut z_lo = f64::INFINITY;
+        let mut z_hi = f64::NEG_INFINITY;
+        for (x, y) in [(lo.x, lo.y), (hi.x, lo.y), (lo.x, hi.y), (hi.x, hi.y)] {
+            let z = self.z_at(DVec2::new(x, y));
+            if !z.is_finite() {
+                return (f64::NEG_INFINITY, f64::INFINITY);
+            }
+            z_lo = min_f64(z_lo, z);
+            z_hi = max_f64(z_hi, z);
+        }
+        let t = (self.n.x.abs() * (hi.x - lo.x) + self.n.y.abs() * (hi.y - lo.y)) / self.n.z.abs();
+        let margin = 16.0 * f64::EPSILON * (a.z.abs() + t) + f64::MIN_POSITIVE;
+        if !margin.is_finite() {
+            return (f64::NEG_INFINITY, f64::INFINITY);
+        }
+        (z_lo - margin, z_hi + margin)
+    }
+
+    /// The height of a level triangle (all three vertex heights equal),
+    /// else `None`. For a level triangle, every point
+    /// [`closest_on_triangle`] computes has exactly this height or is NaN:
+    /// each branch returns a vertex or adds products of a zero height
+    /// difference (`b.z - a.z` and `c.z - a.z` round to exactly zero) to
+    /// `a.z`.
+    pub fn level_z(&self) -> Option<f64> {
+        let [a, b, c] = self.p;
+        (a.z == b.z && b.z == c.z).then_some(a.z)
+    }
+
+    /// For a level triangle ([`Tri::level_z`]) and the plan box `lo..=hi`:
+    /// per-axis lower bounds `(gx, gy)` on `|cp.x - q.x|` and `|cp.y -
+    /// q.y|`, as f64 computes them, where `cp` is the point
+    /// [`closest_on_triangle`] computes for any query point above a plan
+    /// point `q` of the box. `(0, 0)` when it cannot tell (a sloped
+    /// triangle, the box near or over the triangle, or anything not
+    /// finite).
+    ///
+    /// For a level triangle the computation is the planar one (every `z`
+    /// product is with an exact zero). A vertex or edge branch returns a
+    /// vertex or `x + e·t` with `t` in `[0, 1]`, inside the plan bounding
+    /// box up to a few roundings of the coordinates; the bounds subtract a
+    /// `16 ε` margin on the coordinate magnitudes, which covers those and
+    /// the rounding of `cp - q`. The interior branch would return the
+    /// projection of the query point (near `q` itself), so the bounds hold
+    /// only when it cannot be taken: when the box is farther than `g0` from
+    /// the bounding box, where `g0 = 4096 ε L² (D + L)² / (l · 2A)` (`L`,
+    /// `l` the longest and shortest edges, `2A` twice the plan area, `D` the
+    /// size of the box and the triangle together). See DECISIONS.md
+    /// "#231 — headroom prune" for the argument.
+    pub fn level_plan_clearance(&self, lo: DVec2, hi: DVec2) -> (f64, f64) {
+        const NONE: (f64, f64) = (0.0, 0.0);
+        if self.level_z().is_none() {
+            return NONE;
+        }
+        let (cmin, cmax) = (self.min.truncate(), self.max.truncate());
+        let gx = max_f64(max_f64(cmin.x - hi.x, lo.x - cmax.x), 0.0);
+        let gy = max_f64(max_f64(cmin.y - hi.y, lo.y - cmax.y), 0.0);
+        let [a, b, c] = self.p.map(|v| v.truncate());
+        let (ab, ac, bc) = (b - a, c - a, c - b);
+        let (lab, lac, lbc) = (ab.length(), ac.length(), bc.length());
+        let long = max_f64(max_f64(lab, lac), lbc);
+        let short = min_f64(min_f64(lab, lac), lbc);
+        let area2 = cross2(ab, ac).abs();
+        let d = (max_f64(hi.x, cmax.x) - min_f64(lo.x, cmin.x))
+            + (max_f64(hi.y, cmax.y) - min_f64(lo.y, cmin.y));
+        let g0 = 4096.0 * f64::EPSILON * long * long * (d + long) * (d + long) / (short * area2);
+        let scale = cmin.abs() + cmax.abs() + lo.abs() + hi.abs();
+        let round = scale * (16.0 * f64::EPSILON) + DVec2::splat(f64::MIN_POSITIVE);
+        let (gx, gy) = (gx - round.x, gy - round.y);
+        if !(g0.is_finite() && gx.is_finite() && gy.is_finite() && round.is_finite())
+            || max_f64(gx, gy) <= g0
+        {
+            return NONE;
+        }
+        (max_f64(gx, 0.0), max_f64(gy, 0.0))
+    }
 }
 
 fn cross2(a: DVec2, b: DVec2) -> f64 {
@@ -806,6 +906,166 @@ mod tests {
         let empty = TriGrid::new(&[]);
         empty.query(&[], DVec2::ZERO, DVec2::ONE, &mut out);
         assert!(out.is_empty());
+    }
+
+    /// SPEC 2.8, 6.0 (#231): `Tri::z_at_bounds` holds every value `z_at`
+    /// computes in the triangle's plan box, exactly (no margin) for a level
+    /// triangle; `Tri::level_z` gives the height every computed closest
+    /// point of a level triangle has.
+    #[test]
+    fn level_triangles_give_exact_heights() {
+        for z in [0.0, -0.0, 0.06, 1.0e-3, -12.5, 0.1 + 0.2] {
+            let t = Tri::new([v(0.1, 0.2, z), v(0.3, 0.25, z), v(0.15, 0.4, z)], 1, 0).unwrap();
+            assert_eq!(t.level_z(), Some(z));
+            assert_eq!(t.z_at_bounds(), (z, z));
+            for (x, y) in [(0.1, 0.2), (0.3, 0.4), (0.21, 0.33), (0.123456789, 0.25)] {
+                assert_eq!(t.z_at(DVec2::new(x, y)), z);
+                for pz in [-1.0, 0.0, z + 0.0397, 3.0] {
+                    for (px, py) in [(x, y), (x - 0.5, y), (x, y + 0.7), (0.2, 0.3)] {
+                        let cp = t.closest(v(px, py, pz));
+                        assert_eq!(cp.z, z, "{px} {py} {pz}");
+                    }
+                }
+            }
+        }
+        let tilted = Tri::new(
+            [v(0.0, 0.0, 0.0), v(1.0, 0.0, 1.0e-9), v(0.0, 1.0, 0.0)],
+            0,
+            0,
+        );
+        assert_eq!(tilted.unwrap().level_z(), None);
+        // A non-finite plane gives unbounded bounds.
+        let huge = Tri::new(
+            [
+                v(-1.0e308, 0.0, 0.0),
+                v(1.0e308, 0.0, 1.0e307),
+                v(0.0, 1.0e308, 0.0),
+            ],
+            0,
+            0,
+        );
+        if let Some(t) = huge {
+            let (lo, hi) = t.z_at_bounds();
+            assert!(lo <= -1.0e300 && hi >= 1.0e300, "{lo} {hi}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// SPEC 2.8 (#231): over random walkable triangles (tilted, far
+        /// from the origin or tiny), every computed `z_at` in the plan box
+        /// lies inside `z_at_bounds`.
+        #[test]
+        fn z_at_bounds_hold_in_the_plan_box(
+            x in -3.0f64..3.0,
+            y in -3.0f64..3.0,
+            z in -2.0f64..2.0,
+            s in proptest::array::uniform6(-0.2f64..0.2),
+            scale in prop_oneof![Just(1.0f64), Just(1.0e-4), Just(1.0e3)],
+            u in proptest::collection::vec((0.0f64..=1.0, 0.0f64..=1.0), 32),
+        ) {
+            let p = [
+                v(x, y, z),
+                v(x + s[0] * scale, y + s[1] * scale, z + s[2] * scale * 0.5),
+                v(x + s[3] * scale, y + s[4] * scale, z + s[5] * scale * 0.5),
+            ];
+            let Some(t) = Tri::new(p, 0, 0) else { return Ok(()) };
+            prop_assume!(t.nz() >= WALKABLE_NZ);
+            let (lo, hi) = t.z_at_bounds();
+            let corners = [0.0, 1.0];
+            let pts = u
+                .iter()
+                .copied()
+                .chain(corners.iter().flat_map(|&a| corners.iter().map(move |&b| (a, b))));
+            for (a, b) in pts {
+                let q = DVec2::new(
+                    min_f64(t.min.x + a * (t.max.x - t.min.x), t.max.x),
+                    min_f64(t.min.y + b * (t.max.y - t.min.y), t.max.y),
+                );
+                let zq = t.z_at(q);
+                prop_assert!(lo <= zq && zq <= hi, "{lo} <= {zq} <= {hi}");
+            }
+        }
+
+        /// SPEC 2.8 (#231): for random level triangles (well shaped, thin
+        /// or far from the origin) and plan boxes around them, every
+        /// computed closest point of a query point above the box is at
+        /// least `level_plan_clearance` away from it on each axis, as f64
+        /// computes the offset; boxes far from the triangle get a non-zero
+        /// bound.
+        #[test]
+        fn level_plan_clearance_bounds_computed_offsets(
+            x in -2.0f64..2.0,
+            y in -2.0f64..2.0,
+            z in -1.0f64..1.0,
+            s in proptest::array::uniform4(-0.05f64..0.05),
+            thin in prop_oneof![Just(1.0f64), Just(1.0e-3), Just(1.0e-7)],
+            off in (-0.08f64..0.08, -0.08f64..0.08),
+            size in (0.0f64..0.03, 0.0f64..0.03),
+            u in proptest::collection::vec((0.0f64..=1.0, 0.0f64..=1.0, -0.2f64..0.2), 24),
+        ) {
+            let p = [
+                v(x, y, z),
+                v(x + s[0], y + s[1], z),
+                v(x + s[0] * 0.5 + s[2] * thin, y + s[1] * 0.5 + s[3] * thin, z),
+            ];
+            let Some(t) = Tri::new(p, 0, 0) else { return Ok(()) };
+            let lo = DVec2::new(x + off.0, y + off.1);
+            let hi = lo + DVec2::new(size.0, size.1);
+            let (gx, gy) = t.level_plan_clearance(lo, hi);
+            prop_assert!(gx >= 0.0 && gy >= 0.0);
+            let corners = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.1), (0.0, 1.0, -0.1), (1.0, 1.0, 0.0)];
+            for (a, b, dz) in u.iter().copied().chain(corners) {
+                let q = DVec2::new(
+                    min_f64(lo.x + a * (hi.x - lo.x), hi.x),
+                    min_f64(lo.y + b * (hi.y - lo.y), hi.y),
+                );
+                let cp = t.closest(v(q.x, q.y, z + dz));
+                prop_assert_eq!(cp.z, z);
+                let (dx, dy) = ((cp.x - q.x).abs(), (cp.y - q.y).abs());
+                prop_assert!(dx >= gx && dy >= gy, "{dx} >= {gx}, {dy} >= {gy}");
+            }
+            // A box clearly beside a well-shaped triangle is bounded.
+            if thin == 1.0 && s[0].abs() > 0.01 && s[3].abs() > 0.01 {
+                let far = DVec2::new(t.max.x + 0.02, y);
+                let (fx, _) = t.level_plan_clearance(far, far + DVec2::splat(0.01));
+                prop_assert!(fx > 0.019, "{fx}");
+            }
+        }
+
+        /// SPEC 2.8 (#231): near-boundary query points just outside a
+        /// level triangle (the hard case for the branch decisions): the
+        /// computed closest point stays on the triangle's plan bounding box
+        /// up to rounding whenever `level_plan_clearance` claims a gap.
+        #[test]
+        fn level_plan_clearance_holds_next_to_edges_and_vertices(
+            s in proptest::array::uniform6(-1.0f64..1.0),
+            scale in prop_oneof![Just(1.0e-3f64), Just(1.0e-2), Just(0.3)],
+            edge in 0usize..3,
+            along in -0.2f64..1.2,
+            out in prop_oneof![Just(1.0e-15f64), Just(1.0e-12), Just(1.0e-9), Just(1.0e-6)],
+        ) {
+            let base = v(0.37, -0.21, 0.06);
+            let p = [
+                base + v(s[0], s[1], 0.0) * scale,
+                base + v(s[2], s[3], 0.0) * scale,
+                base + v(s[4], s[5], 0.0) * scale,
+            ];
+            let Some(t) = Tri::new(p, 1, 0) else { return Ok(()) };
+            let (a, b) = (p[edge].truncate(), p[(edge + 1) % 3].truncate());
+            let e = b - a;
+            let mut normal = DVec2::new(e.y, -e.x).normalize_or_zero();
+            let third = p[(edge + 2) % 3].truncate();
+            if normal.dot(third - a) > 0.0 {
+                normal = -normal;
+            }
+            let q = a + e * along + normal * out;
+            let (gx, gy) = t.level_plan_clearance(q, q);
+            let cp = t.closest(v(q.x, q.y, 0.1));
+            let (dx, dy) = ((cp.x - q.x).abs(), (cp.y - q.y).abs());
+            prop_assert!(dx >= gx && dy >= gy, "{dx} >= {gx}, {dy} >= {gy}");
+        }
     }
 
     /// Every triangle whose plan box overlaps `lo..hi` and which `f`
