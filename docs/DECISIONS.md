@@ -9371,3 +9371,81 @@ what the brief requires, is asserted in full.
 **Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
 it narrows the property; assert every failing press is named: rejected, it contradicts the
 existing cap.
+## #136 KP-055 — pin_tablegen command line: `--backbox` and `build`
+
+**Decision:** The layout command gains `--backbox <backbox_layout.toml>`
+(`pin_tablegen <layout.toml> --table <table.toml> --out <dir> [--force] [--backbox <file>]`): after
+`generate` it reads the file (the same 4 MiB bounded read), runs `parse_backbox_layout_bytes`,
+`generate_backbox` on the merged manifest and the VUK aim, and writes `playfield.glb`,
+`backbox.glb`, `backbox_colliders.glb` and one merged `table.toml` together (staged, under the
+`.tablegen-lock` lock, `table.toml` written once). Nothing is written when any step fails; the N4
+guard against overwriting a hand-written base applies on both paths; without `--backbox` the output
+is unchanged. A new subcommand `pin_tablegen build <src_dir> --out <out_dir>`
+(`pin_tablegen::backbox::build_from`, `run_build_cli`) builds a whole table bundle from a source
+folder: layout, table and backbox as above, then the `rules.lua`, `backglass.toml`, `layout.toml`,
+`glass.toml` copies plus every regular `display/*.toml` file (plain names read from `read_dir`,
+sorted; symlinks and subdirectories are skipped, a symlinked fixed source is refused), then
+`pin_assetgen::generate_kit` with the base table's `meta.name` as title, its palette and seed 0.
+The kit title is taken from `meta.name` because it equals "Feature Lab" for Feature Lab (no
+`--title` option). The library code lives in `crates/pin_tablegen/src/backbox/cli.rs`;
+`pin_tablegen` gains the internal dependency `pin_assetgen`.
+**Rationale:** The example existed only because the CLI could not read `backbox_layout.toml`
+("6.4 — build path"); a `build` subcommand keeps the placeholder kit inside the one build, so the
+bundle the tests build equals `build.sh`'s, and `build.sh` no longer builds pin_app (no SDL3
+headers). `pin_tablegen build` used to be read as a layout path named `build`; a layout file named
+exactly `build` must now be passed as `./build`.
+**Alternatives:** `build.sh` chaining the layout command with `--backbox`, file copies in shell and
+`pin_assetgen` (two implementations of the build, tests could not share it); a `--title` option
+(not needed while `meta.name` gives the same bytes).
+
+## #136 KP-055 — VUK aim is CLI logic, not backbox_layout.toml data
+
+**Decision:** `VUK_LATERAL_M_S` (0.35), `VUK_RISE_M_S` (2.1), `vuk_eject` and `aim_backbox_vuk`
+move unchanged (same `libm::atan2f` and `libm::hypot` operand order) into
+`pin_tablegen::backbox::cli` and are applied whenever `--backbox` is given (also by `build`).
+**Rationale:** Bit-for-bit the example's arithmetic, so the bundle and replay hashes are unchanged;
+it now sits under pin_tablegen's std-transcendental and min/max clippy ban (D9, "w8g-e"), with no
+`allow`. The generator still leaves the eject unset; the aim stays a build step as in "6.4 —
+backbox VUK aimed through the entry transition".
+**Alternatives:** An optional `[backbox.vuk]` data block in `backbox_layout.toml` (a schema change
+of a closed, `deny_unknown_fields` file and a generator change, both outside this issue; may come
+later if a second table needs a different aim).
+
+## #136 KP-055 — table.toml header comment kept byte-identical
+
+**Decision:** The merged `table.toml` written with a backbox keeps the exact comment line the
+example wrote, `# Backbox from backbox_layout.toml (build_feature_lab example).`, although the
+example is gone. Consequently `grep -rn build_feature_lab crates/` still finds that string literal
+in `crates/pin_tablegen/src/backbox/cli.rs`, and the pin_app test-support wrapper keeps the
+function name `build_feature_lab_bundle` (brief item 4); the retirement check is that no file,
+`[[example]]`, script or command refers to the example (`grep -rnw build_feature_lab` outside the
+literal finds nothing).
+**Rationale:** The acceptance criterion is byte-identity with the parent commit's bundle so replay
+hashes do not change; rewording the comment would change `table.toml`'s bytes.
+**Alternatives:** Reword the comment and re-baseline the golden digests (breaks acceptance 1 and
+needs a separate re-baseline); rename the test wrapper (the brief names it).
+
+## #136 KP-055 — Golden digests of the Feature Lab bundle
+
+**Decision:** `crates/pin_tablegen/tests/fixtures/feature_lab_bundle.digests` holds one line per
+file (`<relative path> <len> <fnv1a64 hex>`, sorted, 55 files including `.tablegen-lock` and
+`rules.wasm`) of the bundle `tables/feature_lab/build.sh` wrote with the unmodified example at
+e87b2c7. `tests/backbox_cli.rs` builds with `pin_tablegen build`, adds build.sh's `rules.wasm` copy,
+and fails on a missing, extra or different file. The digests are regenerated only from a build
+whose output change is intended (a re-baseline in its own PR), never from new code to make it pass.
+**Rationale:** A hand-written FNV-1a needs no new dependency and a 55-line fixture is reviewable;
+storing the whole bundle would add ~2 MB of binaries.
+**Alternatives:** Commit the reference bundle (large); compare only the generated files (misses
+the copies and the kit).
+
+## #136 KP-055 — Supersedes "6.4 — build path (example, because the CLI lacks backbox)"
+
+**Decision:** The `build_feature_lab` example of pin_app is retired. `tables/feature_lab/build.sh`
+runs `cargo run -q -p pin_tablegen -- build . --out <out>`, copies `rules.wasm` and runs
+`pin_tablegen validate`; pin_app's tests build the bundle through `pin_tablegen::backbox::build_from`
+(`tests/feature_lab_support` keeps a small `build` wrapper module). The rest of the 6.4 build
+decision (what the build contains) stands.
+**Rationale:** The premise of the old entry (the CLI cannot read `backbox_layout.toml`) no longer
+holds.
+**Alternatives:** Keep the example as a thin wrapper (keeps the SDL3 build-header requirement for
+build.sh).
