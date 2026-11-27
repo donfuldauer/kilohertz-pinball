@@ -9319,3 +9319,11 @@ existing cap.
 **Rationale:** The agent session cannot download workflow artifacts (the artifact blob host is blocked), so the evidence has to be produced inside CI where it is readable from the log. The manifest is written after the ad-hoc codesign, so on macOS it legitimately lists the signature files, which vary by tool version. The dry-run deletes the archive, so `--check` does not apply there.
 
 **Alternatives:** A separate verification job that downloads the artifacts (adds a job and still leaves the evidence out of the packaging step). Python `extractall` for the macOS unzip (drops modes and signature resources, so it would not test what a user gets). Requiring an exact `_CodeSignature` file list (brittle across Xcode versions).
+
+## #141 — macOS tables in Contents/Resources/tables (revises 7.2 package layout)
+
+**Decision:** macOS packages carry the tables at `Kilohertz Pinball.app/Contents/Resources/tables/<name>.pinbundle`. Windows and Linux are unchanged (`tables/` beside the executable). `package.py --check` rejects non-Mach-O files under `Contents/MacOS/` (first 4 bytes not a Mach-O or fat magic; only the engine executable path is exempt, because the test fixtures use a fake engine and CI's `lipo -archs` verifies the real one). The app-side lookup is #258 (KP-120).
+
+**Rationale:** run 45937279226 (job 140327353744): `codesign --verify --deep --strict` on the ditto-extracted .app failed with "code object is not signed at all / In subcomponent .../Contents/MacOS/tables/greybox.pinbundle". codesign treats non-Mach-O files under Contents/MacOS as nested code and keeps their signature in extended attributes; the deterministic zip stores only bytes and modes, so the signatures are lost. Files in Contents/Resources are sealed by hash in `_CodeSignature/CodeResources`, which survives the zip. It also satisfies KP-060's AC that the .app signature verifies. Revises the "7.2 — Package layout" entry (its rejected alternative `Contents/Resources/tables` is now chosen).
+
+**Alternatives:** AppleDouble (`._*`/`__MACOSX`) entries in the zip, which are nondeterministic and junk for non-Apple unzippers; relaxing the verify (dropping `--deep` or `--strict`), which fails KP-060's AC; tables beside the .app, which are lost when the app is moved.

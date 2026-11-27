@@ -101,7 +101,7 @@ class Layouts(PackageCase):
         app = p / "Kilohertz Pinball.app" / "Contents"
         self.assertEqual((app / "MacOS" / "kilohertz-pinball").read_bytes(), EXE_BYTES)
         for t in ("greybox", "apex_circuit", "sky_deck", "feature_lab"):
-            self.assertTrue((app / "MacOS" / "tables" / (t + ".pinbundle")).is_file(), t)
+            self.assertTrue((app / "Resources" / "tables" / (t + ".pinbundle")).is_file(), t)
         with open(app / "Info.plist", "rb") as fh:
             plist = plistlib.load(fh)
         self.assertEqual(plist["CFBundleExecutable"], "kilohertz-pinball")

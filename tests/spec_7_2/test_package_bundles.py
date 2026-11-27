@@ -146,7 +146,7 @@ class Manifest(PackageCase):
         mp = [f["path"] for f in self.manifest(out_m)["files"]]
         self.assertIn("Kilohertz Pinball.app/Contents/MacOS/kilohertz-pinball", mp)
         self.assertIn("Kilohertz Pinball.app/Contents/Info.plist", mp)
-        self.assertIn("Kilohertz Pinball.app/Contents/MacOS/tables/greybox.pinbundle", mp)
+        self.assertIn("Kilohertz Pinball.app/Contents/Resources/tables/greybox.pinbundle", mp)
 
     def test_manifest_byte_identical_across_runs(self):
         a, b = self.tmp / "a", self.tmp / "b"

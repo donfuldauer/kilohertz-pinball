@@ -223,7 +223,10 @@ class LayoutTest(PackageCase):
         exe = f"{APP}/Contents/MacOS/kilohertz-pinball"
         self.assertIn(exe, paths)
         for t in TABLES:
-            self.assertIn(f"{APP}/Contents/MacOS/tables/{t}.pinbundle", paths)
+            self.assertIn(f"{APP}/Contents/Resources/tables/{t}.pinbundle", paths)
+        # SPEC 7.2, #141: nothing but the engine under Contents/MacOS.
+        self.assertFalse(any("Contents/MacOS/tables" in p for p in paths))
+        self.assertEqual([p for p in paths if p.startswith(f"{APP}/Contents/MacOS/")], [exe])
         for d in ("LICENSE-MIT", "LICENSE-APACHE", "README.md"):
             self.assertIn(d, paths)
         self.assertFalse(any("dof_bridge" in p for p in paths))
@@ -533,6 +536,55 @@ class CheckTest(PackageCase):
         paths = [f["path"] for f in self.manifest()["files"]]
         self.assertIn(f"{APP}/Contents/_CodeSignature/CodeResources", paths)
         self.check(MAC)
+
+    def _put_macos(self, moves, extra=()):
+        """Rewrites the macOS archive and manifest: ``moves`` maps old path -> new path."""
+        self.package(MAC)
+        pre = self.NAME[MAC] + "/"
+        entries = []
+        for name, data, mode in self.read_entries(MAC):
+            rel = name[len(pre):]
+            entries.append((pre + moves.get(rel, rel), data, mode))
+        entries += [(pre + rel, data, 0o644) for rel, data in extra]
+        self.write_entries(MAC, entries)
+
+        def fn(doc):
+            for f in doc["files"]:
+                f["path"] = moves.get(f["path"], f["path"])
+            for rel, data in extra:
+                doc["files"].append({"path": rel, "size": len(data),
+                                     "sha256": hashlib.sha256(data).hexdigest()})
+            doc["files"].sort(key=lambda f: f["path"])
+        self.edit_manifest(fn)
+
+    def test_macos_rejects_non_macho_under_contents_macos(self):
+        """SPEC 7.2, #141: .pinbundle files under Contents/MacOS fail --check."""
+        old = f"{APP}/Contents/Resources/tables/"
+        new = f"{APP}/Contents/MacOS/tables/"
+        moves = {f"{old}{t}.pinbundle": f"{new}{t}.pinbundle" for t in TABLES}
+        self._put_macos(moves)
+        p = self.check(MAC, 1)
+        self.assertIn(f"package.py: check failed: layout: {new}{TABLES[0]}.pinbundle: "
+                      "non-Mach-O file under Contents/MacOS", p.stderr)
+
+    def test_macos_allows_macho_magic_under_contents_macos(self):
+        """SPEC 7.2, #141: every Mach-O magic passes the Contents/MacOS rule."""
+        for magic in ("feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "cafebabf"):
+            with self.subTest(magic=magic):
+                rel = f"{APP}/Contents/MacOS/helper"
+                self._put_macos({}, extra=[(rel, bytes.fromhex(magic) + b"rest")])
+                # The layout allow-list still rejects the extra path (exit 1), but the
+                # Mach-O rule itself must not fire.
+                p = self.check(MAC, 1)
+                self.assertNotIn("non-Mach-O", p.stderr)
+
+    def test_macos_rejects_short_or_unknown_file_under_contents_macos(self):
+        """SPEC 7.2, #141: files shorter than 4 bytes or with other magics are problems."""
+        for data in (b"", b"\xcf\xfa\xed", b"#!/bin/sh\n"):
+            with self.subTest(data=data):
+                self._put_macos({}, extra=[(f"{APP}/Contents/MacOS/helper", data)])
+                p = self.check(MAC, 1)
+                self.assertIn("helper: non-Mach-O file under Contents/MacOS", p.stderr)
 
     def test_tampered_content_is_caught_by_the_manifest(self):
         """KP-060: archive bytes differing from the manifest hash -> exit 1 naming the path."""

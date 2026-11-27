@@ -24,8 +24,10 @@ Targets and package layouts (``<out>/kilohertz-pinball-<version>-<platform>/``):
   ``dof_bridge/`` and without ``.exe``; archived as ``.tar.gz``.
 * ``universal-apple-darwin`` -> ``macos-universal``:
   ``Kilohertz Pinball.app/Contents/{Info.plist,MacOS/kilohertz-pinball,
-  MacOS/tables/<name>.pinbundle}`` and the licence/README/docs files beside
-  the app; archived as ``.zip``.
+  Resources/tables/<name>.pinbundle}`` and the licence/README/docs files
+  beside the app; archived as ``.zip``. Data stays out of ``Contents/MacOS``
+  because codesign treats non-Mach-O files there as nested code and keeps
+  their signature in extended attributes, which the zip loses (#141).
 
 Beside the package directory the script writes the archive, a
 ``<archive base>.sha256`` file (``<hex>  <name>``) and ``PACKAGE_MANIFEST.json``
@@ -563,7 +565,7 @@ def exe_relpath(target):
 
 def tables_relpath(target):
     """The folder beside the executable that holds the .pinbundle files."""
-    return f"{APP_NAME}/Contents/MacOS/tables" if target == MACOS else "tables"
+    return f"{APP_NAME}/Contents/Resources/tables" if target == MACOS else "tables"
 
 
 def info_plist(version):
@@ -771,7 +773,10 @@ def _hash_stream(fobj, cap):
 
 
 def _read_zip_entries(archive, problems):
-    """``{name: (size, sha256, mode)}`` of the regular files of a zip."""
+    """``{name: (size, sha256, mode, head)}`` of the regular files of a zip.
+
+    ``head`` is the first (up to) 4 bytes of the entry.
+    """
     out = {}
     with zipfile.ZipFile(archive) as zf:
         infos = zf.infolist()
@@ -789,13 +794,15 @@ def _read_zip_entries(archive, problems):
                 problems.append(f"{archive.name}: entry {zi.filename!r}: duplicate entry")
                 continue
             with zf.open(zi) as f:
+                head = f.read(4)
+            with zf.open(zi) as f:
                 size, digest = _hash_stream(f, CHECK_READ_CAP)
-            out[zi.filename] = (size, digest, mode & 0o7777)
+            out[zi.filename] = (size, digest, mode & 0o7777, head)
     return out
 
 
 def _read_tar_entries(archive, problems):
-    """``{name: (size, sha256, mode)}`` of the regular files of a tar.gz."""
+    """``{name: (size, sha256, mode, head)}`` of the regular files of a tar.gz."""
     out = {}
     count = 0
     with tarfile.open(archive, mode="r:gz") as tar:
@@ -812,9 +819,10 @@ def _read_tar_entries(archive, problems):
             if ti.name in out:
                 problems.append(f"{archive.name}: entry {ti.name!r}: duplicate entry")
                 continue
+            head = tar.extractfile(ti).read(4)
             f = tar.extractfile(ti)
             size, digest = _hash_stream(f, CHECK_READ_CAP)
-            out[ti.name] = (size, digest, ti.mode & 0o7777)
+            out[ti.name] = (size, digest, ti.mode & 0o7777, head)
     return out
 
 
@@ -939,7 +947,7 @@ def do_check(args, version):
         problems.append(f"{archive.name}: {rel}: in the archive but not in the manifest")
     lines = []
     for rel in sorted(set(rels) & set(manifest_files)):
-        size, digest, _mode = rels[rel]
+        size, digest, _mode, _head = rels[rel]
         msize, mdigest = manifest_files[rel]
         if size != msize:
             problems.append(f"{rel}: archive size {size} differs from manifest size {msize}")
@@ -954,6 +962,9 @@ def do_check(args, version):
     if exe in rels and not rels[exe][2] & 0o111:
         problems.append(f"{exe}: executable bit is not set in the archive (mode {rels[exe][2]:o})")
 
+    if target == MACOS:
+        _check_macho_only(rels, problems)
+
     for line in lines:
         print(line)
     if problems:
@@ -961,6 +972,29 @@ def do_check(args, version):
     print(f"archive {archive.name} sha256 {archive_hash} files {len(lines)}")
     print("CHECK OK")
     return 0
+
+
+MACHO_MAGICS = (
+    bytes.fromhex("feedface"), bytes.fromhex("feedfacf"), bytes.fromhex("cefaedfe"),
+    bytes.fromhex("cffaedfe"), bytes.fromhex("cafebabe"), bytes.fromhex("cafebabf"),
+)
+
+
+def _check_macho_only(rels, problems):
+    """Rejects non-Mach-O files under Contents/MacOS (#141, SPEC 7.2).
+
+    codesign treats them as nested code and keeps their signature in extended
+    attributes, which the deterministic zip does not store. Only the engine
+    executable is exempt (CI verifies it with ``lipo``).
+    """
+    macos_dir = f"{APP_NAME}/Contents/MacOS/"
+    exe = exe_relpath(MACOS)
+    for rel in sorted(rels):
+        if rel.startswith(macos_dir) and rel != exe and rels[rel][3] not in MACHO_MAGICS:
+            problems.append(
+                f"layout: {rel}: non-Mach-O file under Contents/MacOS "
+                "(codesign treats it as nested code; put data in Contents/Resources)"
+            )
 
 
 def _check_fail(problems):
