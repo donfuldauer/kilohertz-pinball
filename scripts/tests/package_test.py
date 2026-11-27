@@ -283,7 +283,7 @@ class UsageTest(PackageCase):
     def test_help_documents_the_flags(self):
         p = self.run_pkg("--help")
         self.assertEqual(p.returncode, 0)
-        for flag in ("--target", "--out", "--version", "--exe", "--bundle-dir", "--dof-bridge", "--dry-run", "--list"):
+        for flag in ("--target", "--out", "--version", "--exe", "--bundle-dir", "--dof-bridge", "--dry-run", "--list", "--check"):
             self.assertIn(flag, p.stdout)
 
     def test_missing_exe(self):
@@ -449,6 +449,308 @@ class BundleTest(PackageCase):
         self.package(LINUX, out=out2)
         self.assertEqual(path.read_bytes(),
                          (self.pkgdir(LINUX, out2) / "tables" / "greybox.pinbundle").read_bytes())
+
+
+class CheckTest(PackageCase):
+    """``package.py --check`` (SPEC section 4 subphase 7.2, KP-060)."""
+
+    NAME = {WIN: "kilohertz-pinball-1.2.3-windows-x64", LINUX: "kilohertz-pinball-1.2.3-linux-x64",
+            MAC: "kilohertz-pinball-1.2.3-macos-universal"}
+
+    def check(self, target, expect=0, *extra, out=None):
+        p = self.run_pkg("--target", target, "--out", out or self.out, "--version", "1.2.3", "--check", *extra)
+        self.assertEqual(p.returncode, expect, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        return p
+
+    def archive(self, target):
+        ext = "tar.gz" if target == LINUX else "zip"
+        return self.out / f"{self.NAME[target]}.{ext}"
+
+    def read_entries(self, target):
+        """``[(name, data, mode)]`` of the archive's regular files."""
+        a = self.archive(target)
+        res = []
+        if target == LINUX:
+            with tarfile.open(a, "r:gz") as t:
+                for m in t:
+                    if m.isreg():
+                        res.append((m.name, t.extractfile(m).read(), m.mode))
+        else:
+            with zipfile.ZipFile(a) as z:
+                for zi in z.infolist():
+                    if not zi.is_dir():
+                        res.append((zi.filename, z.read(zi), (zi.external_attr >> 16) & 0o7777))
+        return res
+
+    def write_entries(self, target, entries, fix_sums=True):
+        """Rewrites the archive from ``entries`` and keeps the .sha256 consistent."""
+        a = self.archive(target)
+        if target == LINUX:
+            with tarfile.open(a, "w:gz") as t:
+                for name, data, mode in entries:
+                    ti = tarfile.TarInfo(name)
+                    ti.size = len(data)
+                    ti.mode = mode
+                    t.addfile(ti, io.BytesIO(data))
+        else:
+            with zipfile.ZipFile(a, "w") as z:
+                for name, data, mode in entries:
+                    zi = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                    zi.external_attr = (stat.S_IFREG | mode) << 16
+                    z.writestr(zi, data)
+        if fix_sums:
+            digest = hashlib.sha256(a.read_bytes()).hexdigest()
+            (self.out / f"{self.NAME[target]}.sha256").write_text(f"{digest}  {a.name}\n")
+
+    def edit_manifest(self, fn):
+        doc = self.manifest()
+        fn(doc)
+        (self.out / "PACKAGE_MANIFEST.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+    def snapshot(self):
+        return {str(p.relative_to(self.out)): (p.stat().st_mtime_ns, p.read_bytes())
+                for p in sorted(self.out.rglob("*")) if p.is_file()}
+
+    def test_passes_on_every_target(self):
+        """KP-060: --check passes on freshly packaged output, each target."""
+        for target in (LINUX, WIN, MAC):
+            with self.subTest(target=target):
+                self.package(target)
+                p = self.check(target)
+                self.assertEqual(p.stdout.rstrip("\n").splitlines()[-1], "CHECK OK")
+                self.assertRegex(p.stdout, r"(?m)^ok [0-9a-f]{64} \d+ " + re.escape(
+                    "kilohertz-pinball.exe" if target == WIN else "README.md") + "$")
+                self.assertIn(f"archive {self.archive(target).name} sha256 ", p.stdout)
+
+    def test_passes_with_code_signature_extras_on_macos(self):
+        """KP-060: the ad-hoc signature's _CodeSignature files are allowed on macOS."""
+        sign = self.bin / "codesign"
+        sign.write_text('#!/bin/sh\nfor a; do app="$a"; done\n'
+                        'mkdir -p "$app/Contents/_CodeSignature"\n'
+                        'printf sig > "$app/Contents/_CodeSignature/CodeResources"\n')
+        sign.chmod(0o755)
+        self.package(MAC)
+        paths = [f["path"] for f in self.manifest()["files"]]
+        self.assertIn(f"{APP}/Contents/_CodeSignature/CodeResources", paths)
+        self.check(MAC)
+
+    def test_tampered_content_is_caught_by_the_manifest(self):
+        """KP-060: archive bytes differing from the manifest hash -> exit 1 naming the path."""
+        for target in (LINUX, MAC):
+            with self.subTest(target=target):
+                self.package(target)
+                ents = [(n, d + b"x" if n.endswith("README.md") else d, m) for n, d, m in self.read_entries(target)]
+                self.write_entries(target, ents)
+                p = self.check(target, 1)
+                self.assertIn("README.md", p.stderr)
+                self.assertNotIn("CHECK OK", p.stdout)
+
+    def test_tampered_same_size_content(self):
+        """KP-060: same size, different bytes -> hash mismatch."""
+        self.package(WIN)
+        ents = [(n, bytes(len(d)) if n.endswith("LICENSE-MIT") and d else d, m) for n, d, m in self.read_entries(WIN)]
+        self.write_entries(WIN, ents)
+        self.assertIn("LICENSE-MIT", self.check(WIN, 1).stderr)
+
+    def test_missing_entry(self):
+        """KP-060: an entry missing from the archive -> exit 1 naming it."""
+        for target in (LINUX, WIN):
+            with self.subTest(target=target):
+                self.package(target)
+                self.write_entries(target, [e for e in self.read_entries(target) if not e[0].endswith("LICENSE-APACHE")])
+                self.assertIn("LICENSE-APACHE", self.check(target, 1).stderr)
+
+    def test_extra_entry(self):
+        """KP-060: an archive entry that the manifest does not list -> exit 1 naming it."""
+        for target in (LINUX, WIN):
+            with self.subTest(target=target):
+                self.package(target)
+                ents = self.read_entries(target)
+                ents.append((f"{self.NAME[target]}/evil.bin", b"x", 0o644))
+                self.write_entries(target, ents)
+                self.assertIn("evil.bin", self.check(target, 1).stderr)
+
+    def test_entry_outside_prefix_and_bad_names(self):
+        """KP-060 / R11: entries outside the prefix, absolute or '..' names -> exit 1."""
+        for bad in ("other/README.md", "/abs/file", f"{self.NAME[WIN]}/../x"):
+            with self.subTest(bad=bad):
+                self.package(WIN)
+                self.write_entries(WIN, self.read_entries(WIN) + [(bad, b"x", 0o644)])
+                self.check(WIN, 1)
+
+    def test_symlink_entry_rejected(self):
+        """KP-060 / R11: a symlink entry in a tar.gz -> exit 1."""
+        self.package(LINUX)
+        a = self.archive(LINUX)
+        ents = self.read_entries(LINUX)
+        with tarfile.open(a, "w:gz") as t:
+            for name, data, mode in ents:
+                ti = tarfile.TarInfo(name)
+                ti.size = len(data)
+                ti.mode = mode
+                t.addfile(ti, io.BytesIO(data))
+            ln = tarfile.TarInfo(f"{self.NAME[LINUX]}/link")
+            ln.type = tarfile.SYMTYPE
+            ln.linkname = "/etc/passwd"
+            t.addfile(ln)
+        (self.out / f"{self.NAME[LINUX]}.sha256").write_text(f"{hashlib.sha256(a.read_bytes()).hexdigest()}  {a.name}\n")
+        self.assertIn("link", self.check(LINUX, 1).stderr)
+
+    def test_wrong_sha256_file(self):
+        """KP-060: wrong hex, wrong archive name, missing newline in .sha256 -> exit 1."""
+        self.package(LINUX)
+        sums = self.out / f"{self.NAME[LINUX]}.sha256"
+        good = sums.read_text()
+        digest, name = good.split("  ")
+        for bad in ("0" * 64 + "  " + name, f"{digest}  other.tar.gz\n", good.rstrip("\n")):
+            with self.subTest(bad=bad):
+                sums.write_text(bad)
+                self.assertIn(".sha256", self.check(LINUX, 1).stderr)
+        sums.write_text(good)
+        self.check(LINUX)
+
+    def test_wrong_manifest_values(self):
+        """KP-060: changed sha256 / size / platform / version / target, bad ordering or keys -> exit 1."""
+        self.package(LINUX)
+        pristine = (self.out / "PACKAGE_MANIFEST.json").read_text()
+        edits = {
+            "sha256": lambda d: d["files"][0].__setitem__("sha256", "0" * 64),
+            "size": lambda d: d["files"][0].__setitem__("size", d["files"][0]["size"] + 1),
+            "platform": lambda d: d.__setitem__("platform", "linux-arm64"),
+            "version": lambda d: d.__setitem__("version", "9.9.9"),
+            "target": lambda d: d.__setitem__("target", WIN),
+            "unsorted": lambda d: d["files"].reverse(),
+            "extra key": lambda d: d["files"][0].__setitem__("mode", 1),
+            "backslash path": lambda d: d["files"][0].__setitem__("path", "tables\\x"),
+        }
+        for label, fn in edits.items():
+            with self.subTest(edit=label):
+                (self.out / "PACKAGE_MANIFEST.json").write_text(pristine)
+                self.edit_manifest(fn)
+                self.assertNotIn("CHECK OK", self.check(LINUX, 1).stdout)
+
+    def test_layout_missing_and_unexpected_paths(self):
+        """KP-060: a required path missing or an unplanned path present -> exit 1."""
+        self.package(LINUX)
+        ents = [e for e in self.read_entries(LINUX) if not e[0].endswith("tables/greybox.pinbundle")]
+        self.write_entries(LINUX, ents)
+        self.edit_manifest(lambda d: d.__setitem__(
+            "files", [f for f in d["files"] if f["path"] != "tables/greybox.pinbundle"]))
+        self.assertIn("tables/greybox.pinbundle", self.check(LINUX, 1).stderr)
+        self.package(LINUX)
+        ents = self.read_entries(LINUX) + [(f"{self.NAME[LINUX]}/dof_bridge/x.dll", b"x", 0o644)]
+        self.write_entries(LINUX, ents)
+        self.edit_manifest(lambda d: (d["files"].append(
+            {"path": "dof_bridge/x.dll", "size": 1, "sha256": hashlib.sha256(b"x").hexdigest()}),
+            d["files"].sort(key=lambda f: f["path"])))
+        self.assertIn("dof_bridge", self.check(LINUX, 1).stderr)
+
+    def test_empty_executable(self):
+        """KP-060: an empty engine executable -> exit 1."""
+        self.package(LINUX)
+        ents = [(n, b"" if n.endswith("/kilohertz-pinball") else d, m) for n, d, m in self.read_entries(LINUX)]
+        self.write_entries(LINUX, ents)
+        self.edit_manifest(lambda d: [f.update(size=0, sha256=hashlib.sha256(b"").hexdigest())
+                                      for f in d["files"] if f["path"] == "kilohertz-pinball"])
+        self.assertIn("empty", self.check(LINUX, 1).stderr)
+
+    def test_executable_bit_lost(self):
+        """KP-060: the exe entry without the executable bit (zip and tar) -> exit 1."""
+        for target in (LINUX, WIN, MAC):
+            with self.subTest(target=target):
+                self.package(target)
+                exe = pkgmod.exe_relpath(target)
+                ents = [(n, d, 0o644 if n.endswith("/" + exe) else m) for n, d, m in self.read_entries(target)]
+                self.write_entries(target, ents)
+                self.assertIn("executable bit", self.check(target, 1).stderr)
+
+    def test_packaged_exe_carries_the_executable_bit(self):
+        """KP-060: the real packaging keeps mode 0755 on the exe entry and 0644 elsewhere."""
+        for target in (LINUX, WIN, MAC):
+            self.package(target)
+            exe = pkgmod.exe_relpath(target)
+            modes = {n.split("/", 1)[1]: m for n, _d, m in self.read_entries(target)}
+            self.assertEqual(modes[exe], 0o755)
+            self.assertEqual(modes["README.md"], 0o644)
+
+    def test_missing_artifacts(self):
+        """KP-060: a missing archive, .sha256 or manifest -> exit 1 with a message, no traceback."""
+        self.package(WIN)
+        for fname in (f"{self.NAME[WIN]}.zip", f"{self.NAME[WIN]}.sha256", "PACKAGE_MANIFEST.json"):
+            with self.subTest(missing=fname):
+                f = self.out / fname
+                data = f.read_bytes()
+                f.unlink()
+                p = self.check(WIN, 1)
+                self.assertIn(fname, p.stderr)
+                self.assertNotIn("Traceback", p.stderr)
+                f.write_bytes(data)
+        self.check(WIN)
+        self.check(WIN, 1, out=self.tmp / "no-such-dir")
+
+    def test_corrupt_inputs_are_messages_not_tracebacks(self):
+        """KP-060 / R11: truncated or garbage archives and invalid JSON -> exit 1."""
+        for target in (LINUX, WIN):
+            self.package(target)
+            a = self.archive(target)
+            sums = self.out / f"{self.NAME[target]}.sha256"
+            good = a.read_bytes()
+            for label, data in (("truncated", good[: len(good) // 2]), ("garbage", b"\x00\xff" * 40), ("empty", b"")):
+                with self.subTest(target=target, kind=label):
+                    a.write_bytes(data)
+                    sums.write_text(f"{hashlib.sha256(data).hexdigest()}  {a.name}\n")
+                    p = self.check(target, 1)
+                    self.assertNotIn("Traceback", p.stderr)
+                    self.assertNotIn("CHECK OK", p.stdout)
+            a.write_bytes(good)
+            sums.write_text(f"{hashlib.sha256(good).hexdigest()}  {a.name}\n")
+            man = self.out / "PACKAGE_MANIFEST.json"
+            for junk in (b"{not json", b"\xff\xfe", b"[]", b'{"files": 3}'):
+                with self.subTest(target=target, manifest=junk):
+                    man.write_bytes(junk)
+                    p = self.check(target, 1)
+                    self.assertNotIn("Traceback", p.stderr)
+
+    def test_usage_errors(self):
+        """KP-060: --check with --dry-run / --list / --exe / --bundle-dir / --dof-bridge -> exit 2."""
+        self.package(WIN)
+        for extra in (["--dry-run"], ["--list"], ["--exe", self.exe], ["--bundle-dir", self.bundles],
+                      ["--dof-bridge", self.dof]):
+            with self.subTest(extra=extra):
+                self.check(WIN, 2, *extra)
+
+    def test_check_runs_no_tools_and_writes_nothing(self):
+        """KP-060: --check runs no external tool and leaves --out byte- and mtime-identical."""
+        outs = {t: self.tmp / f"out-{i}" for i, t in enumerate((LINUX, WIN, MAC))}
+        for target, out in outs.items():
+            self.package(target, out=out)
+        self.log.write_text("")
+        before = {}
+        for out in outs.values():
+            self.out = out
+            before[out] = (self.snapshot(), sorted(str(p) for p in out.rglob("*")))
+        for target, out in outs.items():
+            self.out = out
+            self.check(target)
+        self.assertEqual(self.tools_called(), [])
+        for out in outs.values():
+            self.out = out
+            self.assertEqual((self.snapshot(), sorted(str(p) for p in out.rglob("*"))), before[out])
+
+    def test_check_does_not_create_out(self):
+        """KP-060: --check against a missing directory does not create it."""
+        gone = self.tmp / "gone"
+        self.check(LINUX, 1, out=gone)
+        self.assertFalse(gone.exists())
+
+    def test_package_output_is_still_reproducible(self):
+        """KP-060 / D9: packaging twice is byte-identical; --check in between changes nothing."""
+        self.package(LINUX)
+        first = self.snapshot()
+        self.check(LINUX)
+        self.package(LINUX)
+        again = self.snapshot()
+        self.assertEqual({k: v[1] for k, v in first.items()}, {k: v[1] for k, v in again.items()})
 
 
 class LoaderRulesTest(unittest.TestCase):
@@ -667,7 +969,13 @@ class WorkflowTextTest(unittest.TestCase):
 
     def test_forbidden_strings(self):
         text = workflow_text()
-        for s in ("secrets.", "codesign", "notarytool", "signtool", "cargo publish", "docker push", "git push",
+        # #141 (brief requirement 3): the macOS step verifies the ad-hoc signature with
+        # `codesign --verify` / `codesign -dv`; the workflow may never sign (no -s / --sign / --force).
+        for ln in text.splitlines():
+            if re.search(r"\bcodesign\b", ln) and not ln.lstrip().startswith("#") and "ad-hoc" not in ln:
+                self.assertRegex(ln, r"codesign (--verify|-dv)\b", ln)
+                self.assertNotRegex(ln, r"\s(-s|--sign|--force)\b", ln)
+        for s in ("secrets.", "notarytool", "signtool", "cargo publish", "docker push", "git push",
                   "git tag", "gh release edit", "--latest"):
             self.assertNotIn(s, text, s)
 

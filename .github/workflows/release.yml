@@ -329,6 +329,49 @@ jobs:
           ls -l "$RUNNER_TEMP/dist"
           cat "$RUNNER_TEMP/dist"/*.sha256 >> "$GITHUB_STEP_SUMMARY"
 
+      # Recorded artifact check (KP-060): the archive, its .sha256 and PACKAGE_MANIFEST.json
+      # must agree with each other and with the package layout before anything is uploaded.
+      - name: scripts/package.py --check (${{ matrix.platform }})
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ${{ matrix.python }} scripts/package.py --target ${{ matrix.target }} --version "$VERSION" --out "$RUNNER_TEMP/dist" --check | tee "$RUNNER_TEMP/check.txt"
+          {
+            echo "### Artifact check: ${{ matrix.platform }}"
+            echo '```'
+            cat "$RUNNER_TEMP/check.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # macOS only: unzip like a user would (ditto keeps modes and signature resources), then
+      # require both slices in the executable and a verifying ad-hoc signature on the .app.
+      - name: macOS universal binary and ad-hoc signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(ls "$RUNNER_TEMP"/dist/kilohertz-pinball-*-macos-universal.zip)
+          pkg=$(basename "$archive" .zip)
+          rm -rf "$RUNNER_TEMP/unzipped"
+          mkdir "$RUNNER_TEMP/unzipped"
+          ditto -x -k "$archive" "$RUNNER_TEMP/unzipped"
+          app="$RUNNER_TEMP/unzipped/$pkg/Kilohertz Pinball.app"
+          exe="$app/Contents/MacOS/kilohertz-pinball"
+          {
+            echo "### macOS binary and signature"
+            echo '```'
+            lipo -info "$exe"
+            archs=$(lipo -archs "$exe")
+            echo "archs: $archs"
+            case " $archs " in *" x86_64 "*) ;; *) echo "missing x86_64 slice" >&2; exit 1 ;; esac
+            case " $archs " in *" arm64 "*) ;; *) echo "missing arm64 slice" >&2; exit 1 ;; esac
+            codesign --verify --deep --strict --verbose=2 "$app" 2>&1
+            codesign -dv --verbose=2 "$app" 2>&1
+            echo '```'
+          } 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: kilohertz-pinball-${{ matrix.platform }}

@@ -9311,3 +9311,11 @@ what the brief requires, is asserted in full.
 **Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
 it narrows the property; assert every failing press is named: rejected, it contradicts the
 existing cap.
+
+## #141 — release artifact check runs in CI (package.py --check)
+
+**Decision:** `scripts/package.py --target <T> --out <dir> [--version <V>] --check` verifies the finished archive, `.sha256` and `PACKAGE_MANIFEST.json` against each other and the package layout (read-only, stdlib only, exit 0 `CHECK OK` / 1 problems on stderr / 2 usage), and the `package` job in `release.yml` runs it on all three legs before `upload-artifact`, teeing the result into the job log and `$GITHUB_STEP_SUMMARY`. A macOS-only step then unzips with `ditto -x -k`, requires both `x86_64` and `arm64` in `lipo -archs` of the packaged executable, and runs `codesign --verify --deep --strict` plus `codesign -dv` on the `.app`. The check allows (but does not require) `Kilohertz Pinball.app/Contents/_CodeSignature/` files in the manifest on macOS and `dof_bridge/` files on Windows. The PR `dry-run` job is unchanged. The old `WorkflowTextTest.test_forbidden_strings` ban on the word `codesign` in the workflow was narrowed to "only `codesign --verify` / `-dv`, never signing", because the brief requires the verify step.
+
+**Rationale:** The agent session cannot download workflow artifacts (the artifact blob host is blocked), so the evidence has to be produced inside CI where it is readable from the log. The manifest is written after the ad-hoc codesign, so on macOS it legitimately lists the signature files, which vary by tool version. The dry-run deletes the archive, so `--check` does not apply there.
+
+**Alternatives:** A separate verification job that downloads the artifacts (adds a job and still leaves the evidence out of the packaging step). Python `extractall` for the macOS unzip (drops modes and signature resources, so it would not test what a user gets). Requiring an exact `_CodeSignature` file list (brittle across Xcode versions).

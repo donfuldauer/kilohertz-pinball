@@ -12,6 +12,7 @@ Usage::
     python3 scripts/package.py --target <T> --out <dir> [--version <V>]
         [--exe <path>] [--bundle-dir <dir>] [--dof-bridge <dir>]
         [--dry-run] [--list]
+    python3 scripts/package.py --target <T> --out <dir> [--version <V>] --check
 
 Targets and package layouts (``<out>/kilohertz-pinball-<version>-<platform>/``):
 
@@ -45,8 +46,21 @@ notarizes, uploads, tags or pushes.
 ``--list`` prints the package's file paths, one per line, and writes nothing
 (no builds; inputs that are given are validated).
 
-Exit codes: 0 success, 1 packaging failure (missing or invalid input, failed
-build), 2 usage error. Python 3 standard library only.
+``--check`` verifies finished artifacts in ``<out>`` (no builds, no writes, no
+network, no external tools; it cannot be combined with ``--dry-run``,
+``--list``, ``--exe``, ``--bundle-dir`` or ``--dof-bridge``): the archive, the
+``.sha256`` and ``PACKAGE_MANIFEST.json`` must exist and agree (``.sha256`` is
+``<sha256 of the archive>  <archive name>``; the archive's files, sizes and
+hashes equal the manifest's), the manifest's version/target/platform must match,
+every path of the package layout must be listed (extra paths are allowed only
+under ``dof_bridge/`` on Windows and ``Kilohertz Pinball.app/Contents/
+_CodeSignature/`` on macOS, which the ad-hoc signature adds) and the engine
+executable must be non-empty with the executable bit set in the archive. It
+prints one ``ok <sha256> <size> <path>`` line per file, a summary, then
+``CHECK OK``; every problem goes to stderr, one line each.
+
+Exit codes: 0 success, 1 packaging or check failure (missing or invalid input,
+failed build, artifacts that disagree), 2 usage error. Python 3 standard library only.
 """
 
 import argparse
@@ -709,6 +723,10 @@ def parse_args(argv):
                    help="build the package, then delete the archive and .sha256; prints DRY RUN OK")
     p.add_argument("--list", action="store_true",
                    help="print the package's file paths one per line; write nothing")
+    p.add_argument("--check", action="store_true",
+                   help="verify the finished archive, .sha256 and manifest in --out against each other "
+                   "and the layout (read-only); prints CHECK OK; exit 1 on any problem; cannot be "
+                   "combined with --dry-run, --list, --exe, --bundle-dir or --dof-bridge")
     return p.parse_args(argv)
 
 
@@ -731,6 +749,225 @@ def do_list(args, version):
     for rel in plan(args.target, version, dof):
         print(rel)
     return 0
+
+
+CHECK_READ_CAP = LIMIT_FILE
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+SIGNATURE_PREFIX = f"{APP_NAME}/Contents/_CodeSignature/"
+
+
+def _hash_stream(fobj, cap):
+    """``(size, sha256 hex)`` of a stream, reading at most ``cap + 1`` bytes;
+    a size over ``cap`` is returned as ``cap + 1`` (bounded reads, R11)."""
+    h = hashlib.sha256()
+    n = 0
+    while n <= cap:
+        chunk = fobj.read(min(1 << 20, cap + 1 - n))
+        if not chunk:
+            break
+        h.update(chunk)
+        n += len(chunk)
+    return n, h.hexdigest()
+
+
+def _read_zip_entries(archive, problems):
+    """``{name: (size, sha256, mode)}`` of the regular files of a zip."""
+    out = {}
+    with zipfile.ZipFile(archive) as zf:
+        infos = zf.infolist()
+        if len(infos) > LIMIT_ENTRIES:
+            problems.append(f"{archive.name}: {len(infos)} entries, over the cap {LIMIT_ENTRIES}")
+            return out
+        for zi in infos:
+            mode = zi.external_attr >> 16
+            if zi.is_dir():
+                continue
+            if stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
+                problems.append(f"{archive.name}: entry {zi.filename!r}: not a regular file (mode {mode:o})")
+                continue
+            if zi.filename in out:
+                problems.append(f"{archive.name}: entry {zi.filename!r}: duplicate entry")
+                continue
+            with zf.open(zi) as f:
+                size, digest = _hash_stream(f, CHECK_READ_CAP)
+            out[zi.filename] = (size, digest, mode & 0o7777)
+    return out
+
+
+def _read_tar_entries(archive, problems):
+    """``{name: (size, sha256, mode)}`` of the regular files of a tar.gz."""
+    out = {}
+    count = 0
+    with tarfile.open(archive, mode="r:gz") as tar:
+        for ti in tar:
+            count += 1
+            if count > LIMIT_ENTRIES:
+                problems.append(f"{archive.name}: more than {LIMIT_ENTRIES} entries")
+                break
+            if ti.isdir():
+                continue
+            if not ti.isreg():
+                problems.append(f"{archive.name}: entry {ti.name!r}: not a regular file (type {ti.type!r})")
+                continue
+            if ti.name in out:
+                problems.append(f"{archive.name}: entry {ti.name!r}: duplicate entry")
+                continue
+            f = tar.extractfile(ti)
+            size, digest = _hash_stream(f, CHECK_READ_CAP)
+            out[ti.name] = (size, digest, ti.mode & 0o7777)
+    return out
+
+
+def _check_manifest_doc(doc, version, target, problems):
+    """Validates the manifest document; returns ``{path: (size, sha256)}``."""
+    files = {}
+    if not isinstance(doc, dict):
+        problems.append(f"{MANIFEST_NAME}: not a JSON object")
+        return files
+    for key, want in (("version", version), ("target", target), ("platform", PLATFORMS[target])):
+        if doc.get(key) != want:
+            problems.append(f"{MANIFEST_NAME}: {key} is {doc.get(key)!r}, expected {want!r}")
+    raw = doc.get("files")
+    if not isinstance(raw, list):
+        problems.append(f"{MANIFEST_NAME}: files is not a list")
+        return files
+    prev = None
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"path", "size", "sha256"}:
+            problems.append(f"{MANIFEST_NAME}: file entry {item!r}: keys must be exactly path, size, sha256")
+            continue
+        path, size, digest = item["path"], item["size"], item["sha256"]
+        if not isinstance(path, str):
+            problems.append(f"{MANIFEST_NAME}: path {path!r} is not a string")
+            continue
+        try:
+            check_entry_name(path)
+        except ValueError as e:
+            problems.append(f"{MANIFEST_NAME}: {e}")
+            continue
+        if prev is not None and path <= prev:
+            problems.append(f"{MANIFEST_NAME}: {path}: not sorted or duplicate (after {prev})")
+        prev = path
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            problems.append(f"{MANIFEST_NAME}: {path}: size {size!r} is not a non-negative integer")
+        if not isinstance(digest, str) or not _HEX64.match(digest):
+            problems.append(f"{MANIFEST_NAME}: {path}: sha256 {digest!r} is not 64 lowercase hex digits")
+        files[path] = (size, digest)
+    return files
+
+
+def _check_layout(files, target, version, problems):
+    """Every planned path is listed; extras only where packaging allows them."""
+    listed = set(files)
+    for rel in plan(target, version, None):
+        if rel not in listed:
+            problems.append(f"layout: {rel}: required path missing from the package")
+    expected = set(plan(target, version, None))
+    for rel in sorted(listed - expected):
+        if target == WINDOWS and rel.startswith("dof_bridge/"):
+            continue
+        if target == MACOS and rel.startswith(SIGNATURE_PREFIX):
+            continue
+        problems.append(f"layout: {rel}: unexpected path in the package")
+    if target != WINDOWS:
+        for rel in sorted(listed):
+            if "dof_bridge" in rel:
+                problems.append(f"layout: {rel}: DOF bridge path in a non-Windows package")
+    exe = exe_relpath(target)
+    if exe in files and files[exe][0] == 0:
+        problems.append(f"layout: {exe}: engine executable is empty")
+
+
+def do_check(args, version):
+    """--check: verify the finished artifacts in ``--out`` (read-only). Prints
+    ``ok`` lines and ``CHECK OK`` on stdout; problems on stderr; returns 0 or 1."""
+    target = args.target
+    out = args.out
+    name = package_name(version, target)
+    archive = out / (f"{name}.tar.gz" if target == LINUX else f"{name}.zip")
+    sums = out / f"{name}.sha256"
+    man = out / MANIFEST_NAME
+    problems = []
+    missing = [p for p in (archive, sums, man) if not p.is_file()]
+    for p in missing:
+        problems.append(f"{p.name}: missing from the output directory")
+    if missing:
+        return _check_fail(problems)
+
+    # b. the .sha256 file
+    archive_hash = sha256_file(archive)
+    want_sums = f"{archive_hash}  {archive.name}\n".encode("utf-8")
+    if sums.read_bytes() != want_sums:
+        problems.append(f"{sums.name}: must be exactly {archive_hash}  {archive.name} plus a newline")
+
+    # c. the manifest
+    if man.stat().st_size > (64 << 20):
+        problems.append(f"{MANIFEST_NAME}: over 64 MiB")
+        return _check_fail(problems)
+    try:
+        doc = json.loads(man.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        problems.append(f"{MANIFEST_NAME}: invalid JSON: {e}")
+        return _check_fail(problems)
+    manifest_files = _check_manifest_doc(doc, version, target, problems)
+
+    # d. the archive against the manifest
+    try:
+        if target == LINUX:
+            entries = _read_tar_entries(archive, problems)
+        else:
+            entries = _read_zip_entries(archive, problems)
+    except (tarfile.TarError, zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError,
+            RuntimeError, OverflowError, ValueError) as e:
+        problems.append(f"{archive.name}: unreadable or corrupt archive: {e}")
+        return _check_fail(problems)
+    prefix = f"{name}/"
+    rels = {}
+    for ename, data in entries.items():
+        try:
+            check_entry_name(ename)
+        except ValueError as e:
+            problems.append(f"{archive.name}: {e}")
+            continue
+        if not ename.startswith(prefix):
+            problems.append(f"{archive.name}: entry {ename!r}: outside the {prefix} prefix")
+            continue
+        rels[ename[len(prefix):]] = data
+    for rel in sorted(set(manifest_files) - set(rels)):
+        problems.append(f"{archive.name}: {rel}: listed in the manifest but missing from the archive")
+    for rel in sorted(set(rels) - set(manifest_files)):
+        problems.append(f"{archive.name}: {rel}: in the archive but not in the manifest")
+    lines = []
+    for rel in sorted(set(rels) & set(manifest_files)):
+        size, digest, _mode = rels[rel]
+        msize, mdigest = manifest_files[rel]
+        if size != msize:
+            problems.append(f"{rel}: archive size {size} differs from manifest size {msize}")
+        elif digest != mdigest:
+            problems.append(f"{rel}: archive sha256 {digest} differs from manifest sha256 {mdigest}")
+        else:
+            lines.append(f"ok {digest} {size} {rel}")
+
+    # e. layout and the executable bit
+    _check_layout(manifest_files, target, version, problems)
+    exe = exe_relpath(target)
+    if exe in rels and not rels[exe][2] & 0o111:
+        problems.append(f"{exe}: executable bit is not set in the archive (mode {rels[exe][2]:o})")
+
+    for line in lines:
+        print(line)
+    if problems:
+        return _check_fail(problems)
+    print(f"archive {archive.name} sha256 {archive_hash} files {len(lines)}")
+    print("CHECK OK")
+    return 0
+
+
+def _check_fail(problems):
+    """Prints every problem on stderr (one line each); returns exit code 1."""
+    for p in problems:
+        print(f"package.py: check failed: {p}", file=sys.stderr)
+    return 1
 
 
 def do_package(args, version):
@@ -786,6 +1023,14 @@ def main(argv=None):
     """Entry point; returns the exit code."""
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
+        if args.check:
+            for flag, given in (("--dry-run", args.dry_run), ("--list", args.list),
+                                ("--exe", args.exe is not None),
+                                ("--bundle-dir", args.bundle_dir is not None),
+                                ("--dof-bridge", args.dof_bridge is not None)):
+                if given:
+                    raise UsageError(f"--check cannot be combined with {flag}")
+            return do_check(args, resolve_version(args))
         if args.dof_bridge is not None and args.target != WINDOWS:
             raise UsageError(f"--dof-bridge {args.dof_bridge}: only valid with --target {WINDOWS}")
         version = resolve_version(args)
