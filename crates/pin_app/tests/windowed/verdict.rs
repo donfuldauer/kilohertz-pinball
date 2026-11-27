@@ -45,13 +45,11 @@
 //!   a press stamped after `run_end_ns` is never excluded;
 //!   `n_raw = frame - F0`, `F0` the last
 //!   frame presented at or before `sdl_ts_ns` (the raw count starts from
-//!   the press; `move_tick` only selects the frame); pass when `n_raw <= 2`. One allowance: when
-//!   the frame in flight at the press (the first frame presented after
-//!   `sdl_ts_ns`) was presented at or before `sdl_ts_ns + bound_a +
-//!   coil_ticks` ticks (it could not show the press), the count may start
-//!   after it, `n_adj = frame - in_flight`, and the press passes when
-//!   `n_adj <= 2` (counted as "in-flight shifted"). Never more than one
-//!   frame, and never for a press that failed check a.
+//!   the press; `move_tick` only selects the frame; `n_raw = frame + 1` for
+//!   a press before the first presented frame); pass when `n_raw <= 2`.
+//!   The raw count is the only gate: there is no in-flight allowance (#149;
+//!   the app latches its snapshot late, so the frame after the one in
+//!   flight at the press shows it).
 //! * **c. Real time (REQ-LAT-002, CI form).** From the shutdown line:
 //!   `D / (N + D) <= 0.001`, and `N` within 1 % of the expected run length
 //!   (so a run that died early cannot pass).
@@ -417,14 +415,10 @@ pub struct Summary {
     pub late_arrivals: usize,
     pub max_lateness_ns: u64,
     pub min_slack_ns: i64,
-    /// `n_raw` (frames from the frame presented at or before the press).
+    /// `n_raw` (frames from the frame presented at or before the press),
+    /// the gated count.
     pub max_frames_raw: u64,
     pub p99_frames_raw: u64,
-    /// The gated count: `n_adj` for a shifted press, else `n_raw`.
-    pub max_frames_adjusted: u64,
-    pub p99_frames_adjusted: u64,
-    /// Presses that needed the one-frame in-flight allowance.
-    pub in_flight_shifted: usize,
     pub p50_photon_ms: f64,
     pub p99_photon_ms: f64,
     pub max_coil_ticks: u64,
@@ -524,39 +518,6 @@ pub fn frame_showing(frames: &[Frame], move_tick: u64, release: Option<u64>) -> 
         .find(|f| f.snap_tick >= move_tick && f.snap_tick <= until)
 }
 
-/// Check b's frame count for one press: `(n_raw, gated, shifted)`.
-/// `n_raw = frame - F0` (`F0` the last frame presented at or before `ts`;
-/// `frame + 1` for a press before the first presented frame, [`raw_frames`]).
-/// When `n_raw > max_frames`, `allow_shift`, the frame in flight at the
-/// press (the first presented after `ts`) was presented at or before
-/// `deadline`, and counting after it gives `frame - in_flight <=
-/// max_frames`, the press needed the shift: `gated = frame - in_flight`,
-/// `shifted = true`. Otherwise `gated = n_raw` (at most one frame of
-/// allowance, never a second).
-pub fn frame_count(
-    frames: &[Frame],
-    ts: u64,
-    frame: u64,
-    deadline: u64,
-    max_frames: u64,
-    allow_shift: bool,
-) -> (u64, u64, bool) {
-    let raw = raw_frames(frames, ts, frame);
-    if raw <= max_frames || !allow_shift {
-        return (raw, raw, false);
-    }
-    match frames.iter().find(|f| f.present_ns > ts) {
-        Some(in_flight)
-            if in_flight.present_ns <= deadline
-                && in_flight.frame < frame
-                && frame - in_flight.frame <= max_frames =>
-        {
-            (raw, frame - in_flight.frame, true)
-        }
-        _ => (raw, raw, false),
-    }
-}
-
 const MAX_LISTED: usize = 10;
 
 fn fail(c: &mut Check, msg: String) {
@@ -583,7 +544,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     s.min_slack_ns = i64::MAX;
     let run_end = trace.run_end_ns;
     let mut raw = Vec::new();
-    let mut adjusted = Vec::new();
     let mut photon = Vec::new();
     let mut gaps: Vec<u64> = trace
         .rows
@@ -596,7 +556,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     s.p99_drain_gap_ns = percentile(&gaps, 99);
     for &(r, release) in &presses {
         let tag = format!("press #{} ({} at {} ns)", r.seq, r.input, r.sdl_ts_ns);
-        let mut a_failed = false;
         // The run-end marker is read after the last pump polled SDL, so
         // every delivered press is stamped at or before it. A press stamped
         // after it means the marker contradicts the app's own order: the
@@ -625,7 +584,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         // bound) and its timing failures below are not listed again.
         let bad_stall = r.stall && !in_stall_window(r);
         if bad_stall {
-            a_failed = true;
             fail(
                 &mut v.a,
                 format!(
@@ -637,7 +595,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             );
         }
         if r.apply_tick_end_sdl_ns < r.sdl_ts_ns {
-            a_failed = true;
             if !bad_stall {
                 fail(
                     &mut v.a,
@@ -654,9 +611,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             s.min_slack_ns = s
                 .min_slack_ns
                 .min(i64::try_from(slack).unwrap_or(if slack < 0 { i64::MIN } else { i64::MAX }));
-            if late > bound {
-                a_failed = true;
-            }
             if late > bound && !bad_stall {
                 fail(
                     &mut v.a,
@@ -674,7 +628,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 let coil = m.saturating_sub(r.apply_tick);
                 s.max_coil_ticks = s.max_coil_ticks.max(coil);
                 if m < r.apply_tick || coil > p.coil_ticks {
-                    a_failed = true;
                     fail(
                         &mut v.a,
                         format!(
@@ -690,7 +643,6 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 // had no time to move its bat.
                 let tail = p.coil_ticks.saturating_add(2).saturating_mul(TICK_NS);
                 if after_end || run_end.saturating_sub(r.apply_tick_end_sdl_ns) > tail {
-                    a_failed = true;
                     fail(
                         &mut v.a,
                         format!(
@@ -786,18 +738,8 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             );
             continue;
         }
-        let deadline = r
-            .sdl_ts_ns
-            .saturating_add(bound)
-            .saturating_add(p.coil_ticks.saturating_mul(TICK_NS));
-        let (n_raw, n, shifted) = frame_count(
-            &trace.frames,
-            r.sdl_ts_ns,
-            f.frame,
-            deadline,
-            p.max_frames,
-            !a_failed,
-        );
+        // The gate is the raw count from the press (#149): no allowance.
+        let n_raw = raw_frames(&trace.frames, r.sdl_ts_ns, f.frame);
         if r.frames_to_photon != Some(n_raw) {
             fail(
                 &mut v.b,
@@ -807,28 +749,17 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 ),
             );
         }
-        if shifted {
-            s.in_flight_shifted += 1;
-        }
-        if n > p.max_frames {
+        if n_raw > p.max_frames {
             fail(
                 &mut v.b,
                 format!(
                     "{tag}: bat raised in tick {m}, first shown by frame {} = {n_raw} presented \
-                     frames after the press (at most {}{})",
-                    f.frame,
-                    p.max_frames,
-                    if a_failed {
-                        "; no in-flight allowance for a press that failed check a"
-                    } else {
-                        ", or one more when the frame in flight at the press presented before \
-                         the coil deadline"
-                    }
+                     frames after the press (at most {})",
+                    f.frame, p.max_frames
                 ),
             );
         }
         raw.push(n_raw);
-        adjusted.push(n);
         photon.push(f.present_ns.saturating_sub(r.sdl_ts_ns));
     }
     if raw.is_empty() && s.presses > s.excluded_presses {
@@ -843,12 +774,9 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         s.min_slack_ns = 0;
     }
     raw.sort_unstable();
-    adjusted.sort_unstable();
     photon.sort_unstable();
     s.max_frames_raw = raw.last().copied().unwrap_or(0);
     s.p99_frames_raw = percentile(&raw, 99);
-    s.max_frames_adjusted = adjusted.last().copied().unwrap_or(0);
-    s.p99_frames_adjusted = percentile(&adjusted, 99);
     s.p50_photon_ms = percentile(&photon, 50) as f64 / 1e6;
     s.p99_photon_ms = percentile(&photon, 99) as f64 / 1e6;
     v.a.info = format!(
@@ -862,17 +790,13 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         s.max_coil_ticks
     );
     v.b.info = format!(
-        "{} checked, {} excluded (final {} ms before run end); frames raw max {} p99 {}, adjusted \
-         max {} p99 {}, in-flight shifted {}; key to photon p50 {:.1} ms p99 {:.1} ms \
-         (information)",
+        "{} checked, {} excluded (final {} ms before run end); frames raw max {} p99 {}; key to \
+         photon p50 {:.1} ms p99 {:.1} ms (information)",
         raw.len(),
         s.excluded_presses,
         p.end_exclusion_ns / 1_000_000,
         s.max_frames_raw,
         s.p99_frames_raw,
-        s.max_frames_adjusted,
-        s.p99_frames_adjusted,
-        s.in_flight_shifted,
         s.p50_photon_ms,
         s.p99_photon_ms
     );
@@ -1042,7 +966,7 @@ impl Verdict {
             }
         }
         let s = &self.summary;
-        let rows: [(&str, String); 14] = [
+        let rows: [(&str, String); 12] = [
             ("presses", s.presses.to_string()),
             ("stalled presses", s.stalled_presses.to_string()),
             (
@@ -1052,14 +976,6 @@ impl Verdict {
             (
                 "frames_to_photon max / p99 (raw, gated)",
                 format!("{} / {}", s.max_frames_raw, s.p99_frames_raw),
-            ),
-            (
-                "frames_to_photon max / p99 (adjusted)",
-                format!("{} / {}", s.max_frames_adjusted, s.p99_frames_adjusted),
-            ),
-            (
-                "presses in-flight shifted (one frame)",
-                s.in_flight_shifted.to_string(),
             ),
             ("max apply lateness (ns)", s.max_lateness_ns.to_string()),
             ("min apply slack (ns)", s.min_slack_ns.to_string()),
@@ -1094,5 +1010,194 @@ impl Verdict {
             }
         );
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Check b gates the raw count only (#149, REQ-LAT-001).
+    use super::*;
+    use proptest::prelude::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// Frames presented every 125 ms from 125 ms (lavapipe's pace), frame
+    /// `i` drawing snapshot tick `snaps[i]`.
+    fn frames(snaps: &[u64]) -> Vec<Frame> {
+        snaps
+            .iter()
+            .enumerate()
+            .map(|(i, &snap_tick)| Frame {
+                frame: i as u64,
+                snap_tick,
+                present_ns: (i as u64 + 1) * 125 * MS,
+            })
+            .collect()
+    }
+
+    /// One left-flipper press at `ts`, applied in the tick ending 0.5 ms
+    /// later (tick index = that end in ms), raised 5 ticks after it, shown
+    /// by `frame` (with the trace's `frames_to_photon` `ftp`).
+    fn press(ts: u64, frame: &Frame, ftp: u64) -> Row {
+        let apply_end = ts + MS / 2;
+        let apply_tick = apply_end / MS;
+        Row {
+            seq: 1,
+            input: "left_flipper".into(),
+            down: true,
+            sdl_ts_ns: ts,
+            apply_tick,
+            apply_tick_end_sdl_ns: apply_end,
+            prev_tick_end_sdl_ns: apply_end - MS,
+            drain_sdl_ns: apply_end - MS / 4,
+            prev_drain_sdl_ns: apply_end - MS - MS / 4,
+            dropped_ticks_at_apply: 0,
+            stall: false,
+            move_tick: Some(apply_tick + 5),
+            frame: Some(frame.frame),
+            frame_snap_tick: Some(frame.snap_tick),
+            present_ns: Some(frame.present_ns),
+            frames_to_photon: Some(ftp),
+        }
+    }
+
+    fn verdict(frames: Vec<Frame>, row: Row) -> Verdict {
+        let trace = Trace {
+            rows: vec![row],
+            frames,
+            overflows: 0,
+            run_end_ns: 60_000 * MS,
+        };
+        // `F frames` equals the frame table's rows: check d compares them
+        // (gate 163 round 13; third merge of main).
+        let shutdown = Shutdown {
+            ticks: 60_000,
+            dropped: 0,
+            frames: trace.frames.len() as u64,
+            input_dropped: 0,
+        };
+        let p = Params {
+            min_presses: 1,
+            ..Params::default()
+        };
+        evaluate(&trace, &shutdown, &p)
+    }
+
+    /// REQ-LAT-001: a press 0.5 ms before frame 1 presents (frame 1 is in
+    /// flight, `F0` = frame 0); with the late latch frame 2 drew tick 260,
+    /// after the bat moved (tick 255): `n_raw` = 2 passes.
+    #[test]
+    fn req_lat_001_check_b_raw_count_two_passes() {
+        let fr = frames(&[100, 225, 260, 380]);
+        let ts = 250 * MS - MS / 2;
+        let v = verdict(fr.clone(), press(ts, &fr[2], 2));
+        assert!(v.a.passed(), "{:?}", v.a);
+        assert!(v.b.passed(), "{:?}", v.b);
+        assert_eq!(v.summary.max_frames_raw, 2);
+        assert_eq!(v.summary.p99_frames_raw, 2);
+    }
+
+    /// REQ-LAT-001 (#149 removes the in-flight allowance): the same press,
+    /// but frame 2 drew tick 250 (read when frame 1's present returned,
+    /// before the move), so frame 3 is the first to show it: `n_raw` = 3
+    /// fails, although the frame in flight at the press (frame 1) presented
+    /// 0.5 ms after it, inside the old coil-deadline window
+    /// (`sdl_ts_ns + bound_a + coil_ticks`) that used to allow one frame.
+    #[test]
+    fn req_lat_001_check_b_raw_count_three_fails_even_with_in_flight_frame_in_window() {
+        let fr = frames(&[100, 225, 250, 380]);
+        let ts = 250 * MS - MS / 2;
+        let row = press(ts, &fr[3], 3);
+        let in_flight = fr.iter().find(|f| f.present_ns > ts).unwrap();
+        let p = Params::default();
+        assert!(in_flight.present_ns <= ts + coil_bound_ns(&row, &p) + p.coil_ticks * TICK_NS);
+        let v = verdict(fr, row);
+        assert!(v.a.passed(), "{:?}", v.a);
+        assert!(!v.b.passed());
+        assert_eq!(v.b.failures.len(), 1, "{:?}", v.b);
+        assert!(
+            v.b.failures[0].contains("3 presented frames after the press (at most 2)"),
+            "{:?}",
+            v.b
+        );
+        assert_eq!(v.summary.max_frames_raw, 3);
+        assert_eq!(v.failed_checks(), vec!["b"]);
+    }
+
+    /// REQ-LAT-001: a press before the first presented frame counts from
+    /// frame index 0 (`n_raw = frame + 1`): frame 1 gives 2 (pass), frame
+    /// 2 gives 3 (fail).
+    #[test]
+    fn req_lat_001_check_b_press_before_first_frame_counts_frame_plus_one() {
+        let ts = 10 * MS;
+        let fr = frames(&[5, 130, 255]);
+        assert_eq!(raw_frames(&fr, ts, 1), 2);
+        let v = verdict(fr.clone(), press(ts, &fr[1], 2));
+        assert!(v.b.passed(), "{:?}", v.b);
+        assert_eq!(v.summary.max_frames_raw, 2);
+        // Frame 1 drew a tick before the move: frame 2 is the first.
+        let fr = frames(&[5, 12, 255]);
+        let v = verdict(fr.clone(), press(ts, &fr[2], 3));
+        assert!(!v.b.passed());
+        assert_eq!(v.summary.max_frames_raw, 3);
+    }
+
+    /// REQ-LAT-001: the trace's `frames_to_photon` is still recomputed from
+    /// the frame table and a mismatch fails.
+    #[test]
+    fn req_lat_001_check_b_frames_to_photon_mismatch_fails() {
+        let fr = frames(&[100, 225, 260, 380]);
+        let ts = 250 * MS - MS / 2;
+        let v = verdict(fr.clone(), press(ts, &fr[2], 1));
+        assert!(!v.b.passed());
+        assert!(
+            v.b.failures[0].contains("frames_to_photon Some(1)"),
+            "{:?}",
+            v.b
+        );
+    }
+
+    /// REQ-LAT-001: the summary and check b's info line name the raw max
+    /// and p99 only; no in-flight shifted or adjusted counts remain.
+    #[test]
+    fn req_lat_001_summary_reports_the_raw_count_only() {
+        let fr = frames(&[100, 225, 260, 380]);
+        let ts = 250 * MS - MS / 2;
+        let v = verdict(fr.clone(), press(ts, &fr[2], 2));
+        let report = v.report();
+        assert!(report.contains("frames raw max 2 p99 2"), "{report}");
+        assert!(
+            report.contains("| frames_to_photon max / p99 (raw, gated) | 2 / 2 |"),
+            "{report}"
+        );
+        for word in ["in-flight", "in flight", "shifted", "adjusted", "allowance"] {
+            assert!(!report.contains(word), "{word} in {report}");
+        }
+    }
+
+    proptest! {
+        /// REQ-LAT-001: `raw_frames` is `frame + 1` minus the number of
+        /// frames presented at or before the press (so `frame - F0`, or
+        /// `frame + 1` before the first frame).
+        #[test]
+        fn req_lat_001_raw_frames_counts_from_the_last_frame_before_the_press(
+            gaps in proptest::collection::vec(1u64..200 * MS, 1..40),
+            ts in 0u64..4_000 * MS,
+            pick in 0usize..40,
+        ) {
+            let mut t = 0;
+            let fr: Vec<Frame> = gaps
+                .iter()
+                .enumerate()
+                .map(|(i, g)| {
+                    t += g;
+                    Frame { frame: i as u64, snap_tick: t / MS, present_ns: t }
+                })
+                .collect();
+            let frame = (pick % fr.len()) as u64;
+            let before = fr.iter().filter(|f| f.present_ns <= ts).count() as u64;
+            prop_assume!(before <= frame + 1);
+            prop_assert_eq!(raw_frames(&fr, ts, frame), frame + 1 - before);
+        }
     }
 }

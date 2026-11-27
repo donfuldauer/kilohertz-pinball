@@ -25,6 +25,10 @@ pin_assets = { path = "../pin_assets" }
 # is parsed with the workspace's serde/toml pins (already used by pin_core).
 serde.workspace = true
 toml.workspace = true
+# #136 (KP-055): `pin_tablegen build` writes the placeholder kit (sounds,
+# fonts, backglass art) inside the one build (internal crate, no new
+# external pin; pin_assetgen depends only on pin_core).
+pin_assetgen = { path = "../pin_assetgen" }
 
 [dev-dependencies]
 proptest.workspace = true

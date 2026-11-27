@@ -9233,6 +9233,163 @@ weakened).
 **Decision:** Every table-list row is `ceil(2 × 2 + body text height + item_spacing.y + max(small text height, interact_size.y))` points high: a 2-point vertical margin, then the title (one line, truncated with an ellipsis), then a second line with the author (truncated) and as many whole badges as fit, or, for a broken table, its first error line (truncated). Everything is clipped to the row. The list uses `ScrollArea::show_rows` with that height. When the focus changes, the focused row's rect is computed from its index and passed to `scroll_to_rect`, so a row that is not laid out is still scrolled into view. Rows keep their click ids (`("pin_menu_table_row", path)`).
 **Rationale:** `show_rows` needs one constant height. Computing it from the active text styles keeps the row legible at every `ui_scale`. Badges that do not fit are shown in full, wrapped, in the details column, so nothing is lost, and the existing layout tests (no text beyond the panel's inner edge) still hold.
 **Alternatives:** Wrapped badge rows of varying height (rejected: they cannot be virtualised with `show_rows`). A fixed height in points regardless of style (rejected: it would clip text if the style changes).
+
+
+## #149 — Late snapshot latch; check b gates the raw count
+
+**Decision:** The render thread latches its snapshot late. It reads the triple buffer once at the
+top of each render-loop iteration (display commands, menu, debug view) and the table presenter reads
+it again for the first playfield slot immediately before encoding, after the playfield surface's
+acquire returned and no earlier than `LATE_LATCH_MIN_LAG` (11 ms) after the previous playfield
+present returned; the render thread sleeps the rest of that lag (`SnapshotLatch` in
+`crates/pin_app/src/orchestrator/present.rs`). The late snapshot is the one drawn, traced
+(`presented_at`) and published as `render_last_tick`; a latch whose tick is below the previous
+latch's (early or late) is counted in `render_non_monotonic`. Display commands are drained up to
+the early latch's tick, which is never later than the snapshot the frame draws. Slots drawn
+before or after the playfield draw the latched snapshot (no third read), so a frame's playfield,
+its secondary windows and its trace row agree. Check b of the windowed harness gates the raw
+count only: `n_raw = frame - F0 <= 2` (`frame + 1` before the first presented frame). The
+in-flight allowance (`n_adj`, the adjusted max and p99, `in_flight_shifted`) is removed.
+
+This supersedes, in "#82 — Windowed latency check definitions", the check b in-flight allowance
+("Exactly one allowance: if the frame in flight at the press (`F0 + 1`) was presented in
+`(sdl_ts_ns, sdl_ts_ns + bound_a + 8 ticks]` the count may start after it") and the paragraph
+"SPEC erratum (REQ-LAT-001, CI form)" with its proposed SPEC edit: SPEC §7.5 stays as written and
+the app now meets its CI form. The queue line `[P8 spec] [KP-002-lat001-frame-form]` is struck as
+resolved (`git log -S KP-002-lat001-frame-form -- docs/HUMAN_QUEUE.md docs/SPEC.md` shows only
+#82's commit that added it; the owner had not edited SPEC §7.5).
+
+**Rationale:**
+- **Why a minimum lag, not only a read after the acquire.** A first windowed run with the late
+  read placed right after the acquire and no lag failed check b (raw max 3, 17 of 168 presses at 3):
+  on lavapipe the acquire returns at once (the late read landed −1.9 to +2.7 ms from the previous
+  present), so it read the same stale snapshot as before. A frame can show a press that landed
+  just before the previous present returned only if it reads its snapshot at least the
+  press-to-raise time after that present. 11 ms is check a's bound on that time (REQ-LAT-004's
+  one tick plus 2 ms forwarding and wake-up, then at most 8 ticks to the 1 degree raise), so every
+  press that passes check a is visible in the frame after the one in flight.
+- **Cost.** The lag only tops up the time from the previous present to the acquire's return. On
+  lavapipe it lengthens a frame from about 36 ms to about 47 ms (about 27 to 21 frames per
+  second); a display-paced acquire that already waited 11 ms adds nothing. No frame is queued:
+  the playfield keeps `desired_maximum_frame_latency` 1 (REQ-LAT-006), and the render thread
+  sleeps, so the sim thread is never blocked (R4); dropped ticks did not rise (check c: 15, 0 and 9
+  of 60 000 in the three runs below).
+- **Raw count only.** With the late latch the frame after the in-flight one shows the press, so
+  the SPEC's raw form holds and an allowance would only hide a renderer that is a frame slow.
+- **Measured (three consecutive 60 s head runs, lavapipe, `LP_NUM_THREADS=2`):** 172, 172 and
+  171 presses; raw max 2 and p99 2 in each; presses at `n_raw` 2 / 1: 138 / 34, 148 / 24,
+  142 / 29; none at 3; 1243, 1247 and 1264 frames presented. With KP-001 (#81) reverted the run
+  still fails checks a and b (coil 43 to 54 ticks late, raw max 3).
+
+**Alternatives:**
+- Read only after the acquire, no lag: rejected, measured above (the acquire does not wait on
+  lavapipe).
+- A lag derived from the measured render cost and the display's refresh interval (latch at
+  `next refresh − render cost`): rejected for this unit; on lavapipe the render cost (about 36 ms)
+  exceeds any refresh interval, so it gives no lag where the gate is measured, and the render
+  thread does not know the display's refresh interval.
+- Waiting for the next tick boundary only: rejected, one tick is less than the 4 to 6 ticks the bat
+  needs to reach 1 degree.
+- Keeping the in-flight allowance or the SPEC erratum: rejected by the issue; the brief allows the
+  owner's SPEC edit only as a fallback when a late latch cannot meet the raw count.
+
+## #149 — Independent Tester: the check b property oracle
+
+**Decision:** The black-box property for check b (`req_lat_001_check_b_passes_iff_every_raw_count_is_at_most_two`
+in `crates/pin_app/tests/windowed/main.rs`) expects a pass if and only if at least one press is
+checked and every checked press has `n_raw <= 2`, and checks the failure list one way: every press
+a failure names is a checked press with `n_raw > 2`, named with that count, and some failure names
+a raw count whenever one exceeds 2. The excluded press of the end-exclusion test is checked by
+name (never in a failure) rather than by check b passing.
+
+**Rationale:** The verdict fails a run whose every press falls in the final 500 ms ("every press
+fell in the final window"), and it caps its failure list ("... more failures not listed"); both
+are existing behaviour that this unit leaves unchanged, so the oracle models them instead of
+asserting that every failing press is listed. The pass/fail equivalence over raw counts, which is
+what the brief requires, is asserted in full.
+
+**Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
+it narrows the property; assert every failing press is named: rejected, it contradicts the
+existing cap.
+## #136 KP-055 — pin_tablegen command line: `--backbox` and `build`
+
+**Decision:** The layout command gains `--backbox <backbox_layout.toml>`
+(`pin_tablegen <layout.toml> --table <table.toml> --out <dir> [--force] [--backbox <file>]`): after
+`generate` it reads the file (the same 4 MiB bounded read), runs `parse_backbox_layout_bytes`,
+`generate_backbox` on the merged manifest and the VUK aim, and writes `playfield.glb`,
+`backbox.glb`, `backbox_colliders.glb` and one merged `table.toml` together (staged, under the
+`.tablegen-lock` lock, `table.toml` written once). Nothing is written when any step fails; the N4
+guard against overwriting a hand-written base applies on both paths; without `--backbox` the output
+is unchanged. A new subcommand `pin_tablegen build <src_dir> --out <out_dir>`
+(`pin_tablegen::backbox::build_from`, `run_build_cli`) builds a whole table bundle from a source
+folder: layout, table and backbox as above, then the `rules.lua`, `backglass.toml`, `layout.toml`,
+`glass.toml` copies plus every regular `display/*.toml` file (plain names read from `read_dir`,
+sorted; symlinks and subdirectories are skipped, a symlinked fixed source is refused), then
+`pin_assetgen::generate_kit` with the base table's `meta.name` as title, its palette and seed 0.
+The kit title is taken from `meta.name` because it equals "Feature Lab" for Feature Lab (no
+`--title` option). The library code lives in `crates/pin_tablegen/src/backbox/cli.rs`;
+`pin_tablegen` gains the internal dependency `pin_assetgen`.
+**Rationale:** The example existed only because the CLI could not read `backbox_layout.toml`
+("6.4 — build path"); a `build` subcommand keeps the placeholder kit inside the one build, so the
+bundle the tests build equals `build.sh`'s, and `build.sh` no longer builds pin_app (no SDL3
+headers). `pin_tablegen build` used to be read as a layout path named `build`; a layout file named
+exactly `build` must now be passed as `./build`.
+**Alternatives:** `build.sh` chaining the layout command with `--backbox`, file copies in shell and
+`pin_assetgen` (two implementations of the build, tests could not share it); a `--title` option
+(not needed while `meta.name` gives the same bytes).
+
+## #136 KP-055 — VUK aim is CLI logic, not backbox_layout.toml data
+
+**Decision:** `VUK_LATERAL_M_S` (0.35), `VUK_RISE_M_S` (2.1), `vuk_eject` and `aim_backbox_vuk`
+move unchanged (same `libm::atan2f` and `libm::hypot` operand order) into
+`pin_tablegen::backbox::cli` and are applied whenever `--backbox` is given (also by `build`).
+**Rationale:** Bit-for-bit the example's arithmetic, so the bundle and replay hashes are unchanged;
+it now sits under pin_tablegen's std-transcendental and min/max clippy ban (D9, "w8g-e"), with no
+`allow`. The generator still leaves the eject unset; the aim stays a build step as in "6.4 —
+backbox VUK aimed through the entry transition".
+**Alternatives:** An optional `[backbox.vuk]` data block in `backbox_layout.toml` (a schema change
+of a closed, `deny_unknown_fields` file and a generator change, both outside this issue; may come
+later if a second table needs a different aim).
+
+## #136 KP-055 — table.toml header comment kept byte-identical
+
+**Decision:** The merged `table.toml` written with a backbox keeps the exact comment line the
+example wrote, `# Backbox from backbox_layout.toml (build_feature_lab example).`, although the
+example is gone. Consequently `grep -rn build_feature_lab crates/` still finds that string literal
+in `crates/pin_tablegen/src/backbox/cli.rs`, and the pin_app test-support wrapper keeps the
+function name `build_feature_lab_bundle` (brief item 4); the retirement check is that no file,
+`[[example]]`, script or command refers to the example (`grep -rnw build_feature_lab` outside the
+literal finds nothing).
+**Rationale:** The acceptance criterion is byte-identity with the parent commit's bundle so replay
+hashes do not change; rewording the comment would change `table.toml`'s bytes.
+**Alternatives:** Reword the comment and re-baseline the golden digests (breaks acceptance 1 and
+needs a separate re-baseline); rename the test wrapper (the brief names it).
+
+## #136 KP-055 — Golden digests of the Feature Lab bundle
+
+**Decision:** `crates/pin_tablegen/tests/fixtures/feature_lab_bundle.digests` holds one line per
+file (`<relative path> <len> <fnv1a64 hex>`, sorted, 55 files including `.tablegen-lock` and
+`rules.wasm`) of the bundle `tables/feature_lab/build.sh` wrote with the unmodified example at
+e87b2c7. `tests/backbox_cli.rs` builds with `pin_tablegen build`, adds build.sh's `rules.wasm` copy,
+and fails on a missing, extra or different file. The digests are regenerated only from a build
+whose output change is intended (a re-baseline in its own PR), never from new code to make it pass.
+**Rationale:** A hand-written FNV-1a needs no new dependency and a 55-line fixture is reviewable;
+storing the whole bundle would add ~2 MB of binaries.
+**Alternatives:** Commit the reference bundle (large); compare only the generated files (misses
+the copies and the kit).
+
+## #136 KP-055 — Supersedes "6.4 — build path (example, because the CLI lacks backbox)"
+
+**Decision:** The `build_feature_lab` example of pin_app is retired. `tables/feature_lab/build.sh`
+runs `cargo run -q -p pin_tablegen -- build . --out <out>`, copies `rules.wasm` and runs
+`pin_tablegen validate`; pin_app's tests build the bundle through `pin_tablegen::backbox::build_from`
+(`tests/feature_lab_support` keeps a small `build` wrapper module). The rest of the 6.4 build
+decision (what the build contains) stands.
+**Rationale:** The premise of the old entry (the CLI cannot read `backbox_layout.toml`) no longer
+holds.
+**Alternatives:** Keep the example as a thin wrapper (keeps the SDL3 build-header requirement for
+build.sh).
+
 ## #163 KP-069 — One assert script for every replay-hash leg
 
 **Decision:** The record / 10 replays / golden comparison lives in a single new file,

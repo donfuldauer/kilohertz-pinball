@@ -27,11 +27,6 @@
 //!   answer one shifted stream identically, not the sim's own queues.
 #![allow(dead_code)]
 
-/// The Feature Lab build (`crates/pin_app/examples/build_feature_lab.rs`,
-/// the implementation `tables/feature_lab/build.sh` runs).
-#[path = "../../examples/build_feature_lab.rs"]
-mod feature_lab_build;
-
 use pin_assetgen::{TableMeta, generate_kit};
 use pin_assets::IdKind;
 use pin_core::schema::table::TableManifest;
@@ -230,7 +225,10 @@ fn build_lua_bundle(t: Table, out: &Path) {
     match t {
         Table::Apex | Table::SkyDeck => build_generated(&t.src(), out),
         Table::FeatureLab => {
-            feature_lab_build::build_feature_lab_bundle(out)
+            // The Feature Lab build (`pin_tablegen::backbox::build_from`, the
+            // implementation `tables/feature_lab/build.sh` runs as
+            // `pin_tablegen build`).
+            pin_tablegen::backbox::build_from(&t.src(), out)
                 .unwrap_or_else(|e| panic!("feature_lab build: {e}"));
         }
     }

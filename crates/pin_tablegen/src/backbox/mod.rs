@@ -123,11 +123,15 @@
 //! [`BACKBOX_PREFIX`]; a re-run drops them first. Run the backbox after
 //! `layout` (whose re-run drops every `tablegen:` transition).
 
+pub mod cli;
 mod glb;
 mod outline;
 #[cfg(test)]
 mod tests;
 
+pub use cli::{
+    VUK_LATERAL_M_S, VUK_RISE_M_S, aim_backbox_vuk, build_from, parse_hex, run_build_cli, vuk_eject,
+};
 pub use outline::{
     MAX_OUTLINE_POINTS, MIN_OUTLINE_AREA_MM2, OUTLINE_FIT_TOLERANCE_MM, ZERO_SIZE_MM,
 };

@@ -1479,7 +1479,7 @@ fn refresh_hud(
 
 fn render_thread(
     cfg: RenderConfig,
-    mut reader: TripleReader<FrameStateSnapshot>,
+    reader: TripleReader<FrameStateSnapshot>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
     spawned: Instant,
@@ -1616,7 +1616,14 @@ fn render_thread(
         }
     }
     let mut lines = DebugLines::new(4096 + table_lines.len() + flippers.len());
-    let mut last_tick = 0u64;
+    // The snapshot latch (#149, REQ-LAT-001): read early at the top of each
+    // iteration, then late by the table presenter just before it encodes
+    // the playfield (after its acquire returned, and no earlier than
+    // `LATE_LATCH_MIN_LAG` after the previous playfield present; the render
+    // thread sleeps the rest). Only the triple-buffer reader is touched:
+    // the sim thread is never blocked (R4).
+    let mut latch =
+        super::present::SnapshotLatch::new(reader).with_min_lag(super::present::LATE_LATCH_MIN_LAG);
     // Device-loss recovery (#133).
     let mut rebuild = RebuildPolicy::default();
     let mut pending: Option<PendingRebuild> = None;
@@ -1740,12 +1747,12 @@ fn render_thread(
                 }
             }
         }
-        let snap = reader.read();
-        if snap.tick < last_tick {
-            stats.render_non_monotonic.fetch_add(1, Ordering::Relaxed);
-        }
-        last_tick = snap.tick;
-        stats.render_last_tick.store(last_tick, Ordering::Relaxed);
+        // The early latch. Display commands are drained up to its tick,
+        // which is never later than the snapshot the frame draws (the late
+        // latch reads the same or a newer snapshot), so a command never
+        // reaches a frame before the state it accompanies.
+        let last_tick = latch.latch().tick;
+        record_latch(stats, &mut latch);
         if let Some(rx) = displays.as_mut() {
             match (presenter.as_mut(), pending.as_mut()) {
                 (Some(Presenter::Table(_, s)), _) => {
@@ -1782,6 +1789,7 @@ fn render_thread(
                 for l in &table_lines {
                     lines.push(*l);
                 }
+                let snap = latch.drawn();
                 for st in snap.flippers() {
                     if let Some(f) = flippers.get(usize::from(st.id.0)) {
                         lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
@@ -1828,7 +1836,7 @@ fn render_thread(
                     // unit, so present_ns is sampled after the whole render
                     // call; the table presenter path stamps right after the
                     // playfield queue.present, before any reconfigure.
-                    t.presented(paced, snap);
+                    t.presented(paced, latch.drawn());
                 }
                 stats.record_statuses(&st, spawned);
             }
@@ -1842,18 +1850,22 @@ fn render_thread(
                 // backglass and score slots are drawn (REQ-LAT-003 present
                 // time).
                 let mut stamp = None;
+                // The late latch: the playfield re-reads the snapshot just
+                // before it encodes (#149); `latch.drawn()` is then the
+                // snapshot the presented playfield drew.
                 let st = match latency_trace.as_ref() {
-                    Some(t) => s.render_with_playfield_hook(snap, &mut |status| {
+                    Some(t) => s.render_latched(&mut latch, &mut |status| {
                         t.stamp_playfield(&mut stamp, status);
                     }),
-                    None => s.render(snap),
+                    None => s.render_latched(&mut latch, &mut |_| {}),
                 };
+                record_latch(stats, &mut latch);
                 paced = s.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {
                     // A trace frame only when the playfield presented (then
                     // the hook stamped it; the fallback read is unused).
                     let present_ns = stamp.unwrap_or_else(|| t.now_ns());
-                    t.presented_at(paced, snap, present_ns);
+                    t.presented_at(paced, latch.drawn(), present_ns);
                 }
                 stats.record_statuses(&st, spawned);
             }
@@ -1888,6 +1900,22 @@ fn record_close(ev: &WindowEvent, policy: ClosePolicy, stats: &OrchestratorStats
     if ev.kind == WindowEventKind::CloseRequested && policy.quits(ev.window) {
         stats.close_requested.store(true, Ordering::Relaxed);
     }
+}
+
+/// Publishes the render latch's accounting (#149): the drawn snapshot's
+/// tick as `render_last_tick` and the non-monotonic latches counted since
+/// the last call into `render_non_monotonic`.
+fn record_latch<S: super::present::SnapshotSource + ?Sized>(
+    stats: &OrchestratorStats,
+    latch: &mut super::present::SnapshotLatch<S>,
+) {
+    let n = latch.take_non_monotonic();
+    if n > 0 {
+        stats.render_non_monotonic.fetch_add(n, Ordering::Relaxed);
+    }
+    stats
+        .render_last_tick
+        .store(latch.last_tick(), Ordering::Relaxed);
 }
 
 #[cfg(test)]

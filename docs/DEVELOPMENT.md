@@ -485,15 +485,19 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
   last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first
-  presented frame: the count starts at frame index 0), must be `<= 2`, with one allowance: when the frame
-  in flight at the press (the first presented after it) presented by `sdl_ts_ns` + check a's bound
-  + `8` ticks, the count may start after it (`n_adj = frame - in_flight <= 2`; never for a
-  press that failed check a). The summary prints the raw and adjusted max and p99 and how many
-  presses were "in-flight shifted". A press with no move, or no frame that showed the bat raised
-  while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
+  presented frame: the count starts at frame index 0), must be `<= 2`. The raw count is the only
+  gate (#149: no in-flight allowance); the summary and check b's line print its max and p99. A
+  press with no move, or no frame that showed the bat raised while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
   file); the verdict checks it exists, matches the frame table and is a candidate. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
   second); key-to-photon p50/p99 in ms is printed as information. A selected response frame
   presented before the press's input drain (`drain_sdl_ns`) fails; equal times pass.
+  The render thread latches its snapshot late (#149): it reads the triple buffer once at the top of
+  each iteration and again just before it encodes the playfield, after the playfield's acquire
+  returned and no earlier than 11 ms (`LATE_LATCH_MIN_LAG`: check a's press-to-raise bound) after
+  the previous playfield present, and that second snapshot is the one drawn and traced. lavapipe's
+  acquire returns at once, so without the lag a press just before a present returned was shown
+  only by the frame after next. The playfield still queues at most one frame ahead
+  (`desired_maximum_frame_latency` 1); on lavapipe the lag costs about a fifth of the frame rate.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
   is printed. On lavapipe the app now starts lean (REQ-LAT-006, #83: MSAA, bloom and motion blur
