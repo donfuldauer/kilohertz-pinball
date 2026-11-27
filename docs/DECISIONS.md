@@ -10841,6 +10841,54 @@ In threads.rs the gate's `record_close` and #149's `record_latch` sit side by si
 
 **Alternatives.** Keep the whole-counter bound and change `worst_under` so the pruned run makes no more wall queries (rejected: it either changes the kept-entry sequence or needs a second pass, and the pruning is not at fault). Drop the pair-count assertion (rejected: R10). Bound the extra wall queries by an algorithmic quantity (rejected: it depends on the full kept-gap history; no simple closed form is a true invariant).
 
+## #113 KP-032 — Gravity vector from pitch and roll
+
+**Decision.** (D-1, pre-decided.) At table load the simulation's gravity is `GRAVITY_M_S2 · (−sin φ, −cos φ·sin θ, −cos φ·cos θ)` in the playfield frame, with pitch `θ` and roll `φ` from `playfield_attitude` on the bundle's cabinet (`cabinet.toml` resolved against its preset, or preset `classic_standard` when the bundle has none). The composition is pitch first, then roll, so the vector is unit norm. It is computed in `f64` with `libm::sin` / `libm::cos` and each component is cast to `f32` once (`pin_sim::load::attitude_gravity`, public so tests can check the formula directly). The x component is written `0.0 − g·sin φ`, so a level cabinet gives `+0.0` as the old literal did, not `−0.0`. `meta.pitch_deg` is no longer read for gravity. A `cabinet.toml` that does not parse or resolve is `SimError::Build` naming `cabinet.toml`.
+
+**Rationale.** SPEC §7 REQ-CAB-008: the gravity direction is the derived attitude. The unit-norm composition keeps |g| = 9.81 for any leveler setting. Doing the trigonometry in `f64` matches the `f64` attitude and rounds once per component. For the shipped presets (6.5°, roll 0) the `f32` result happens to equal the old `sinf`/`cosf` vector bit for bit (the replay digest did not move; see the next entry).
+
+**Alternatives.** A small-angle `(−sin φ, −sin θ, −cos θ·cos φ)` (rejected: not unit norm). `f32` `sinf`/`cosf` on an `f32` pitch (rejected: the attitude is `f64`, and casting it before the trigonometry adds a second rounding).
+
+## #113 KP-032 — The sim does not enforce cabinet validation rules
+
+**Decision.** (D-2, pre-decided.) The simulation does not run `CabinetGeometry::validate` (the REQ-CAB-005 containment envelope) or the `meta.pitch_deg` 0.05° agreement rule. Only parsing and `CabinetManifest::resolve` (with its consistency check) run at load. A table whose levelers give a pitch other than `meta.pitch_deg` still loads and simulates at the derived pitch. A table without `cabinet.toml` gets `classic_standard` even if `meta.pitch_deg` differs.
+
+**Rationale.** The bundle validator owns those rules. The sim must play what the cabinet's legs say, so that lengthening the rear levelers steepens the game. Test: `req_cab_008_pitch_disagreeing_with_meta_still_loads`.
+
+**Alternatives.** Reject the disagreement at sim load (rejected: it would duplicate the validator and stop a leveler adjustment from loading).
+
+## #113 KP-032 — Replay digest re-baseline (not needed)
+
+**Decision.** (D-3, pre-decided: re-baseline only if the digest moves.) The golden was left unchanged. The 10 000-tick replay-fixture `state_hash` before and after this change is `25097c21c2c3adc1` (old = new). `scripts/ci/replay_hash_assert.sh` reports `golden: state_hash=25097c21c2c3adc1 (equal)`. Nothing pinned under `crates/pin_sim/tests/` changed, and the seam digests are unchanged.
+
+**Rationale.** The fixture has no `cabinet.toml`, so it gets `classic_standard` (6.5°, roll 0). The `f64`→`f32` gravity for that attitude is bit-identical to the old `f32` vector, so simulation output is unchanged for every existing table without a cabinet override.
+
+**Alternatives.** Re-baseline anyway (rejected: there is nothing to change, and R3 asks for one re-baseline only when output moves).
+
+## #113 KP-032 tests — Open-deck bundle and measurement for the rolling acceptance
+
+**Decision.** The rolling and lateral-drift spec tests (`req_cab_008_rolling_acceleration_*`, `req_cab_008_lateral_drift_with_2mm_leveler_difference`) do not use the replay fixture deck. Its longest open stretch up the table is about 0.85 m (flippers, posts, bumper and lanes block the rest), short of the brief's 1 m. The tests generate a scratch bundle with `pin_tablegen` instead: the standard 514 × 1070 mm playfield closed by a rectangular wall and nothing else, rules that launch nothing, and the fixture's `backglass.toml`. A `standard_steel` ball is spawned at rest at (0.257, 1.045, R) m. Ticks 20 onward are fitted, until the ball passes y = 0.04 m (1.004 m of travel), with a least-squares `s0 + v0·t + a/2·t²` on −y and −x. A spawn at rest with zero spin already satisfies the rolling constraint, so there is no sliding phase. c = 0 is set with `[physics] rolling_resistance = 0.0` and compared with the literal 5/7·g·sin θ. The default c (`PhysicsDefaults::builtin()`) is compared with 5/7·g·(sin θ − c·cos θ). Both use 0.1 %.
+
+**Rationale.** The brief allows a scratch bundle when the fixture has no open 1 m stretch. Fitting with a free offset and initial speed makes the result insensitive to the spawn tick's phase. Measured: c = 0 −0.0008 %, default c −0.0027 %, lateral +0.0010 %.
+
+**Alternatives.** Measure 0.85 m on the fixture (rejected: under the 1 m the brief asks for). Use the a1 time-to-distance method `a = 2d/t²` (rejected: it assumes the motion starts exactly at t = 0).
+
+## #113 KP-032 tests — Sign property for gravity y under random levelers
+
+**Decision.** In `req_cab_008_prop_leveler_quadruples`, "gravity y sign follows the sign of (rear − front)" means the change from the level cabinet. g.y itself is negative for every extension in 0..=44 mm, because the 6.5° mount pitch dominates. The test asserts that the pitch carried by gravity, atan2(−g.y, −g.z), is above / below / equal to 6.5° (1e-5 rad) as the rear pair is longer / shorter / equal to the front pair. It also asserts that g.y is below / above −9.81·cos φ·sin 6.5°. The x sign is asserted directly: g.x < 0 / > 0 / ≈ 0 (1e-6·g) as the right pair is longer / shorter / equal. Extensions are drawn in 0.25 mm steps, so equal pairs occur exactly.
+
+**Rationale.** A raw sign of g.y would be constant and test nothing. Comparing g.y with the level value alone fails when roll scales g.y by cos φ (proptest found fl 20, fr 21.25, rl 35, rr 6.25 mm). The pitch angle is what the levelers set.
+
+**Alternatives.** Compare raw g.y with the level value −9.81·sin 6.5° (rejected: wrong under roll).
+
+## #113 KP-032 tests — Gravity tolerance metric
+
+**Decision.** "Gravity equals the formula within 1e-5 relative" is checked as the vector error |g − g_formula| / |g_formula| ≤ 1e-5. For level cabinets the tests also assert g.x == 0 exactly. For the roll case they also assert g.x against −9.81·sin φ within 1e-5 relative.
+
+**Rationale.** A per-component relative error cannot be defined where a component is 0. The vector metric is the stricter of the readings that are always defined.
+
+**Alternatives.** A per-component relative error (rejected: undefined at x = 0).
+
 ## #220 KP-104 — Cache saves only on main; cold-path cache-save reserve 5 min
 
 **Decision:** Every `Swatinem/rust-cache@v2` step in `ci.yml` (all eleven, every job) and in `spikes.yml`, `windowed.yml`, `rules-wasm.yml` and `soak.yml` gets `save-if: ${{ github.ref == 'refs/heads/main' }}`. No step had a `save-if` before, so no condition was merged; every other input is unchanged (`gpu-tests-cross` keeps `add-rust-environment-hash-key: false`, its `rustc-<version>-<Cargo.lock hash>` key and `cache-on-failure: true`; `replay-hash-aarch64` keeps its key; `spikes.yml` keeps its `workspaces`). Pull-request and branch runs restore `main`'s caches and never save; push, `workflow_dispatch` and scheduled runs on `main` still save. In the `gpu-tests-cross` `Build-step budget` and `Test-step budget` steps the cache-miss reserve goes from 8 to 5 min (`if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=5; fi` in both steps, kept in step); the exact-hit reserve stays 1 min, `JOB_TIMEOUT_MIN` 45, `MAX_BUILD_MIN` 32, `MIN_TEST_MIN` 10 and the job's `timeout-minutes: 45` are unchanged. This amends the 8-min reserve of the "#205 KP-099 — gpu-tests-cross build budget and robust cache save" entry; the rest of that entry stands. `tests/spec_ci` locks it (`every_rust_cache_step_saves_only_on_main`, `other_workflows_rust_cache_steps_save_only_on_main`, `gpu_tests_cross_budgets_reserve_five_minutes_on_a_miss_and_one_on_a_hit`; the #205 budget tests in `spec_ci_gpu_cross_cache.rs` now assert the 5-min reserve).

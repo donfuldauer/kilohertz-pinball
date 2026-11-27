@@ -14,6 +14,9 @@
 # exist FAILS loudly with "missing test target <name>"; it is never skipped):
 #   1a rolling 5/7 g sin(theta) within 1 %      pin_physics a1_analytic
 #        (rolling_107m_*), ball_criteria (ball_rolls_down_an_incline_at_five_sevenths_g_sin)
+#   1a rolling 5/7 g (sin - c cos) at the        pin_sim kp032_attitude_gravity,
+#        cabinet-derived pitch, 0.1 %; leveler    spec_kp032_attitude_gravity
+#        roll drift 1 % (REQ-CAB-008)
 #   1b drop-bounce height ratio = e^2 (2 %)     pin_physics a1_analytic
 #        (drop_bounce_height_ratio_is_restitution_squared), ball_criteria (drop_bounce_*)
 #   1c tilt bob period within 2 %               pin_physics mech_tilt
@@ -90,6 +93,8 @@ fi
 # 1. Analytic checks
 run_test "1a rolling 5/7 g sin(theta) within 1 %" pin_physics a1_analytic
 run_test "1a rolling 5/7 g sin(theta) (ball_criteria)" pin_physics ball_criteria
+run_test "1a rolling 5/7 g sin(theta) at the cabinet-derived pitch" pin_sim kp032_attitude_gravity
+run_test "1a rolling 5/7 g sin(theta) at the cabinet-derived pitch (spec)" pin_sim spec_kp032_attitude_gravity
 run_test "1b drop-bounce height ratio = e^2 within 2 %" pin_physics a1_analytic
 run_test "1c tilt bob period within 2 %" pin_physics mech_tilt
 run_test "1d energy never increases in passive scenes" pin_app a1_bundle_passive
