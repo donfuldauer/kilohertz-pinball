@@ -9311,3 +9311,64 @@ what the brief requires, is asserted in full.
 **Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
 it narrows the property; assert every failing press is named: rejected, it contradicts the
 existing cap.
+
+## #209 KP-100 — diagnostic workflow design
+
+**Decision:** Phase 1 of #209 adds one stand-alone workflow, `.github/workflows/diag-srgb-blend-warp.yml`.
+It triggers only on `workflow_dispatch` (input `runs`, default 50) and on a push to an
+`issue/209-*` branch that changes the workflow file itself; it has no `pull_request` trigger, is
+not referenced from `ci.yml` and is not a required check. The push trigger stays after merge. A
+`build` job compiles the unmodified `srgb_blend_gpu` test binary once (`cargo test --no-run
+--message-format=json`, exe and pdb uploaded as an artifact); a `diagnose` job runs that exe
+directly, from `crates/pin_render` with the CI env, on four separate windows-latest runners
+(matrix `as-is`, `serial` = `--test-threads=1`, `validation` = `WGPU_VALIDATION=1 WGPU_DEBUG=1`,
+`pageheap` = full page heap under cdb). Every diagnostic step exits 0 whether tests pass or fail;
+only infrastructure errors (missing exe, log directory, Debugging Tools for the page-heap leg,
+page heap not set or not undone) fail it. Page heap is enabled with `gflags /p /enable <exe file
+name> /full` for that one image name and disabled in an `if: always()` step.
+
+Details fixed by this entry:
+- Exit codes are recorded as uint32 hex. RESULT classes are disjoint and add up to `runs`:
+  `pass` = 0, `fail` = 0x00000065 (libtest's test-failure exit 101), `heap_corruption` =
+  0xC0000374, `timeout` = killed after 300 s, `other_exit` = anything else. The RESULT line also
+  carries `runs_with_FAILED_or_panic_lines` and `requested`, plus `stopped=` when the loop stops
+  early. The loop stops starting runs 82 min after the job starts, so the logs are still uploaded
+  within the 90 min cap.
+- cdb runs without `-g`. The initial breakpoint is kept, so the `-c` commands are run at a
+  documented prompt before the debuggee runs (it is unclear whether `-c` runs before the
+  debuggee when `-g` skips that breakpoint). `-G` stays. The commands go through a script file
+  (`-c "$$><file"`), so no quotes nest inside a command-line argument. The brief's `c0000005`
+  handler is the same event as `av`, so a second `sxe` for it would only overwrite the `av`
+  command. It is replaced by `0xc0000409` (fail-fast), plus `bpe` (page-heap and verifier
+  breaks) and `epr` with `.lastevent` to recover the debuggee's exit code. cdb's stdin is closed,
+  so it cannot wait at a prompt.
+- The validation leg also runs the exe 3 extra times under cdb when cdb is available. Without a
+  logger installed, wgpu does not print the D3D12 debug layer's OutputDebugString text, but a
+  debugger receives it. These runs are counted separately (`dbg_runs`, `dbg_d3d12_errors`).
+- The adapter line is matched as `] adapter:` because `context_for_tests` prints it as
+  `[<test name>] adapter: …`.
+
+**Rationale:** The trigger set keeps this workflow off every PR (R10 and SPEC §8: a diagnostic
+never gates or masks CI). After merge the `issue/209-*` branch is gone, so the push trigger cannot
+fire, and the path filter limits it to edits of this file. Keeping it costs nothing, and a later
+dispatch from `main` still works. Running the built exe directly, rather than `cargo test` 50
+times, gives the exact process exit code (cargo reports a child's crash in its own words and its
+own exit status), avoids 50 rebuild checks, and tests the same binary in every leg and run. Four
+runners keep each mode's results independent: page heap, the debug layer and a debugger cannot
+change the other legs' timing or heap. Exit 0 on test failure is deliberate, because the failure
+is the datum being collected; a red run would only mean the diagnosis is broken. Limiting page
+heap to the one image name keeps cargo, rustc and the runner's tools at normal speed, and the
+`always()` undo leaves the runner as it was.
+
+**Alternatives:**
+- A `pull_request` trigger or a `ci.yml` job: rejected, because it would run (and could fail)
+  on every PR, and `ci.yml` is owned by another open PR.
+- Removing the push trigger at merge: rejected; after merge it is inert and only adds a follow-up
+  edit.
+- `cargo test` in a loop: rejected (masked exit codes, cargo overhead).
+- One job running all modes in sequence: rejected (modes interfere; one 90 min cap).
+- Failing the job when a test fails: rejected (it hides the comparison between legs).
+- System-wide page heap or Application Verifier: rejected (it slows every process and adds checks
+  outside the hypothesis).
+- Passing the cdb commands inline with escaped quotes: rejected, because whether the nested
+  quoting survives depends on cdb's own command-line parsing, which cannot be checked from Linux.
