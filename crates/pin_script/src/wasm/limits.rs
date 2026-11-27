@@ -11,11 +11,11 @@
 //! into. Operators not listed in [`op_cost`] fall into the most expensive
 //! class.
 
-use super::{EXPORTS, load};
+use super::{EXPORT_NAMES, load};
 use pin_core::ScriptError;
 use std::borrow::Cow;
 use std::fmt;
-use wasmtime::wasmparser::{
+use wasmparser::{
     DataKind, ElementItems, ElementKind, ExternalKind, FuncToValidate, FuncValidatorAllocations,
     FunctionBody, Operator, OperatorsReader, OperatorsReaderAllocations, Parser, Payload, TypeRef,
     ValidPayload, Validator, ValidatorResources, WasmFeatures,
@@ -345,6 +345,7 @@ pub struct Usage {
 
 /// `s` cut to at most `max` bytes on a character boundary, with `…` (3
 /// bytes, counted) marking a cut.
+#[cfg(any(test, feature = "wasmtime"))]
 pub(super) fn truncated(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
@@ -375,11 +376,19 @@ pub(super) fn precheck(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, Usage), ScriptErr
     let bin = if binary {
         Cow::Borrowed(bytes)
     } else {
-        Cow::Owned(
-            wat::parse_bytes(bytes)
-                .map_err(|e| load(truncated(&e.to_string(), MAX_ERROR_BYTES)))?
-                .into_owned(),
-        )
+        #[cfg(feature = "wasmtime")]
+        {
+            Cow::Owned(
+                wat::parse_bytes(bytes)
+                    .map_err(|e| load(truncated(&e.to_string(), MAX_ERROR_BYTES)))?
+                    .into_owned(),
+            )
+        }
+        // #164 KP-070: the `wat` crate comes with the `wasmtime` feature.
+        #[cfg(not(feature = "wasmtime"))]
+        return Err(load(
+            "module is not a Wasm binary (WAT text needs the `wasmtime` feature)",
+        ));
     };
     if bin.len() > MAX_MODULE_BYTES {
         return Err(load(format_args!(
@@ -419,7 +428,7 @@ fn scan(bin: &[u8]) -> Result<Usage, ScriptError> {
     Ok(sc.u)
 }
 
-fn parse_err(e: wasmtime::wasmparser::BinaryReaderError) -> ScriptError {
+fn parse_err(e: wasmparser::BinaryReaderError) -> ScriptError {
     load(format_args!("{e}"))
 }
 
@@ -575,7 +584,7 @@ impl Scan {
                     let e = e.map_err(parse_err)?;
                     if e.kind == ExternalKind::Func
                         && e.index < self.imported_funcs
-                        && EXPORTS.iter().any(|(n, ..)| *n == e.name)
+                        && EXPORT_NAMES.contains(&e.name)
                     {
                         return Err(load(format_args!(
                             "export {} re-exports an imported host function",

@@ -16,7 +16,7 @@
 //! The success paths never allocate: errors (which fault the script) do.
 
 use crate::NameTables;
-use crate::lua::api::range;
+use crate::rng::range;
 use pin_core::ids::{
     CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
     SoundId, SwitchId,
