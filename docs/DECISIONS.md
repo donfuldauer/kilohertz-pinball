@@ -9390,6 +9390,256 @@ holds.
 **Alternatives:** Keep the example as a thin wrapper (keeps the SDL3 build-header requirement for
 build.sh).
 
+## #209 KP-100 — diagnostic workflow design
+
+**Decision:** Phase 1 of #209 adds one stand-alone workflow, `.github/workflows/diag-srgb-blend-warp.yml`.
+It triggers only on `workflow_dispatch` (input `runs`, default 50; a push run uses 200) and on a push to an
+`issue/209-*` branch that changes the workflow file itself; it has no `pull_request` trigger, is
+not referenced from `ci.yml` and is not a required check. The push trigger stays after merge. A
+`build` job compiles the unmodified `srgb_blend_gpu` test binary once (`cargo test --no-run
+--message-format=json`, exe and pdb uploaded as an artifact); a `diagnose` job runs that exe
+directly, from `crates/pin_render` with the CI env, on four separate windows-latest runners
+(matrix `as-is`, `serial` = `--test-threads=1`, `validation` = `WGPU_VALIDATION=1 WGPU_DEBUG=1`,
+`pageheap` = full page heap under cdb). Every diagnostic step exits 0 whether tests pass or fail;
+only infrastructure errors (missing exe, log directory, Debugging Tools for the page-heap leg,
+page heap not set or not undone) fail it. Page heap is enabled with `gflags /p /enable <exe file
+name> /full` for that one image name and disabled in an `if: always()` step.
+
+Details fixed by this entry:
+- Exit codes are recorded as uint32 hex. RESULT classes are disjoint and add up to `runs`:
+  `pass` = exit 0 and a libtest `test result: ok.` line in the run's output (exit 0 without one
+  means the tests did not run and counts as `other_exit`), `fail` = 0x00000065 (libtest's
+  test-failure exit 101), `heap_corruption` = 0xC0000374, `timeout` = killed after 300 s,
+  `other_exit` = anything else. The RESULT line also
+  carries `runs_with_FAILED_or_panic_lines` and `requested`, plus `stopped=` when the loop stops
+  early. The loop stops starting runs 82 min after the job starts, so the logs are still uploaded
+  within the 90 min cap.
+- cdb runs without `-g`. The initial breakpoint is kept, so the `-c` commands are run at a
+  documented prompt before the debuggee runs (it is unclear whether `-c` runs before the
+  debuggee when `-g` skips that breakpoint). `-G` stays. The commands go through a script file
+  (`-c "$$><file"`), so no quotes nest inside a command-line argument. The brief's `c0000005`
+  handler is the same event as `av`, so a second `sxe` for it would only overwrite the `av`
+  command. It is replaced by `0xc0000409` (fail-fast), plus `bpe` (page-heap and verifier
+  breaks) and `epr` with `.lastevent` to recover the debuggee's exit code. cdb's stdin is closed,
+  so it cannot wait at a prompt.
+- The validation leg also runs the exe 3 extra times under cdb when cdb is available. Without a
+  logger installed, wgpu does not print the D3D12 debug layer's OutputDebugString text, but a
+  debugger receives it. These runs are counted separately (`dbg_runs`, `dbg_d3d12_errors`).
+- Evidence in the job log (the per-run artifacts cannot be downloaded from the agent
+  environment): every run line and `summary.tsv` row carries `tests=<passed>/<failed>/<ignored>`
+  from libtest's `test result:` line (`none` if absent; a `FAILED.` result line is reported too
+  but is not a pass) and `adapter="<text after 'adapter: '>"` (`none` if absent). The RESULT line
+  adds `adapters=<distinct adapters joined by ;>` and `tests_passed_total=<sum>`. The expected
+  passed count is not hard-coded.
+- Run count: `workflow_dispatch` keeps the default 50; a `push` run (empty `runs` input) uses 200
+  for as-is, serial and validation, for more evidence against the ~1/58 historic failure rate.
+  Pageheap stays at min(N, 20). The 82 min budget check before each run still bounds the loop.
+- The adapter line is matched as `] adapter:` because `context_for_tests` prints it as
+  `[<test name>] adapter: …`.
+
+**Rationale:** The trigger set keeps this workflow off every PR (R10 and SPEC §8: a diagnostic
+never gates or masks CI). After merge the `issue/209-*` branch is gone, so the push trigger cannot
+fire, and the path filter limits it to edits of this file. Keeping it costs nothing, and a later
+dispatch from `main` still works. Running the built exe directly, rather than `cargo test` 50
+times, gives the exact process exit code (cargo reports a child's crash in its own words and its
+own exit status), avoids 50 rebuild checks, and tests the same binary in every leg and run. Four
+runners keep each mode's results independent: page heap, the debug layer and a debugger cannot
+change the other legs' timing or heap. Exit 0 on test failure is deliberate, because the failure
+is the datum being collected; a red run would only mean the diagnosis is broken. Limiting page
+heap to the one image name keeps cargo, rustc and the runner's tools at normal speed, and the
+`always()` undo leaves the runner as it was.
+
+**Alternatives:**
+- A `pull_request` trigger or a `ci.yml` job: rejected, because it would run (and could fail)
+  on every PR, and `ci.yml` is owned by another open PR.
+- Removing the push trigger at merge: rejected; after merge it is inert and only adds a follow-up
+  edit.
+- `cargo test` in a loop: rejected (masked exit codes, cargo overhead).
+- One job running all modes in sequence: rejected (modes interfere; one 90 min cap).
+- Failing the job when a test fails: rejected (it hides the comparison between legs).
+- System-wide page heap or Application Verifier: rejected (it slows every process and adds checks
+  outside the hypothesis).
+- Passing the cdb commands inline with escaped quotes: rejected, because whether the nested
+  quoting survives depends on cdb's own command-line parsing, which cannot be checked from Linux.
+
+## #209 KP-100 — WARP srgb_blend_gpu heap corruption: findings
+
+Failure under diagnosis: `ci` run 45721320162, job 139580336913, where two `srgb_blend_gpu` tests
+FAILED at +0.628 s and the process then exited with 0xc0000374 (STATUS_HEAP_CORRUPTION). Re-run
+job 139597766656 passed. Diagnostic workflow: `.github/workflows/diag-srgb-blend-warp.yml`.
+
+Both runs used the same runner image as the original failure (ImageOS win25-vs2026, ImageVersion
+20261116.315.1, Windows Server 2025 Datacenter 10.0.26100), wgpu v30.0.1, rustc 1.97.0, adapter
+Microsoft Basic Render Driver (Dx12, Cpu). The D3D12 debug layer (d3d12SDKLayers.dll
+10.0.26100.33648) was present. Page heap was enabled with full traces for the test exe only
+(gflags, IFEO GlobalFlag 0x02000000, disabled afterwards); cdb 10.0.26100.9457.
+
+| Run | Mode | Runs | Passes | Failures | Heap corruption | Page-heap faults |
+|---|---|---|---|---|---|---|
+| A (45936104929, head 44b0779) | as-is | 50 | 50 | 0 | 0 | n/a |
+| A | serial | 50 | 50 | 0 | 0 | n/a |
+| A | validation | 50 | 50 | 0 | 0 | n/a |
+| A | pageheap | 20 | 20 | 0 | 0 | 0 |
+| B (45937445524, head ebc43fe) | as-is | 200 | 200 | 0 | 0 | n/a |
+| B | serial | 200 | 200 | 0 | 0 | n/a |
+| B | validation | 200 | 200 | 0 | 0 | n/a |
+| B | pageheap | 20 | 20 | 0 | 0 | 0 |
+| Total | concurrent (as-is + validation) | 500 | 500 | 0 | 0 | n/a |
+| Total | serial | 250 | 250 | 0 | 0 | n/a |
+| Total | pageheap | 40 | 40 | 0 | 0 | 0 |
+| Total | all | 790 | 790 | 0 | 0 | 0 |
+
+In run A "pass" meant exit 0. In run B "pass" meant exit 0 and a libtest `test result: ok.`
+(tests_passed_total 600 in each of as-is, serial and validation; 60 under page heap). The
+validation leg recorded d3d12_errors=0, d3d12_warnings=0, validation_lines=0. Its debugger
+sub-runs report cdb_exit=0x8007006D while the tests inside them passed (tests=3/0/0); that is a
+cdb exit artefact of those extra runs, not a test result.
+
+**Decision:** The failure is not reproduced in 790 runs (500 concurrent, 250 serial, 40 under full
+page heap); observed rate 0/790. The earlier failure remains one occurrence in about 58 earlier
+WARP runs on the same image (about 1/850 counting these). No panic text and no page-heap stack
+were captured because nothing failed. Conclusion (d), not reproduced: no hypothesis is confirmed
+or excluded. Against the candidates:
+- (a) native fault in WARP / the D3D12 runtime: not confirmed, not excluded; with (c) it is the
+  remaining explanation.
+- (b) wgpu-hal dx12 / wgpu-core threading with one device used by three threads: not confirmed,
+  not excluded. Serial and concurrent runs show no difference, because neither failed.
+- (c) device loss, then panics and a heap fail-fast in teardown: not confirmed, not excluded.
+- Page heap and the debug layer found no corrupting write and no API misuse on this path in the
+  runs made. That weighs against a deterministic bug in `pin_render` or in wgpu's use of D3D12 on
+  this test, and leaves a rare native or runtime fault ((a) or (c)) as the remaining explanation.
+
+The test-serialising lock is NOT added. The issue adds it "only if serialising the tests removes
+the failure", and the data cannot show that. No test is changed (R10): `srgb_blend_gpu.rs` and
+`.github/workflows/**` are untouched.
+
+Upstream report: not filed, because no stack or panic text exists to report. If the failure
+recurs, the diagnostic workflow (dispatch from `main`, `runs` input) is the reproduction tool, and
+the upstream report should carry wgpu 30.0.1, rustc 1.97.0, windows-2025-vs2026 20261116.315.1,
+adapter Microsoft Basic Render Driver (Dx12, Cpu), the stack and the repro rate. The next WARP
+failure of `srgb_blend_gpu` in `ci` is handled by dispatching the diagnostic workflow, not by
+re-running blind.
+
+**Rationale:** A flake is not a root cause (R10). With 0/790 failures, a one-in-850 event is
+still plausible at the earlier rate (expected about 0.9 failures in 790 runs, so seeing none is
+unremarkable), so the runs cannot show that serialising helps. A lock added now would be
+unverified and could mask a real fault, and the verification criterion for a lock (50 of 50 green)
+would pass with or without it. Recording the rate and the reproduction route keeps the evidence
+usable if it recurs.
+
+**Alternatives:**
+- Add a serialising lock to `srgb_blend_gpu.rs` anyway: rejected; the data does not support it
+  and it would hide the signal.
+- Skip, ignore or loosen the tests on WARP: rejected (R10).
+- File an upstream wgpu or Microsoft report now: rejected; no stack, panic text or reproducer.
+- Run more diagnostic runs until a failure appears: rejected for this issue; at about 1/850 the
+  cost is high, and the dispatchable workflow remains for a recurrence.
+
+## #209 KP-100 — Addendum: a stack from main (profiler_gpu, 13714be)
+
+Occurrence: push CI on `main` commit 13714be, run
+https://github.com/donfuldauer/kilohertz-pinball/actions/runs/45938526968, job 140308284621,
+`gpu-tests (x86_64-pc-windows-msvc, WARP)`. Same image family (windows-2025), rustc 1.97.0
+(build 2d8144b78), wgpu 30.0.1, wgpu-hal 30.0.1, windows-core 0.62.2, adapter Microsoft Basic
+Render Driver (Dx12, Cpu), Windows Server 2025 10.0.26100. The crashing binary is `pin_app`
+`tests/profiler_gpu.rs` (4 tests sharing one device; two had already passed); the test running was
+`hud_draws_hud_lines_only_when_enabled`. The change merged in 13714be (#238 KP-055) touched only
+`pin_tablegen` and table build files, nothing in `pin_render` or `pin_app` rendering. Trimmed log
+(frames 3-21 plus the panic and exit lines):
+
+```
+thread 'hud_draws_hud_lines_only_when_enabled' (4552) panicked at C:\Users\runneradmin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-core-0.62.2\src\interface.rs:41:18:
+misaligned pointer dereference: address must be a multiple of 0x8 but is 0xb5000000085
+stack backtrace:
+   0: std::panicking::panic_handler
+   1: core::panicking::panic_nounwind_fmt
+   2: core::panicking::panic_misaligned_pointer_dereference
+   3: windows_core::interface::Interface::assume_vtable            (windows-core-0.62.2\src\interface.rs:41)
+   4: windows_core::interface::Interface::vtable                   (interface.rs:29)
+   5: windows_core::unknown::impl$1::clone                         (unknown.rs:34)
+   6: windows::Win32::Graphics::Direct3D::impl$243::clone          (imp\mod.rs:64)
+   7: wgpu_hal::dx12::impl$186::clone                              (wgpu-hal-30.0.1\src\dx12\mod.rs:1351)
+   8: wgpu_hal::dx12::Device::load_shader                          (wgpu-hal-30.0.1\src\dx12\device.rs:415)
+   9: wgpu_hal::dx12::device::impl$1::create_render_pipeline       (device.rs:2069)
+  10: wgpu_hal::dynamic::device::impl$0::create_render_pipeline<wgpu_hal::dx12::Device>
+  11: wgpu_core::device::resource::Device::create_render_pipeline_inner (wgpu-core-30.0.1\src\device\resource.rs:4988)
+  12: wgpu_core::device::resource::Device::create_render_pipeline (resource.rs:4191)
+  13: wgpu_core::global::Global::device_create_general_render_pipeline (global.rs:1556)
+  14: wgpu_core::global::Global::device_create_render_pipeline     (global.rs:1367)
+  15: wgpu::backend::wgpu_core::impl$12::create_render_pipeline     (wgpu-30.0.1\src\backend\wgpu_core.rs:1408)
+  16: pin_render::post::chain::impl$1::new::closure$1               (crates\pin_render\src\post\chain.rs:407)
+  17: pin_render::post::chain::PostChain::new                       (chain.rs:443)
+  18: pin_app::orchestrator::view::TableRenderer::with_layer_format (view.rs:591)
+  19: pin_app::orchestrator::view::TableRenderer::new               (view.rs:560)
+  20: profiler_gpu::renderer                                        (tests\profiler_gpu.rs:57)
+  21: profiler_gpu::hud_draws_hud_lines_only_when_enabled           (tests\profiler_gpu.rs:298)
+thread caused non-unwinding panic. aborting.
+process didn't exit successfully: `...\profiler_gpu-2459c7e97214b8a6.exe` (exit code: 0xc0000409, STATUS_STACK_BUFFER_OVERRUN)
+```
+
+The Orchestrator re-ran the failed job once; that result goes in `docs/RUN_LOG.md`, not here.
+
+Interpretation (stated with care): Rust's debug-build alignment check caught wgpu-hal's dx12
+backend cloning a COM interface pointer. The clone impl is in `windows::Win32::Graphics::Direct3D`,
+so it is a `Direct3D` interface, and the call is inside `Device::load_shader`, the shader
+compilation path of render-pipeline creation. The value 0xb5000000085 is not a valid pointer, so
+the field it was read from held garbage. That points to memory corruption, or a data race or
+use-after-free on the dx12 device's shader-compiler state, while several test threads create
+pipelines on one shared device. It is the same family as the `srgb_blend_gpu` failure (concurrent
+tests on one WARP device, native-side corruption, then abort: 0xc0000374 there, 0xc0000409
+fail-fast here). It now favours hypothesis (b) (wgpu-hal dx12 threading or state on one device) or
+(a) (WARP or the D3D12 runtime writing into that memory) over (d), "not reproduced". It does not
+separate (a) from (b). It is not caused by `pin_render`: the `pin_render` frame is a safe
+`create_render_pipeline` call.
+
+Rate: 2 occurrences known on WARP (`srgb_blend_gpu` once, `profiler_gpu` once), against 790 clean
+diagnostic runs of `srgb_blend_gpu` plus the about 58 earlier `ci` runs. Roughly 2 in about 850
+test-binary runs.
+
+**Decision:** No test lock is added to `srgb_blend_gpu`. The issue's condition, that serialising
+removes the failure, is still not shown, and the crash is in pipeline creation, which every GPU
+test shares, so a per-file lock would not address it. An upstream report to wgpu (gfx-rs/wgpu) is
+now possible. Its ready-to-file text:
+
+> Title: dx12: misaligned/invalid COM pointer cloned in Device::load_shader during concurrent
+> create_render_pipeline on WARP (wgpu 30.0.1)
+>
+> Versions: wgpu 30.0.1, wgpu-hal 30.0.1, wgpu-core 30.0.1, windows-core 0.62.2, rustc 1.97.0
+> (build 2d8144b78), debug build, target x86_64-pc-windows-msvc.
+> Adapter: Microsoft Basic Render Driver (Dx12, Cpu). OS: Windows Server 2025 10.0.26100 (GitHub
+> Actions windows-2025 runner).
+>
+> Symptom: in a test binary where several test threads each create render pipelines on one shared
+> device, the process panics in `windows_core::Interface::assume_vtable` with "misaligned pointer
+> dereference: address must be a multiple of 0x8 but is 0xb5000000085", reached from
+> `wgpu_hal::dx12::Device::load_shader` (device.rs:415) cloning a Direct3D interface
+> (mod.rs:1351). The panic is non-unwinding, so the process aborts with 0xc0000409. A different
+> test binary on the same adapter failed once with 0xc0000374 (heap corruption) after test
+> failures, which may be the same underlying fault.
+>
+> Repro conditions: several threads calling `create_render_pipeline` on one device; the rate is
+> roughly 2 in about 850 test-binary runs; not reproduced in 790 targeted runs with the D3D12 debug
+> layer or full page heap.
+>
+> Stack: the trimmed stack above.
+
+Filing needs access outside this repository, so this session cannot file it. The text is ready for
+whoever files it; the next agent with access should file it and link the upstream issue here.
+
+**Rationale:** The earlier conclusion, "not reproduced", no longer holds as the whole picture: a
+second crash with a stack now exists and it lands in wgpu-hal dx12 code, not in `pin_render`. The
+evidence still cannot separate a wgpu-hal threading defect from a WARP or runtime fault, and it
+does not show that serialising one test file helps. A lock in `srgb_blend_gpu` would leave the
+`profiler_gpu` path and every other GPU test exposed, and would hide the signal. Recording the
+stack, the rate and a complete report keeps the evidence usable.
+
+**Alternatives:**
+- Re-run blind until green: rejected as a root cause (R10); the re-run is only logged.
+- A process-wide lock around pipeline creation in `pin_render`: rejected here; it is outside this
+  issue's owned paths and would hide a real concurrency bug. A follow-up issue may evaluate a wgpu
+  update, or a fix, once upstream answers.
+- A per-file lock in `srgb_blend_gpu`: rejected; see the Decision.
+
 
 ## #138 KP-057 (tester) — How the black-box tests express the three-switch shot and the vertical flipper
 

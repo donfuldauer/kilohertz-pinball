@@ -1,0 +1,471 @@
+name: diag-srgb-blend-warp (KP-100 / #209)
+
+# Issue #209 (KP-100), phase 1: diagnose the one unexplained WARP failure of the pin_render
+# `srgb_blend_gpu` test binary (two tests FAILED at the same instant, then exit 0xC0000374
+# STATUS_HEAP_CORRUPTION). Builds the unmodified test binary once, then runs it many times on
+# four separate windows-latest runners: as-is, with --test-threads=1, with the D3D12 debug layer
+# (WGPU_VALIDATION / WGPU_DEBUG) and under cdb with full page heap. A failing test is the datum,
+# so every diagnostic step finishes green and only infrastructure errors fail the run.
+# Not referenced from ci.yml and not a required check (DECISIONS.md "#209 KP-100 — diagnostic
+# workflow design"). The push trigger only matches issue/209-* branches and this file.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per mode (pageheap uses at most 20); a push run uses 200
+        type: string
+        default: "50"
+  push:
+    branches: ['issue/209-*']
+    paths: ['.github/workflows/diag-srgb-blend-warp.yml']
+
+concurrency:
+  group: diag-srgb-blend-warp-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# The env of ci.yml's gpu-tests-cross WARP leg (workflow env plus job env), with full backtraces.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  SDL_AUDIO_DRIVER: dummy
+  SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS: "1"
+  RUST_VERSION: "1.97.0"
+  WGPU_BACKEND: dx12
+  PIN_REQUIRE_GPU: "1"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  build:
+    name: build srgb_blend_gpu test binary
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          add-rust-environment-hash-key: false
+          key: rustc-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-diag209
+          cache-on-failure: true
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host x86_64-pc-windows-msvc)
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "x86_64-pc-windows-msvc" ]; then
+            echo "::error::host $host, expected x86_64-pc-windows-msvc"; exit 1
+          fi
+
+      - name: Runner facts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path diag-bin | Out-Null
+          $os = Get-CimInstance Win32_OperatingSystem
+          $wgpu = & cargo tree -i wgpu --features gpu-tests -p pin_render | Select-Object -First 1
+          $facts = @(
+            "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+            "OS: $($os.Caption) $($os.Version) build $($os.BuildNumber)"
+            "Environment.OSVersion: $([Environment]::OSVersion.VersionString)"
+            "rustc: $(& rustc --version)"
+            "cargo tree -i wgpu (first line): $wgpu"
+          )
+          $facts | Set-Content -Path diag-bin/build-facts.txt
+          $facts | ForEach-Object { Write-Host $_ }
+          exit 0
+
+      - name: Build the test binary and collect exe + pdb
+        shell: pwsh
+        run: |
+          $lines = & cargo test -p pin_render --features gpu-tests --test srgb_blend_gpu --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::cargo test --no-run failed with exit $LASTEXITCODE"; exit 1 }
+          $exe = $null; $files = @()
+          foreach ($l in $lines) {
+            if (-not ($l.StartsWith('{') -and $l.Contains('"compiler-artifact"') -and $l.Contains('srgb_blend_gpu'))) { continue }
+            $m = $l | ConvertFrom-Json
+            if ($m.target.name -eq 'srgb_blend_gpu' -and ($m.target.kind -contains 'test') -and $m.executable) {
+              $exe = $m.executable; $files = @($m.filenames)
+            }
+          }
+          if (-not $exe -or -not (Test-Path $exe)) {
+            Write-Host "::error::no executable for test target srgb_blend_gpu in cargo's JSON output (found: '$exe')"; exit 1
+          }
+          Write-Host "executable: $exe"
+          Copy-Item $exe diag-bin/
+          $pdb = [IO.Path]::ChangeExtension($exe, '.pdb')
+          if (-not (Test-Path $pdb)) { $pdb = $files | Where-Object { $_ -like '*.pdb' } | Select-Object -First 1 }
+          if ($pdb -and (Test-Path $pdb)) { Copy-Item $pdb diag-bin/; Write-Host "pdb: $pdb" }
+          else { Write-Host "::warning::no .pdb next to $exe; stacks will lack pin_render/wgpu symbols" }
+          # cargo puts target/debug on PATH for test runs; carry any DLL there (normally none).
+          $debugDir = Split-Path (Split-Path $exe)
+          Get-ChildItem -Path $debugDir -Filter *.dll -File | ForEach-Object { Write-Host "dll: $($_.FullName)"; Copy-Item $_.FullName diag-bin/ }
+          Split-Path $exe -Leaf | Set-Content -NoNewline -Path diag-bin/exe-name.txt
+          Get-ChildItem diag-bin | Format-Table Name, Length | Out-String | Write-Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srgb-blend-bin
+          path: diag-bin/
+          retention-days: 7
+          if-no-files-found: error
+
+  diagnose:
+    name: diagnose (${{ matrix.mode }})
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [as-is, serial, validation, pageheap]
+    env:
+      DIAG_MODE: ${{ matrix.mode }}
+      RUNS_INPUT: ${{ inputs.runs }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Job start
+        id: start
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: srgb-blend-bin
+          path: diag-bin
+
+      - name: Runner facts
+        shell: pwsh
+        run: |
+          if (Test-Path diag-bin/build-facts.txt) { Write-Host "build job facts:"; Get-Content diag-bin/build-facts.txt | ForEach-Object { Write-Host "  $_" } }
+          else { Write-Host "::warning::diag-bin/build-facts.txt missing" }
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          Write-Host "OS: $($os.Caption) $($os.Version) build $($os.BuildNumber)"
+          Write-Host "Environment.OSVersion: $([Environment]::OSVersion.VersionString)"
+          foreach ($d in 'd3d12.dll', 'd3d12core.dll', 'd3d10warp.dll', 'dxgi.dll', 'd3d12SDKLayers.dll') {
+            $p = Join-Path $env:SystemRoot "System32\$d"
+            if (Test-Path $p) { Write-Host "$d $((Get-Item $p).VersionInfo.FileVersion)" } else { Write-Host "$d not present" }
+          }
+          Get-CimInstance Win32_VideoController | ForEach-Object { Write-Host "video: $($_.Name) driver $($_.DriverVersion)" }
+          Get-ChildItem diag-bin | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Debugging Tools (cdb, gflags)
+        if: matrix.mode == 'pageheap' || matrix.mode == 'validation'
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $dirs = @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64', 'C:\Program Files\Windows Kits\10\Debuggers\x64')
+          function Find-Tool([string]$name) {
+            foreach ($d in $dirs) { $p = Join-Path $d $name; if (Test-Path $p) { return $p } }
+            $c = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($c) { return $c.Source }
+            return $null
+          }
+          function Show-Found {
+            foreach ($d in $dirs) { Write-Host "$d exists=$(Test-Path $d)"; foreach ($t in 'cdb.exe', 'gflags.exe') { Write-Host "  $t=$(Test-Path (Join-Path $d $t))" } }
+            Write-Host "Get-Command cdb.exe: $((Get-Command cdb.exe -ErrorAction SilentlyContinue).Source)"
+            Write-Host "Get-Command gflags.exe: $((Get-Command gflags.exe -ErrorAction SilentlyContinue).Source)"
+          }
+          Show-Found
+          $cdb = Find-Tool 'cdb.exe'; $gflags = Find-Tool 'gflags.exe'
+          if (-not $cdb -or -not $gflags) {
+            Write-Host "cdb='$cdb' gflags='$gflags': trying choco install windows-sdk-10-version-2004-windbg"
+            try { & choco install windows-sdk-10-version-2004-windbg -y --no-progress; Write-Host "choco exit $LASTEXITCODE" }
+            catch { Write-Host "::warning::choco install failed: $_" }
+            Show-Found
+            $cdb = Find-Tool 'cdb.exe'; $gflags = Find-Tool 'gflags.exe'
+          }
+          Write-Host "cdb.exe: '$cdb'  gflags.exe: '$gflags'"
+          if ($cdb) { Write-Host "cdb version $((Get-Item $cdb).VersionInfo.FileVersion)"; "CDB_EXE=$cdb" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV }
+          if ($gflags) { "GFLAGS_EXE=$gflags" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV }
+          if (-not $cdb -or -not $gflags) {
+            if ($env:DIAG_MODE -eq 'pageheap') { Write-Host "::error::Debugging Tools missing after choco: cdb='$cdb' gflags='$gflags' (see the listing above)"; exit 1 }
+            Write-Host "::warning::cdb not available: the validation leg runs without the extra debugger runs"
+          }
+          exit 0
+
+      - name: D3D12 debug layer (Graphics Tools)
+        if: matrix.mode == 'validation'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $dll = Join-Path $env:SystemRoot 'System32\d3d12SDKLayers.dll'
+          $cap = 'Tools.Graphics.DirectX~~~~0.0.1.0'
+          Write-Host "d3d12SDKLayers.dll present before: $(Test-Path $dll)"
+          if (-not (Test-Path $dll)) {
+            try { Add-WindowsCapability -Online -Name $cap | Out-String | Write-Host }
+            catch {
+              Write-Host "::warning::Add-WindowsCapability $cap failed: $_ ; trying dism"
+              & dism.exe /Online /Add-Capability /CapabilityName:$cap /NoRestart
+              Write-Host "dism exit $LASTEXITCODE"
+            }
+          }
+          if (Test-Path $dll) { Write-Host "d3d12SDKLayers.dll present: $((Get-Item $dll).VersionInfo.FileVersion)" }
+          else { Write-Host "::warning::d3d12SDKLayers.dll absent: only wgpu/DXGI validation is active" }
+          exit 0
+
+      - name: Enable full page heap for the test exe only
+        if: matrix.mode == 'pageheap'
+        shell: pwsh
+        run: |
+          $name = (Get-Content diag-bin/exe-name.txt -Raw).Trim()
+          & $env:GFLAGS_EXE /p /enable $name /full
+          Write-Host "gflags /p /enable exit $LASTEXITCODE"
+          $list = (& $env:GFLAGS_EXE /p) -join "`n"
+          Write-Host "gflags /p:`n$list"
+          $ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$name"
+          if (Test-Path $ifeo) { Get-ItemProperty $ifeo | Out-String | Write-Host }
+          # FLG_HEAP_PAGE_ALLOCS = 0x02000000 in the image's GlobalFlag is the same setting gflags /p lists.
+          $gf = (Get-ItemProperty $ifeo -ErrorAction SilentlyContinue).GlobalFlag
+          $inRegistry = $false
+          try { $inRegistry = ($null -ne $gf) -and (([int64]$gf -band 0x02000000) -ne 0) } catch { Write-Host "IFEO GlobalFlag '$gf' not numeric: $_" }
+          Write-Host "listed by gflags /p: $($list -match [regex]::Escape($name)); IFEO GlobalFlag page-heap bit: $inRegistry"
+          if (-not ($list -match [regex]::Escape($name)) -and -not $inRegistry) { Write-Host "::error::page heap not enabled for $name"; exit 1 }
+          exit 0
+
+      - name: Run the test binary repeatedly (${{ matrix.mode }})
+        shell: pwsh
+        env:
+          JOB_START_EPOCH: ${{ steps.start.outputs.epoch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mode = $env:DIAG_MODE
+          $ws = $env:GITHUB_WORKSPACE
+          $wd = Join-Path $ws 'crates\pin_render'
+          $bin = Join-Path $ws 'diag-bin'
+          $logDir = Join-Path $ws "logs\$mode"
+          try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+          catch { Write-Host "::error::cannot create $logDir : $_"; exit 1 }
+          $nameFile = Join-Path $bin 'exe-name.txt'
+          if (-not (Test-Path $nameFile)) { Write-Host "::error::$nameFile missing (artifact srgb-blend-bin incomplete)"; exit 1 }
+          $exe = Join-Path $bin (Get-Content $nameFile -Raw).Trim()
+          if (-not (Test-Path $exe)) { Write-Host "::error::test exe $exe missing"; exit 1 }
+          if (-not (Test-Path $wd)) { Write-Host "::error::working directory $wd missing"; exit 1 }
+          if ($mode -eq 'pageheap' -and -not $env:CDB_EXE) { Write-Host "::error::CDB_EXE not set"; exit 1 }
+
+          # workflow_dispatch defaults to 50 (input default); a push has an empty input and uses 200.
+          $n = if ($env:EVENT_NAME -eq 'push') { 200 } else { 50 }
+          $parsed = 0
+          if ([int]::TryParse("$env:RUNS_INPUT", [ref]$parsed) -and $parsed -gt 0) { $n = $parsed }
+          if ($mode -eq 'pageheap') { $n = [Math]::Min($n, 20) }
+          $timeoutMs = 300000
+          # Stop starting runs when one more could overrun the 90 min job cap (logs must still upload).
+          $start = if ($env:JOB_START_EPOCH) { [DateTimeOffset]::FromUnixTimeSeconds([int64]$env:JOB_START_EPOCH) } else { [DateTimeOffset]::UtcNow }
+          $deadline = $start.AddMinutes(82)
+          $inv = [Globalization.CultureInfo]::InvariantCulture
+
+          $testArgs = @('--nocapture')
+          if ($mode -eq 'serial') { $testArgs += '--test-threads=1' }
+          $runEnv = @{ CARGO_MANIFEST_DIR = $wd; PATH = "$bin;$env:PATH" }
+          if ($mode -eq 'validation') { $runEnv.WGPU_VALIDATION = '1'; $runEnv.WGPU_DEBUG = '1' }
+
+          # cdb commands go through a script file ($$><) so no quotes nest inside a command-line argument.
+          $cdbScript = Join-Path $env:RUNNER_TEMP 'kp209-cdb.txt'
+          $cdbCmd = 'sxe -c "k 60; ~*k 40; !analyze -v; q" av; sxe -c "k 60; ~*k 40; !analyze -v; q" 0xc0000374; sxe -c "k 60; ~*k 40; !analyze -v; q" 0xc0000409; sxe -c "k 60; ~*k 40; q" bpe; sxe -c ".lastevent; q" epr; g; q'
+          Set-Content -Path $cdbScript -Value $cdbCmd -Encoding ascii
+          $symPath = "$bin;srv*C:\symbols*https://msdl.microsoft.com/download/symbols"
+          $cdbArgs = @('-G', '-lines', '-y', $symPath, '-c', ('$$><' + $cdbScript), $exe) + $testArgs
+          $faultRx = '(?i)c0000374|Access violation|Heap block at|c0000409|VERIFIER STOP'
+
+          function Invoke-Once([string]$file, [string[]]$argv, [bool]$closeStdin) {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new($file)
+            foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+            $psi.WorkingDirectory = $wd
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.RedirectStandardInput = $closeStdin
+            foreach ($k in $runEnv.Keys) { $psi.Environment[$k] = $runEnv[$k] }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $p = [System.Diagnostics.Process]::Start($psi)
+            if ($closeStdin) { $p.StandardInput.Close() }
+            $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+            $timedOut = -not $p.WaitForExit($timeoutMs)
+            if ($timedOut) {
+              try { $p.Kill($true) } catch { Write-Host "kill failed: $_" }
+              [void]$p.WaitForExit(30000)
+            } else { $p.WaitForExit() }
+            [void]$o.Wait(30000); [void]$e.Wait(30000)
+            $sw.Stop()
+            $code = if ($timedOut) { 'TIMEOUT' } else { '0x{0:X8}' -f $p.ExitCode }
+            [pscustomobject]@{
+              Exit = $code; TimedOut = $timedOut; Seconds = $sw.Elapsed.TotalSeconds
+              Out = $(if ($o.IsCompleted) { $o.Result } else { '<stdout not closed>' })
+              Err = $(if ($e.IsCompleted) { $e.Result } else { '<stderr not closed>' })
+            }
+          }
+          function Get-Count([string]$text, [string]$rx) { ([regex]::Matches($text, "(?m)^.*($rx).*$")).Count }
+          function Get-From([string]$text, [string]$rx, [int]$max) {
+            $l = $text -split "`r?`n"
+            for ($k = 0; $k -lt $l.Count; $k++) { if ($l[$k] -match $rx) { return $l[$k..([Math]::Min($l.Count - 1, $k + $max - 1))] -join "`n" } }
+            return "(no line matched '$rx'; last lines)`n" + (($l | Select-Object -Last $max) -join "`n")
+          }
+          # Evidence that the tests really ran: the libtest result line and the adapter line.
+          function Get-Evidence([string]$text) {
+            $tests = 'none'; $passed = 0; $ok = $false
+            $m = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored')
+            if ($m.Success) {
+              $tests = '{0}/{1}/{2}' -f $m.Groups[2].Value, $m.Groups[3].Value, $m.Groups[4].Value
+              $passed = [int]$m.Groups[2].Value
+              $ok = ($m.Groups[1].Value -eq 'ok')
+            }
+            $adapter = 'none'
+            $am = [regex]::Match($text, '(?m)\] adapter:[ \t]*(.*?)[ \t\r]*$')
+            if ($am.Success -and $am.Groups[1].Value.Length -gt 0) { $adapter = $am.Groups[1].Value }
+            [pscustomobject]@{ Tests = $tests; Passed = $passed; Ok = $ok; Adapter = $adapter }
+          }
+          function Get-Class([string]$exit) {
+            switch ($exit) {
+              '0x00000000' { 'pass' } '0x00000065' { 'fail' } '0xC0000374' { 'heap_corruption' } 'TIMEOUT' { 'timeout' } default { 'other_exit' }
+            }
+          }
+
+          $tsv = Join-Path $logDir 'summary.tsv'
+          "run`texit`tclass`tfailed_lines`tduration_s`td3d12_errors`tfault`ttests`tadapter" | Set-Content $tsv
+          $q = '"'
+          $adapters = [System.Collections.Generic.List[string]]::new(); $testsPassedTotal = 0
+          $count = @{ pass = 0; fail = 0; heap_corruption = 0; timeout = 0; other_exit = 0 }
+          $hist = @{}; $excerpts = @(); $faultStack = $null
+          $done = 0; $failedLineRuns = 0; $d3d12Err = 0; $d3d12Warn = 0; $validationLines = 0; $faults = 0; $stopped = ''
+          for ($i = 1; $i -le $n; $i++) {
+            if ([DateTimeOffset]::UtcNow.AddMilliseconds($timeoutMs) -gt $deadline) { $stopped = "time_budget_after_run_$done"; break }
+            $tag = 'run-{0:D3}' -f $i
+            if ($mode -eq 'pageheap') {
+              $r = Invoke-Once $env:CDB_EXE $cdbArgs $true
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.cdb.txt"), $r.Out)
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.err.txt"), $r.Err)
+              $text = $r.Out + "`n" + $r.Err
+              $fault = $text -match $faultRx
+              $m = [regex]::Match($r.Out, 'Exit process .*?code ([0-9a-fA-F]+)')
+              if ($r.TimedOut) { $exit = 'TIMEOUT' }
+              elseif ($m.Success) { $exit = '0x{0:X8}' -f [Convert]::ToUInt32($m.Groups[1].Value, 16) }
+              elseif ($fault -and $text -match '(?i)c0000374') { $exit = '0xC0000374' }
+              elseif (-not $fault -and $r.Out -match 'test result: ok\.' -and $r.Out -notmatch 'FAILED') { $exit = '0x00000000' }
+              else { $exit = "unknown(cdb=$($r.Exit))" }
+            } else {
+              $r = Invoke-Once $exe $testArgs $false
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.out.txt"), $r.Out)
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.err.txt"), $r.Err)
+              $text = $r.Out + "`n" + $r.Err
+              $fault = $false; $exit = $r.Exit
+            }
+            $ev = Get-Evidence $text
+            $class = Get-Class $exit
+            # Exit 0 without a libtest "test result: ok." line means the tests did not run.
+            if ($class -eq 'pass' -and -not $ev.Ok) { $class = 'other_exit' }
+            $count[$class]++; $done = $i
+            $hk = "$exit`t$class"
+            $hist[$hk] = 1 + [int]$hist[$hk]
+            if ($ev.Ok) { $testsPassedTotal += $ev.Passed }
+            if (-not $adapters.Contains($ev.Adapter)) { $adapters.Add($ev.Adapter) }
+            $failed = Get-Count $text 'FAILED|panicked at'
+            if ($failed -gt 0) { $failedLineRuns++ }
+            $errs = Get-Count $text 'D3D12 ERROR'
+            $d3d12Err += $errs; $d3d12Warn += Get-Count $text 'D3D12 WARNING'; $validationLines += Get-Count $text '(?i)validation'
+            $dur = [Math]::Round($r.Seconds, 1).ToString($inv)
+            "$i`t$exit`t$class`t$failed`t$dur`t$errs`t$fault`t$($ev.Tests)`t$($ev.Adapter)" | Add-Content $tsv
+            Write-Host "$tag exit=$exit class=$class failed_lines=$failed d3d12_errors=$errs fault=$fault tests=$($ev.Tests) adapter=$q$($ev.Adapter)$q ${dur}s"
+            if (($class -ne 'pass' -or $fault) -and $excerpts.Count -lt 3) {
+              $adapter = ($text -split "`r?`n" | Where-Object { $_ -match '\] adapter:' } | Select-Object -First 1)
+              $outLines = ($r.Out -split "`r?`n" | Where-Object { $_ -match 'FAILED|panicked at|^test |test result' } | Select-Object -First 80) -join "`n"
+              $errText = if ($mode -eq 'pageheap') { $r.Out } else { $r.Err }
+              $errPart = Get-From $errText 'panicked at|FAILED|D3D12 ERROR' 80
+              $ex = "### $tag exit=$exit class=$class`nadapter: $adapter`n-- stdout (test lines) --`n$outLines`n-- stderr (from first panic, else last lines) --`n$errPart"
+              $excerpts += $ex
+              Write-Host "::group::$tag failure excerpt"; Write-Host $ex; Write-Host '::endgroup::'
+            }
+            if ($fault) {
+              $faults++
+              if (-not $faultStack) { $faultStack = "### $tag first fault`n" + (Get-From $r.Out $faultRx 120); Write-Host $faultStack }
+              if ($faults -ge 3) { $stopped = "three_faults_after_run_$i"; break }
+            }
+          }
+
+          # validation: a few extra runs under cdb, which receives the debug layer's OutputDebugString text.
+          $dbgRuns = 0; $dbgErr = 0; $dbgLines = ''
+          if ($mode -eq 'validation' -and $env:CDB_EXE) {
+            for ($j = 1; $j -le 3; $j++) {
+              if ([DateTimeOffset]::UtcNow.AddMilliseconds($timeoutMs) -gt $deadline) { break }
+              $r = Invoke-Once $env:CDB_EXE $cdbArgs $true
+              $tag = 'dbg-{0:D3}' -f $j
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.cdb.txt"), $r.Out)
+              [IO.File]::WriteAllText((Join-Path $logDir "$tag.err.txt"), $r.Err)
+              $dbgRuns = $j; $dbgErr += Get-Count $r.Out 'D3D12 ERROR'
+              if (-not $dbgLines) { $dbgLines = ($r.Out -split "`r?`n" | Where-Object { $_ -match 'D3D12 (ERROR|WARNING|CORRUPTION)' } | Select-Object -First 40) -join "`n" }
+              $dur = [Math]::Round($r.Seconds, 1).ToString($inv)
+              $dev = Get-Evidence ($r.Out + "`n" + $r.Err)
+              Write-Host "$tag cdb_exit=$($r.Exit) d3d12_error_lines=$(Get-Count $r.Out 'D3D12 ERROR') tests=$($dev.Tests) adapter=$q$($dev.Adapter)$q ${dur}s"
+            }
+          }
+
+          $result = "RESULT mode=$mode runs=$done pass=$($count.pass) fail=$($count.fail) heap_corruption=$($count.heap_corruption) timeout=$($count.timeout) other_exit=$($count.other_exit)"
+          $result += " runs_with_FAILED_or_panic_lines=$failedLineRuns requested=$n"
+          $result += " adapters=$($adapters -join ';') tests_passed_total=$testsPassedTotal"
+          if ($mode -eq 'validation') { $result += " d3d12_errors=$d3d12Err d3d12_warnings=$d3d12Warn validation_lines=$validationLines dbg_runs=$dbgRuns dbg_d3d12_errors=$dbgErr" }
+          if ($mode -eq 'pageheap') { $result += " faults=$faults" }
+          if ($stopped) { $result += " stopped=$stopped" }
+          Write-Host $result
+          $result | Set-Content (Join-Path $logDir 'result.txt')
+
+          $fence = '```'
+          $rows = ($hist.GetEnumerator() | Sort-Object Name | ForEach-Object { $kc = $_.Name -split "`t"; "| $($kc[0]) | $($kc[1]) | $($_.Value) |" }) -join "`n"
+          $md = @"
+          ## srgb_blend_gpu diagnosis: $mode
+
+          $fence
+          $result
+          $fence
+
+          Classes: pass = exit 0 and a libtest "test result: ok." line, fail = exit 0x00000065 (libtest test failure), heap_corruption = 0xC0000374,
+          timeout = killed after 300 s, other_exit = anything else (including exit 0 without a result line). In pageheap the exit code is the debuggee's
+          (from cdb's exit-process event); a fault run ended in the debugger.
+
+          | exit code | class | runs |
+          |---|---|---|
+          $rows
+
+          "@
+          if ($faultStack) { $md += "`n$fence`n$faultStack`n$fence`n" }
+          if ($dbgLines) { $md += "`nD3D12 debug-layer lines seen by cdb (first 40):`n$fence`n$dbgLines`n$fence`n" }
+          foreach ($ex in $excerpts) { $md += "`n$fence`n$ex`n$fence`n" }
+          if ($excerpts.Count -eq 0) { $md += "`nNo failing run.`n" }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $md
+          exit 0
+
+      - name: Disable page heap (always)
+        if: always() && matrix.mode == 'pageheap'
+        shell: pwsh
+        run: |
+          $name = (Get-Content diag-bin/exe-name.txt -Raw).Trim()
+          if (-not $env:GFLAGS_EXE) { Write-Host "gflags.exe was not found earlier, so page heap was never enabled for $name"; exit 0 }
+          & $env:GFLAGS_EXE /p /disable $name
+          Write-Host "gflags /p /disable exit $LASTEXITCODE"
+          $list = (& $env:GFLAGS_EXE /p) -join "`n"
+          Write-Host "gflags /p:`n$list"
+          $ifeo = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$name"
+          $gf = (Get-ItemProperty $ifeo -ErrorAction SilentlyContinue).GlobalFlag
+          $inRegistry = $false
+          try { $inRegistry = ($null -ne $gf) -and (([int64]$gf -band 0x02000000) -ne 0) } catch { Write-Host "IFEO GlobalFlag '$gf' not numeric: $_" }
+          if (($list -match [regex]::Escape($name)) -or $inRegistry) { Write-Host "::error::page heap still enabled for $name"; exit 1 }
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.mode }}
+          path: logs/${{ matrix.mode }}/**
+          retention-days: 14
+          if-no-files-found: warn
