@@ -9263,3 +9263,21 @@ weakened).
 **Decision:** The worklet's `{type:'stats'}` reply carries `stats: [stat0..stat8]` and also `quantumFrames: {min, max}` and `processCalls`, both taken from `process`. The Chromium test uses them to assert that every quantum is 128 frames (600 calls, min = max = 128). The worklet itself does not compute a digest. The digest is computed in the page from the rendered `AudioBuffer`, and the brief makes the in-worklet digest optional.
 **Rationale:** The quantum size is checked where it happens and costs two compares per quantum. Adding hashing to the shipped worklet would put test code in production.
 **Alternatives:** A test-only worklet with a digest, as in S6 (rejected: the test would then not exercise the shipped `worklet.js`).
+
+## #180 (tester) — "`at` in the past" tested by suspending the offline context
+
+**Decision:** The Chromium protocol test checks a `cmds` record with `at` in the past by suspending the `OfflineAudioContext` at exactly 1.0 s (quantum 375 at 48 kHz, a time that is exact in binary). While the context is suspended, the test reads the worklet's stats (quantum index 375, 48 000 frames), posts one record with `at = 10`, waits for a stats round trip and resumes. The expected digest is native S6 plus the same trigger at quantum 375. Records posted before `startRendering()` use `at = quantum` (the S6 script), and the brief's "next quantum" and past-`at` cases at quantum 0 are covered natively in `spec_kp086_protocol.rs`.
+**Rationale:** Before the first render q = 0, so no `at` is in the past at quantum 0, and "apply at quantum 0" cannot tell a past `at` from a present one. A suspend at a quantum boundary is the only black-box way to post a message at a known q in an offline render. 1.0 s avoids rounding of the suspend time to a different quantum.
+**Alternatives:** Treating `at = 0` posted before rendering as "past" (rejected: it is the present quantum and proves nothing). A realtime context (rejected: q at arrival is not deterministic).
+
+## #180 (tester) — Spec model counts only records that enter the pending list as accepted
+
+**Decision:** The independent model in `tests/spec_kp086/oracle.rs` returns from `pwa_submit` and `pwa_trigger` only the records that entered the pending list. A valid record dropped because the list holds 256 entries counts in stat 0, not in the return value.
+**Rationale:** The brief's `pwa_trigger` says "1 accepted, 0 rejected or dropped", so a dropped record is not accepted, and `pwa_submit` "returns the number accepted" under the same meaning.
+**Alternatives:** Counting a dropped record as accepted (rejected: it contradicts the `pwa_trigger` contract).
+
+## #180 (tester) — Gesture test context created at page load
+
+**Decision:** The gesture test page (`/?gesture`) creates its realtime `AudioContext` and calls `resumeOnGesture(ctx, document)` from the module script at load time, not from `page.evaluate`. The browser is launched with Playwright's default arguments.
+**Rationale:** Playwright runs `page.evaluate` with a user activation, so a context created there starts `running` under the default autoplay policy. The first run showed `running` before any input. A context created at load has no activation, so the default policy keeps it `suspended` until the real `page.mouse.click`, which is what "starts on the first user gesture" needs shown.
+**Alternatives:** `--autoplay-policy=user-gesture-required` (rejected: the brief asks for the default policy, and the evaluate activation would still count).
