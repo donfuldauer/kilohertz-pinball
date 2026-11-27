@@ -4,7 +4,8 @@ name: ci
 # Targets: x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-apple-darwin.
 #
 # D40: pull requests run the Linux set only (fmt, Linux clippy, core-tests, replay-hash; the
-# lavapipe GPU tests and the DOF bridge only when their paths change). Pushes to main and
+# lavapipe GPU tests, the DOF bridge and the qemu-user replay-hash-aarch64 only when their paths
+# change). Pushes to main and
 # workflow_dispatch run everything: the Windows/macOS legs live in the `*-cross` jobs below
 # (job-level `if: github.event_name != 'pull_request'`, so a skipped job reports success), and
 # coverage runs on push and workflow_dispatch, not on pull requests. Linux jobs keep their ids; every target stays covered across the file.
@@ -43,7 +44,7 @@ jobs:
   # job reports success, so required checks stay satisfied), not `paths-ignore` on the triggers
   # (which would leave required checks pending). Docs files are `**/*.md` and `.coderabbit.yaml`;
   # docs/SPEC.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
-  # Pushes and workflow_dispatch always run everything (gpu and dof default to true). The diff is from the merge base
+  # Pushes and workflow_dispatch always run everything (gpu, dof and aarch64 default to true). The diff is from the merge base
   # (three dots), so later changes on the base branch are not counted, and --no-renames lists
   # both the old and new path of a rename, so renaming a .rs file to .md still counts as code.
   changes:
@@ -54,6 +55,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       gpu: ${{ steps.filter.outputs.gpu }}
       dof: ${{ steps.filter.outputs.dof }}
+      aarch64: ${{ steps.filter.outputs.aarch64 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -72,6 +74,7 @@ jobs:
           code=true
           gpu=true
           dof=true
+          aarch64=true
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # -z: NUL-separated, unquoted paths (git quotes non-ASCII and special characters
             # otherwise, which would miss the globs below). Written to a file, not a variable,
@@ -81,6 +84,7 @@ jobs:
               code=false
               gpu=false
               dof=false
+              aarch64=false
               while IFS= read -r -d '' f; do
                 case "$f" in
                   docs/SPEC.md) code=true ;;
@@ -94,6 +98,15 @@ jobs:
                 case "$f" in
                   tools/dof_bridge/*) dof=true ;;
                 esac
+                # replay-hash-aarch64 (D9): what pin_sim and the seam test build from, the
+                # fixture and its golden, the tables, the toolchain/lock files, this workflow
+                # and the assert script.
+                case "$f" in
+                  crates/pin_core/* | crates/pin_physics/* | crates/pin_input/* | crates/pin_sim/* | \
+                  crates/pin_script/* | crates/pin_assets/* | third_party/lua-src/* | tables/* | \
+                  Cargo.toml | Cargo.lock | versions.toml | .github/workflows/ci.yml | \
+                  scripts/ci/replay_hash_assert.sh) aarch64=true ;;
+                esac
               done < "$list"
             else
               echo "::warning::could not list changed files (or none); running full CI"
@@ -103,7 +116,8 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "gpu=$gpu" >> "$GITHUB_OUTPUT"
           echo "dof=$dof" >> "$GITHUB_OUTPUT"
-          echo "code=$code gpu=$gpu dof=$dof"
+          echo "aarch64=$aarch64" >> "$GITHUB_OUTPUT"
+          echo "code=$code gpu=$gpu dof=$dof aarch64=$aarch64"
 
   # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
   # pin_script, pin_assets, pin_tablegen, pin_sim (+ pin_assetgen, a GPU-free tool).
@@ -351,15 +365,41 @@ jobs:
       # pin_render's adapter-dependent tests are behind its `gpu-tests` feature (Subphase 1.4).
       # Issue #205: build first (bounded, so a cold build still leaves time to save the cache),
       # then run the tests with whatever the 45-minute job cap leaves after the save reserve.
+      # Gate #163 round 13: the build's timeout is min(32, JOB_TIMEOUT_MIN - reserve - elapsed),
+      # computed before the build with the same reserve and elapsed formula as the Test-step
+      # budget below (keep the two in step), so a timed-out build (which skips the test budget
+      # step) still leaves the 8 min cache-save reserve inside the job cap whatever the set-up time.
+      - name: Build-step budget
+        id: build_budget
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          JOB_START: ${{ steps.start.outputs.epoch }}
+          JOB_TIMEOUT_MIN: "45"
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          MAX_BUILD_MIN: "32"
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
+          # Rounded up, plus 1 min for the runner's job set-up before the first step.
+          elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
+          minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
+          if [ "$minutes" -gt "$MAX_BUILD_MIN" ]; then minutes=$MAX_BUILD_MIN; fi
+          if [ "$minutes" -lt 1 ]; then minutes=1; fi
+          echo "elapsed ${elapsed} min, cache save reserve ${reserve} min: build step gets ${minutes} min"
+          echo "minutes=$minutes" >> "$GITHUB_OUTPUT"
+
       - name: cargo test --no-run (build GPU crates)
         if: runner.os != 'Linux'
-        timeout-minutes: 32
+        timeout-minutes: ${{ fromJSON(steps.build_budget.outputs.minutes) }}
         run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app --no-run
 
       # Issue #205: the test step's timeout is the job timeout minus the time used so far minus a
       # reserve for the rust-cache post-step (8 min when it has to save, 1 min when the restored
       # cache is an exact match and the save is skipped). A timed-out step fails the job but the
-      # cache is still saved (cache-on-failure), so the next run is warm.
+      # cache is still saved (cache-on-failure), so the next run is warm. The reserve is never
+      # reduced: when fewer than MIN_TEST_MIN minutes remain for the tests (the test run needs
+      # roughly 15 minutes, so below MIN_TEST_MIN it cannot finish), this step fails the job
+      # before the test step, which then does not run, and the rust-cache post-step still saves.
       - name: Test-step budget
         id: budget
         if: runner.os != 'Linux'
@@ -368,12 +408,16 @@ jobs:
           JOB_START: ${{ steps.start.outputs.epoch }}
           JOB_TIMEOUT_MIN: "45"
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          MIN_TEST_MIN: "10"
         run: |
           if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
           # Rounded up, plus 1 min for the runner's job set-up before the first step.
           elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
           minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
-          if [ "$minutes" -lt 1 ]; then minutes=1; fi
+          if [ "$minutes" -lt "$MIN_TEST_MIN" ]; then
+            echo "::error::only ${minutes} min left for the tests after reserving ${reserve} min for the cache save (need ${MIN_TEST_MIN})"
+            exit 1
+          fi
           echo "elapsed ${elapsed} min, cache save reserve ${reserve} min: test step gets ${minutes} min"
           echo "minutes=$minutes" >> "$GITHUB_OUTPUT"
 
@@ -489,11 +533,15 @@ jobs:
       - name: cargo fmt --check (tests/spec_ci)
         run: cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check
 
-  # Subphase 2.5: golden replay-hash check (D9). On each OS: build pin_sim in
-  # release, record the in-repo fixture for 10 000 ticks, replay it 10 times and
-  # fail on any mismatch on that machine. The hashes and the 2.2-S seam digests
-  # are printed so cross-OS values are visible; cross-OS differences are
-  # reported, never failing (PLAN.md §2.4).
+  # Subphase 2.5 / KP-069: replay-hash gate (D9, SPEC §2.4; PROCESS R3). On each leg: build
+  # pin_sim in release and run scripts/ci/replay_hash_assert.sh, which records the in-repo
+  # fixture for 10 000 ticks, replays it 10 times, and fails on any in-machine mismatch AND
+  # unless the recorded state_hash equals the committed x86_64-linux golden
+  # (crates/pin_sim/tests/fixtures/replay_table.golden). The 2.2-S seam digests must equal the
+  # test's EXPECTED (the test asserts them on x86_64 Linux and aarch64; the CI-side check of the
+  # printed lines asserts them everywhere, including Windows). Only the reference set is gated
+  # (x86_64 Linux, aarch64, Windows x86_64); other cross-OS values (soak.yml) stay report-only,
+  # and no job compares one leg's output with another's: every leg compares with the golden.
   replay-hash:
     name: replay-hash (${{ matrix.target }})
     needs: changes
@@ -510,6 +558,7 @@ jobs:
       SDL_VIDEO_DRIVER: dummy
       FIXTURE: crates/pin_sim/tests/fixtures/replay_table
       TICKS: "10000"
+      REPLAY_HASH_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
 
@@ -529,31 +578,91 @@ jobs:
       - name: cargo build --release (pin_sim)
         run: cargo build --release -p pin_sim --bin pin_sim
 
-      - name: Record the fixture, replay it 10 times
+      - name: replay-hash ${{ matrix.target }} (record, replay 10 times, assert the golden)
+        shell: bash
+        run: bash scripts/ci/replay_hash_assert.sh target/release/pin_sim
+
+      - name: seam digests ${{ matrix.target }} (assert EXPECTED)
         shell: bash
         run: |
           set -euo pipefail
-          exe=target/release/pin_sim
-          rec="$RUNNER_TEMP/replay_fixture.khzrec"
-          recorded=$("$exe" "$FIXTURE" --ticks "$TICKS" --record-inputs "$rec")
-          echo "recorded:  $recorded (${{ matrix.target }}, $TICKS ticks)"
-          fail=0
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            replayed=$("$exe" "$FIXTURE" --replay-inputs "$rec")
-            echo "replay $i: $replayed"
-            if [ "$replayed" != "$recorded" ]; then
-              echo "::error::replay $i gave $replayed, recorded $recorded"
-              fail=1
-            fi
-          done
-          echo "::notice title=replay-hash ${{ matrix.target }}::$recorded"
-          exit $fail
+          log="$(mktemp)"
+          cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture 2>&1 | tee "$log"
+          bash scripts/ci/replay_hash_assert.sh --seam-digests "$log"
 
-      - name: 2.2-S seam digests (report only, cross-OS)
+  # D9 reference set, aarch64 (KP-069): pin_sim and the seam test cross-built for
+  # aarch64-unknown-linux-gnu and run under qemu-user on the Linux runner, on every pull request
+  # that touches the simulation (the `aarch64` output of `changes`) and every push to main. Gates:
+  # the fixture's state_hash equals the committed x86_64-linux golden (and replays 10 times
+  # unchanged), and ball_seam_bitident asserts its x86_64-linux EXPECTED digests. Aggregated by
+  # pr-checks. Emulated run about 15 s plus 5 s; the cross build is about 2-4 min warm, 8-12 cold.
+  # Only the C toolchain is cross-installed: pin_sim and pin_physics do not link SDL3.
+  replay-hash-aarch64:
+    name: replay-hash (aarch64-unknown-linux-gnu, qemu-user)
+    needs: changes
+    if: needs.changes.outputs.aarch64 == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      FIXTURE: crates/pin_sim/tests/fixtures/replay_table
+      TICKS: "10000"
+      REPLAY_HASH_TARGET: aarch64-unknown-linux-gnu
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+      QEMU_LD_PREFIX: /usr/aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-unknown-linux-gnu-qemu
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, target aarch64-unknown-linux-gnu)
         shell: bash
-        run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          if ! rustup target list --installed | grep -qx aarch64-unknown-linux-gnu; then
+            echo "::error::target aarch64-unknown-linux-gnu not installed"; exit 1
+          fi
+
+      - name: Install qemu-user and the aarch64 cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: cargo build --release --target aarch64-unknown-linux-gnu (pin_sim)
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p pin_sim --bin pin_sim
+
+      - name: replay-hash aarch64-unknown-linux-gnu under qemu (record, replay 10 times, assert the golden)
+        shell: bash
+        run: bash scripts/ci/replay_hash_assert.sh target/aarch64-unknown-linux-gnu/release/pin_sim "qemu-aarch64 -L /usr/aarch64-linux-gnu"
+
+      - name: seam digests aarch64-unknown-linux-gnu under qemu (assert EXPECTED)
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test --release --target aarch64-unknown-linux-gnu -p pin_physics --test ball_seam_bitident -- --nocapture 2>&1 | tee "$log"
+          bash scripts/ci/replay_hash_assert.sh --seam-digests "$log"
 
 
+  # The Windows and macOS legs of the replay-hash gate (D9), on push to main and dispatch (D40):
+  # the same assert script, so Windows x86_64 and macOS arm64 must reproduce the committed
+  # x86_64-linux golden and the seam test's EXPECTED digests (macOS arm64: the test asserts them
+  # itself; Windows: the CI-side check of the printed `[seam digest]` lines).
   replay-hash-cross:
     name: replay-hash (${{ matrix.target }})
     needs: changes
@@ -572,6 +681,7 @@ jobs:
       SDL_VIDEO_DRIVER: dummy
       FIXTURE: crates/pin_sim/tests/fixtures/replay_table
       TICKS: "10000"
+      REPLAY_HASH_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
 
@@ -591,29 +701,17 @@ jobs:
       - name: cargo build --release (pin_sim)
         run: cargo build --release -p pin_sim --bin pin_sim
 
-      - name: Record the fixture, replay it 10 times
+      - name: replay-hash ${{ matrix.target }} (record, replay 10 times, assert the golden)
+        shell: bash
+        run: bash scripts/ci/replay_hash_assert.sh target/release/pin_sim
+
+      - name: seam digests ${{ matrix.target }} (assert EXPECTED)
         shell: bash
         run: |
           set -euo pipefail
-          exe=target/release/pin_sim
-          rec="$RUNNER_TEMP/replay_fixture.khzrec"
-          recorded=$("$exe" "$FIXTURE" --ticks "$TICKS" --record-inputs "$rec")
-          echo "recorded:  $recorded (${{ matrix.target }}, $TICKS ticks)"
-          fail=0
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            replayed=$("$exe" "$FIXTURE" --replay-inputs "$rec")
-            echo "replay $i: $replayed"
-            if [ "$replayed" != "$recorded" ]; then
-              echo "::error::replay $i gave $replayed, recorded $recorded"
-              fail=1
-            fi
-          done
-          echo "::notice title=replay-hash ${{ matrix.target }}::$recorded"
-          exit $fail
-
-      - name: 2.2-S seam digests (report only, cross-OS)
-        shell: bash
-        run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
+          log="$(mktemp)"
+          cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture 2>&1 | tee "$log"
+          bash scripts/ci/replay_hash_assert.sh --seam-digests "$log"
 
   # Gate A1 runner (PLAN Gate A1): analytic and rig tests plus the 1,000-game soak at novice,
   # standard and expert, judged by `pin_sim soak --gate a1`. Manual only: the soak plays about
@@ -743,8 +841,9 @@ jobs:
   # (`gpu-tests (${{ matrix.target }}, ...)`), so requiring the real names would stay pending on
   # PRs that skip them; and a skipped dependent of a failed `changes` reads as success. This job
   # always runs, requires `changes` to succeed, and fails on any needed job that failed or was
-  # cancelled (success and skipped both pass). The `*-cross` jobs, coverage and gate-a1 are not
-  # part of the PR set and are not aggregated.
+  # cancelled (success and skipped both pass). replay-hash-aarch64 is in the set (skipped on PRs
+  # that do not touch the simulation). The `*-cross` jobs, coverage and gate-a1 are not part of
+  # the PR set and are not aggregated.
   pr-checks:
     needs:
       - changes
@@ -752,6 +851,7 @@ jobs:
       - clippy
       - core-tests
       - replay-hash
+      - replay-hash-aarch64
       - gpu-tests
       - dof-bridge
     if: always()

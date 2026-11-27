@@ -1960,6 +1960,7 @@ dependencies = [
  "arrayvec",
  "egui",
  "image",
+ "libc",
  "libm",
  "pin_assetgen",
  "pin_assets",

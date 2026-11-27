@@ -71,8 +71,14 @@
 //!      or a later tick of the same catch-up batch (each was already due
 //!      when the tick before it started), and `sdl_ts_ns` is at or after the
 //!      stall's start and before its end (an event stamped before the start
-//!      reached the ring late and keeps the ordinary bound). It is derived only from the sim thread's own
-//!      scheduling and the timestamp, never from the event's lateness;
+//!      reached the ring late and keeps the ordinary bound). A tick of the
+//!      same batch that is itself late again (more than [`STALL_GAP_NS`]
+//!      after the tick before it, or after newly dropped ticks) extends the
+//!      stall to its own drain and keeps the stall's start, so a delay
+//!      inside the batch never erases the original window; a stall that
+//!      starts outside a batch replaces it. It is derived only from the sim
+//!      thread's own scheduling and the timestamp, never from the event's
+//!      lateness;
 //!    * `move_tick`: for a press of an input bound to flippers
 //!      ([`FlipperBindings`]), the first executed tick from the applying
 //!      tick on at whose end one of those bats is raised by at least
@@ -86,14 +92,17 @@
 //!    * `frame`: the index of the first presented frame, in present order,
 //!      whose snapshot tick is `>= move_tick` and `<= release_tick` (the
 //!      `apply_tick` of the next release, `down = 0`, of the same input
-//!      after this press; unbounded when there is none) and whose snapshot
-//!      shows one of the press's bats raised by at least 1 degree from its
-//!      angle at the applying tick's start, in its energised direction (the
-//!      same test as `move_tick`): the first frame that showed the bat
-//!      displaced while the key was held. A bat that crossed 1 degree and
-//!      fell back below it (a ball impact, a stop rebound) is matched only
-//!      to a later frame that shows it raised again; a frame drawn at the
-//!      release tick counts only when it still shows the bat raised.
+//!      after this press; unbounded when there is none; `< release_tick`
+//!      when that release is followed, in delivery order, by a press of the
+//!      same input in the same tick, whose bat that tick's snapshot shows)
+//!      and whose snapshot shows one of the press's bats raised by at least
+//!      1 degree from its angle at the applying tick's start, in its
+//!      energised direction (the same test as `move_tick`): the first frame
+//!      that showed the bat displaced while the key was held. A bat that
+//!      crossed 1 degree and fell back below it (a ball impact, a stop
+//!      rebound) is matched only to a later frame that shows it raised
+//!      again; a frame drawn at the release tick counts only when it still
+//!      shows the bat raised (and never after a same-tick re-press).
 //!      `move_tick` only selects the earliest candidate frame. Empty without
 //!      a move or such a frame;
 //!    * `frame_snap_tick`, `present_ns`: that frame's snapshot tick and
@@ -101,7 +110,10 @@
 //!    * `frames_to_photon`: `frame - F0`, where `F0` is the index of the
 //!      last presented frame whose `present_ns <= sdl_ts_ns`: the raw count
 //!      from the press. A press before the first presented frame counts from
-//!      frame index 0 (`frame + 1`).
+//!      frame index 0 (`frame + 1`). In a trace of several engines (a table
+//!      swap, [`CollectedTrace::append`]) `F0` is taken from the whole
+//!      frame table, so a press stamped under an earlier engine counts that
+//!      engine's later frames too.
 //! 2. One empty line, then the **frame table**: the header line
 //!    [`FRAME_HEADER`] (`frame,snap_tick,present_ns`) and one row per
 //!    presented playfield frame (0-based index in present order, the
@@ -129,6 +141,11 @@
 //!    `# run_end_ns=<n>`: the SDL clock read on the main thread when the
 //!    run loop ended, before the threads were joined (the run's end in the
 //!    trace's own clock domain).
+//!
+//! A run that swaps tables in the table browser runs several engines one
+//! after another; the file then holds each engine's trace in run order,
+//! joined per engine, with frame numbers and `event_seq` continuing across
+//! engines and tick numbers engine-local ([`CollectedTrace::append`]).
 //!
 //! Column names are stable (later units read this file: Gate A3, KP-043).
 
@@ -461,7 +478,12 @@ impl SimTraceWriter {
     /// (the previous tick's drain to this tick's drain). The record is kept
     /// for the later ticks of the same catch-up batch (a tick that was
     /// already due when the previous tick started, `end_ns <=` the previous
-    /// drain) and cleared by the first tick that was not. An event is in the
+    /// drain) and cleared by the first tick that was not. A tick of that
+    /// batch that again starts more than [`STALL_GAP_NS`] late, or after
+    /// newly dropped ticks, extends the record (the original start, its own
+    /// drain as the new end) instead of replacing it, so a press stamped in
+    /// the original stall keeps it however the batch is delayed; a stall
+    /// that starts outside a batch replaces the record. An event is in the
     /// stall when it is stamped at or after the stall's start and before its
     /// end (`delivered`).
     pub fn begin_tick(&mut self, end_ns: u64, before: &FrameStateSnapshot) {
@@ -471,14 +493,24 @@ impl SimTraceWriter {
             end_ns,
             dropped: self.dropped,
         };
+        // Already due when the previous tick started: same catch-up batch.
+        let in_batch = end_ns <= self.prev.drain_ns;
         if drain_ns.saturating_sub(self.prev.drain_ns) > STALL_GAP_NS
             || self.dropped > self.prev.dropped
         {
-            self.stall = Some(Stall {
-                start_drain: self.prev.drain_ns,
-                end_drain: drain_ns,
-            });
-        } else if end_ns > self.prev.drain_ns {
+            self.stall = match self.stall {
+                // A further delay inside the batch extends its stall: a
+                // press stamped in the original window keeps its allowance.
+                Some(s) if in_batch => Some(Stall {
+                    start_drain: s.start_drain,
+                    end_drain: drain_ns,
+                }),
+                _ => Some(Stall {
+                    start_drain: self.prev.drain_ns,
+                    end_drain: drain_ns,
+                }),
+            };
+        } else if !in_batch {
             // Not due when the previous tick started: the batch is over.
             self.stall = None;
         }
@@ -490,11 +522,22 @@ impl SimTraceWriter {
     /// its bat to move, until its release: a release marks every pending
     /// watch of the same input released at `tick` (retired at the end of
     /// `tick` unless that tick raised the bat, [`end_tick`](Self::end_tick)).
+    /// A press of an input retires, before it is watched itself, every
+    /// pending watch of the same input released in this same `tick`: the
+    /// step runs once per tick, so this tick's raise belongs to the new
+    /// press, never to the superseded one. A watch released in `tick` with
+    /// no later press of its input in `tick` keeps its inclusive release
+    /// tick. Allocation-free (`retain` on the fixed-capacity list).
     pub fn delivered(&mut self, tick: u64, ev: &InputEvent) {
         let InputEventKind::Button { input, pressed } = ev.kind else {
             return;
         };
-        if !pressed {
+        if pressed {
+            // CodeRabbit round 12 finding 15: a same-tick re-press supersedes
+            // the released press, which must not claim the re-press's raise.
+            self.pending
+                .retain(|p| !(p.input == input && p.released_at == Some(tick)));
+        } else {
             for p in self.pending.iter_mut() {
                 if p.input == input && p.released_at.is_none() {
                     p.released_at = Some(tick);
@@ -760,14 +803,65 @@ pub fn frames_to_photon(frames: &[FrameRecord], t_ns: u64, frame: u64) -> u64 {
 }
 
 /// For each of `inputs` (in delivery order), the `apply_tick` of the next
-/// release of the same input after it (`None` when there is none).
+/// release of the same input after it (`None` when there is none). The
+/// join ([`join_trace`]) bounds a press's frames by it: inclusively, or
+/// exclusively when the same input is pressed again in that release's tick
+/// ([`ReleaseBound`]).
 pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
-    let mut next = [None; CabinetInput::COUNT];
+    release_bounds(inputs)
+        .into_iter()
+        .map(|b| b.map(|b| b.tick))
+        .collect()
+}
+
+/// The next release of a press's input after it, as the frame join uses it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct ReleaseBound {
+    /// The release's `apply_tick`.
+    tick: u64,
+    /// Whether a press of the same input follows the release, in delivery
+    /// order, in that same tick (a same-tick re-press).
+    re_pressed: bool,
+}
+
+impl ReleaseBound {
+    /// Whether a frame drawn at `snap_tick` is still inside the press's
+    /// hold: `snap_tick <= tick`, or `snap_tick < tick` after a same-tick
+    /// re-press (the release tick's snapshot then shows the re-press's bat,
+    /// gate 163 round 13 finding 6). `None` (no release) is unbounded.
+    fn admits(bound: Option<Self>, snap_tick: u64) -> bool {
+        match bound {
+            None => true,
+            Some(Self {
+                tick,
+                re_pressed: false,
+            }) => snap_tick <= tick,
+            Some(Self {
+                tick,
+                re_pressed: true,
+            }) => snap_tick < tick,
+        }
+    }
+}
+
+/// [`release_ticks`] with, for each release, whether the same input is
+/// pressed again in the release's tick. Deliveries are in tick order, so the
+/// next press of the input after the release is the only one that can share
+/// its tick.
+fn release_bounds(inputs: &[InputRecord]) -> Vec<Option<ReleaseBound>> {
+    let mut next_release = [None; CabinetInput::COUNT];
+    let mut next_press: [Option<u64>; CabinetInput::COUNT] = [None; CabinetInput::COUNT];
     let mut out = vec![None; inputs.len()];
     for (i, r) in inputs.iter().enumerate().rev() {
-        out[i] = next[r.input.index()];
-        if !r.down {
-            next[r.input.index()] = Some(r.apply_tick);
+        let k = r.input.index();
+        out[i] = next_release[k];
+        if r.down {
+            next_press[k] = Some(r.apply_tick);
+        } else {
+            next_release[k] = Some(ReleaseBound {
+                tick: r.apply_tick,
+                re_pressed: next_press[k] == Some(r.apply_tick),
+            });
         }
     }
     out
@@ -776,8 +870,11 @@ pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
 /// Joins the sim's input and move records with the frame table: each row
 /// gets its `move_tick` and the first frame, in present order, whose
 /// snapshot tick is `>= move_tick` and `<= release_tick` (the next release
-/// of the same input, [`release_ticks`]; unbounded without one) and whose
-/// snapshot shows one of the press's bats raised by at least
+/// of the same input, [`release_ticks`]; unbounded without one; `<
+/// release_tick` when that release is followed, in delivery order, by a
+/// press of the same input in the same tick: that tick's snapshot shows the
+/// re-press's bat, never the released press's, gate 163 round 13 finding 6)
+/// and whose snapshot shows one of the press's bats raised by at least
 /// [`RAISE_THRESHOLD_RAD`] (1 degree) from the press's base (its applying
 /// tick's start) in the energised direction of `bindings`: the same
 /// predicate as `move_tick`, so a bat that crossed 1 degree and fell back
@@ -795,18 +892,17 @@ pub fn join_trace(
     frames: &[FrameRecord],
     bindings: &FlipperBindings,
 ) -> Vec<TraceRow> {
-    let releases = release_ticks(inputs);
+    let releases = release_bounds(inputs);
     inputs
         .iter()
         .zip(releases)
         .map(|(r, release)| {
             let mv = moves.iter().find(|m| m.seq == r.seq);
             let move_tick = mv.map(|m| m.move_tick);
-            let until = release.unwrap_or(u64::MAX);
             let drawn = mv.and_then(|m| {
                 frames.iter().find(|f| {
                     f.snap_tick >= m.move_tick
-                        && f.snap_tick <= until
+                        && ReleaseBound::admits(release, f.snap_tick)
                         && raised(&f.angles, m.mask, bindings, &m.base)
                 })
             });
@@ -843,6 +939,82 @@ impl CollectedTrace {
     /// Button events recorded.
     pub fn events(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Appends the trace of a later engine of the same run (the table
+    /// browser's swap restarts the engine threads, each with its own
+    /// collector; gate 163 round 9, review thread 4703749460). Each part
+    /// was joined on its own ([`TraceCollector::collect`]), so an event of
+    /// one engine is never matched to a frame of another. Here:
+    ///
+    /// * `later`'s frames follow `self`'s, renumbered so the frame numbers
+    ///   stay unique and ascending: each is offset by one past `self`'s last
+    ///   frame (the number of frames accumulated, as every engine numbers
+    ///   its recorded frames from 0 without gaps), and so is the `frame`
+    ///   field of `later`'s rows;
+    /// * `frames_to_photon` of every `later` row with a frame is recomputed
+    ///   over the combined frame table ([`frames_to_photon`] of its SDL
+    ///   timestamp and renumbered frame; gate 163 round 13 finding 7): a
+    ///   press stamped before the earlier engine's last present but applied
+    ///   by the later engine also counts the earlier engine's frames
+    ///   presented after it, as one table that the windowed verdict checks.
+    ///   The matched frame, `move_tick`, `frame_snap_tick` and `present_ns`
+    ///   stay the later engine's own; `self`'s rows and rows without a frame
+    ///   keep their value. Every engine's present times are read from the
+    ///   one monotonic SDL clock and the later engine starts presenting
+    ///   after the earlier one's threads were joined, so the combined table
+    ///   is in present order. Should a later present time still be earlier
+    ///   than an earlier one, `F0` is the last frame of the longest leading
+    ///   run of the table presented at or before the press (the windowed
+    ///   verdict's rule; the same frame as [`last_frame_at_or_before`] on a
+    ///   table in present order), never a panic;
+    /// * `later`'s rows follow `self`'s, their `event_seq` offset the same
+    ///   way (one past `self`'s last `event_seq`) so it stays unique;
+    /// * tick numbers (`apply_tick`, `move_tick`, `frame_snap_tick` and the
+    ///   frame table's `snap_tick`) stay engine-local: each engine counts
+    ///   from tick 0, so a tick number repeats across engines;
+    /// * the overflow counters are summed and `run_end_ns` is `later`'s.
+    ///
+    /// The file format (version 1) is unchanged.
+    pub fn append(&mut self, later: CollectedTrace) {
+        let frame_offset = self.frames.last().map_or(0, |f| f.frame + 1);
+        let seq_offset = self.rows.last().map_or(0, |r| r.input.seq + 1);
+        self.frames
+            .extend(later.frames.into_iter().map(|f| FrameRecord {
+                frame: f.frame + frame_offset,
+                ..f
+            }));
+        // `horizon[i]` is the latest present time among frames 0..=i: equal
+        // to `present_ns` on a table in present order and non-decreasing
+        // always, so `partition_point` on it finds the end of the leading
+        // run presented at or before a press (see the doc comment).
+        let horizon: Vec<u64> = self
+            .frames
+            .iter()
+            .scan(0u64, |m, f| {
+                *m = (*m).max(f.present_ns);
+                Some(*m)
+            })
+            .collect();
+        let frames = &self.frames;
+        self.rows.extend(later.rows.into_iter().map(|mut r| {
+            r.input.seq += seq_offset;
+            r.frame = r.frame.map(|f| f + frame_offset);
+            if let Some(f) = r.frame {
+                let n = horizon.partition_point(|&p| p <= r.input.sdl_ts_ns);
+                r.frames_to_photon = Some(match n.checked_sub(1) {
+                    Some(i) => f.saturating_sub(frames[i].frame),
+                    None => f.saturating_add(1),
+                });
+            }
+            r
+        }));
+        let (o, l) = (&mut self.overflows, later.overflows);
+        o.input += l.input;
+        o.moves += l.moves;
+        o.frames += l.frames;
+        o.pending += l.pending;
+        self.run_end_ns = later.run_end_ns;
     }
 
     /// The file text (format version 1, see the module documentation).
@@ -1347,6 +1519,106 @@ mod tests {
         );
     }
 
+    /// REQ-LAT-003, gate 163 round 12 finding 15: press A, release A and
+    /// re-press B of one input in one tick, with the bat raised at that
+    /// tick's end: the raise is B's alone (exactly one move record), A
+    /// keeps its input row.
+    #[test]
+    fn req_lat_003_same_tick_re_press_supersedes_the_released_press() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // A
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // B
+        sim.end_tick(1, &bat0(1, RAISE_THRESHOLD_RAD));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![None, None, Some(1)], "only B moved");
+        assert_eq!(t.rows.iter().filter(|r| r.move_tick.is_some()).count(), 1);
+        assert_eq!(t.rows[0].input.apply_tick, 1, "A keeps its input row");
+        assert!(t.rows[0].input.down);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: press and release in one
+    /// tick with no re-press keeps the inclusive release tick: that tick's
+    /// raise is the press's move.
+    #[test]
+    fn req_lat_003_release_tick_raise_counts_without_a_re_press() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.end_tick(1, &bat0(1, RAISE_THRESHOLD_RAD));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(1), None]);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: a re-press in a later
+    /// tick than the release leaves the released press's record alone (it
+    /// was raised at its release tick) and gets its own.
+    #[test]
+    fn req_lat_003_re_press_in_a_later_tick_is_unaffected() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 4);
+        sim.begin_tick(TICK_NS, &bat0(0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true)); // A
+        sim.end_tick(1, &bat0(1, 0.0));
+        sim.begin_tick(2 * TICK_NS, &bat0(1, 0.0));
+        sim.delivered(2, &InputEvent::button(2, l, false));
+        sim.end_tick(2, &bat0(2, 0.5));
+        sim.begin_tick(3 * TICK_NS, &bat0(2, 0.5));
+        sim.end_tick(3, &bat0(3, 0.0));
+        sim.begin_tick(4 * TICK_NS, &bat0(3, 0.0));
+        sim.delivered(4, &InputEvent::button(4, l, true)); // B
+        sim.end_tick(4, &bat0(4, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(2), None, Some(4)]);
+    }
+
+    /// REQ-LAT-003, gate 163 round 12 finding 15: a press of one input
+    /// never retires another input's watch released in the same tick: left
+    /// down, left up, right down in one tick, with the left bat raised at
+    /// its end, is the left press's move (inclusive release tick); the
+    /// right press, whose bat did not rise, has none.
+    #[test]
+    fn req_lat_003_re_press_of_another_input_does_not_retire() {
+        set_now(0);
+        let (l, r) = (CabinetInput::LeftFlipper, CabinetInput::RightFlipper);
+        let mut b = left0();
+        b.bind(r, 1);
+        let (c, mut sim, _fw) = latency_trace_with_capacity(b, now, 64, 4);
+        let bats = |tick: u64, a0: f32, a1: f32| {
+            let mut s = bat0(tick, a0);
+            assert!(s.push_flipper(FlipperState {
+                id: FlipperId(1),
+                angle_rad: a1,
+                ..FlipperState::default()
+            }));
+            s
+        };
+        sim.begin_tick(TICK_NS, &bats(0, 0.0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.delivered(1, &InputEvent::button(1, l, false));
+        sim.delivered(1, &InputEvent::button(1, r, true));
+        sim.end_tick(1, &bats(1, 0.5, 0.0));
+        // Right down, right up, left down: the right release is not
+        // superseded by the left press; the right bat rises at tick 2.
+        sim.begin_tick(2 * TICK_NS, &bats(1, 0.0, 0.0));
+        sim.delivered(2, &InputEvent::button(2, r, false));
+        sim.delivered(2, &InputEvent::button(2, l, true));
+        sim.end_tick(2, &bats(2, 0.0, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(1), None, Some(2), None, None]);
+    }
+
     /// REQ-LAT-001, REQ-LAT-003 (C6): overlapping presses of different
     /// inputs keep separate watches: releasing one does not end the other's.
     #[test]
@@ -1445,8 +1717,10 @@ mod tests {
             sim.end_tick(k, &up);
             sim.begin_tick((k + 1) * TICK_NS, &up);
         }
+        // A raise past the press's 0.5 rad base in the energised direction:
+        // it would be recorded if the watch had outlived its deadline.
         let mut moved_later = up;
-        moved_later.flippers[0].angle_rad = 0.1;
+        moved_later.flippers[0].angle_rad = 0.6;
         sim.end_tick(10_000, &moved_later);
         let t = c.collect(0);
         assert_eq!(t.overflows.pending, 3);
@@ -2077,6 +2351,89 @@ mod tests {
         assert_eq!(t.rows[1].input.apply_tick_end_sdl_ns, 26 * ms);
     }
 
+    /// REQ-LAT-003, REQ-LAT-004 (gate 30, I2): a catch-up tick that is
+    /// itself delayed again (the sim thread preempted between two ticks of
+    /// the batch) extends the batch's stall instead of replacing it, so a
+    /// press stamped in the original window and delivered after the delay
+    /// keeps `stall = 1` with the original start; a stall that starts
+    /// outside a batch replaces the record.
+    #[test]
+    fn req_lat_003_stall_window_survives_the_catch_up_batch() {
+        let ms = TICK_NS;
+        let (mut tx, rx) = pin_core::spsc::channel::<InputEvent>(64);
+        let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+        let mut l = SimLoop::new(Seen::default(), rx, w);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        // Ticks 1..=10 on time: tick k drains at k ms.
+        for k in 1..=10u64 {
+            set_now(k * ms);
+            l.run_ticks(1);
+        }
+        // Wake at 30 ms: 12 ticks dropped (tick k now ends at k + 12 ms).
+        // Tick 11 drains at 30 ms (stall 10..30 ms).
+        l.skip_ticks(12);
+        set_now(30 * ms);
+        l.run_ticks(1);
+        // Preempted 3 ms: tick 12 (ends 24 ms, due) drains at 33 ms. A press
+        // stamped at 12 ms reaches the ring only now.
+        tx.push(InputEvent::button(12 * ms, CabinetInput::LeftFlipper, true))
+            .unwrap();
+        set_now(33 * ms);
+        l.run_ticks(1);
+        // Ticks 13..=21 (end 25..33 ms) drain 10 us apart; a press stamped
+        // at 31 ms (inside the extended window), in the ring from tick 13,
+        // is applied in tick 19 (the first ending at or after its stamp).
+        for k in 13..=21u64 {
+            if k == 13 {
+                tx.push(InputEvent::button(
+                    31 * ms,
+                    CabinetInput::RightFlipper,
+                    true,
+                ))
+                .unwrap();
+            }
+            set_now(33 * ms + (k - 12) * 10_000);
+            l.run_ticks(1);
+        }
+        // Tick 22 (ends 34 ms) was not due when tick 21 started (33.09 ms):
+        // the batch is over, but it starts at 37 ms, a new stall outside a
+        // batch, which replaces the record (33.09..37 ms). A press stamped
+        // at 12 ms is not in it; one stamped at 33.5 ms is.
+        tx.push(InputEvent::button(
+            12 * ms,
+            CabinetInput::LeftFlipper,
+            false,
+        ))
+        .unwrap();
+        tx.push(InputEvent::button(
+            33 * ms + 500_000,
+            CabinetInput::RightFlipper,
+            false,
+        ))
+        .unwrap();
+        set_now(37 * ms);
+        l.run_ticks(1);
+        let t = c.collect(0);
+        let r: Vec<(u64, bool, u64, u64)> = t
+            .rows
+            .iter()
+            .map(|r| {
+                let i = &r.input;
+                (i.apply_tick, i.stall, i.prev_drain_sdl_ns, i.drain_sdl_ns)
+            })
+            .collect();
+        assert_eq!(
+            r,
+            vec![
+                (12, true, 10 * ms, 33 * ms),
+                (19, true, 10 * ms, 33 * ms),
+                (22, false, 33 * ms + 90_000, 37 * ms),
+                (22, true, 33 * ms + 90_000, 37 * ms),
+            ]
+        );
+    }
+
     /// Drives a writer and a frame writer: a press of the left flipper
     /// (bound to flipper 0, sweep sign `neg`) applied in tick 1, the bat at
     /// `angles[0]` at the tick's start and at `angles[k]` at the end of tick
@@ -2257,5 +2614,262 @@ mod tests {
         assert_eq!(reads(), r0 + 3);
         let t = c.collect(0);
         assert_eq!(t.frames, vec![frame(0, 7, 1234), frame(1, 9, 999)]);
+    }
+
+    /// One engine's collected trace: `presses` presses (seq 0..), press
+    /// `i` stamped 500 ns before frame `i`'s present and shown in it (one
+    /// frame to photon), of `frames` frames, the run ending at `end`.
+    fn engine(presses: u64, frames: u64, base_ns: u64, end: u64) -> CollectedTrace {
+        let fr: Vec<FrameRecord> = (0..frames)
+            .map(|i| shown(i, 10 + i, base_ns + 1_000 * i))
+            .collect();
+        let rows = (0..presses)
+            .map(|i| TraceRow {
+                input: rec(i, base_ns + 1_000 * i - 500, 10 + i),
+                move_tick: Some(10 + i),
+                frame: (i < frames).then_some(i),
+                frame_snap_tick: (i < frames).then_some(10 + i),
+                present_ns: (i < frames).then_some(base_ns + 1_000 * i),
+                frames_to_photon: (i < frames).then_some(1),
+            })
+            .collect();
+        CollectedTrace {
+            rows,
+            frames: fr,
+            overflows: TraceOverflows {
+                input: 1,
+                moves: 2,
+                frames: 3,
+                pending: 4,
+            },
+            run_end_ns: end,
+        }
+    }
+
+    /// Gate 163 round 9 #3 (review thread 4703749460, REQ-LAT-003): the
+    /// traces of successive engines concatenate in engine order; frame
+    /// numbers (in the frame table and the rows) and `event_seq` stay
+    /// unique and ascending, ticks stay engine-local, overflows add up,
+    /// the last `run_end_ns` wins, and the CSV (format version 1)
+    /// round-trips through `parse`.
+    #[test]
+    fn append_merges_engines_in_order() {
+        let first = engine(2, 3, 1_000_000, 5_000_000);
+        let second = engine(3, 4, 9_000_000, 20_000_000);
+        // The fixtures are what each engine's own join computes.
+        for e in [&first, &second] {
+            for r in &e.rows {
+                let f = r.frame.unwrap();
+                let n = frames_to_photon(&e.frames, r.input.sdl_ts_ns, f);
+                assert_eq!(r.frames_to_photon, Some(n));
+            }
+        }
+        let mut all = CollectedTrace::default();
+        all.append(first.clone());
+        assert_eq!(all, first, "appending to an empty trace is the identity");
+        all.append(second.clone());
+        all.append(CollectedTrace {
+            run_end_ns: 30_000_000,
+            ..CollectedTrace::default()
+        });
+        let frames: Vec<u64> = all.frames.iter().map(|f| f.frame).collect();
+        assert_eq!(frames, (0..7).collect::<Vec<_>>(), "unique and ascending");
+        let snap: Vec<u64> = all.frames.iter().map(|f| f.snap_tick).collect();
+        assert_eq!(snap, [10, 11, 12, 10, 11, 12, 13], "ticks engine-local");
+        let seqs: Vec<u64> = all.rows.iter().map(|r| r.input.seq).collect();
+        assert_eq!(seqs, [0, 1, 2, 3, 4]);
+        let row_frames: Vec<Option<u64>> = all.rows.iter().map(|r| r.frame).collect();
+        assert_eq!(row_frames, [Some(0), Some(1), Some(3), Some(4), Some(5)]);
+        for (r, f) in all.rows.iter().filter_map(|r| r.frame.map(|f| (r, f))) {
+            let fr = all.frames.iter().find(|x| x.frame == f).unwrap();
+            assert_eq!(r.frame_snap_tick, Some(fr.snap_tick));
+            assert_eq!(r.present_ns, Some(fr.present_ns));
+        }
+        assert_eq!(all.rows[2].input.apply_tick, 10, "ticks engine-local");
+        assert_eq!(all.rows[2].frames_to_photon, Some(1));
+        assert_eq!(
+            all.overflows,
+            TraceOverflows {
+                input: 2,
+                moves: 4,
+                frames: 6,
+                pending: 8,
+            }
+        );
+        assert_eq!(all.run_end_ns, 30_000_000);
+        let parsed = CollectedTrace::parse(&all.to_csv()).unwrap();
+        assert_eq!(parsed.rows, all.rows);
+        assert_eq!(
+            parsed.frames.iter().map(|f| f.frame).collect::<Vec<_>>(),
+            frames
+        );
+        assert_eq!(parsed.overflows, all.overflows);
+        assert_eq!(parsed.run_end_ns, all.run_end_ns);
+        // The single-engine file is unchanged by the merge machinery.
+        assert_eq!(
+            CollectedTrace::parse(&first.to_csv()).unwrap().rows,
+            first.rows
+        );
+    }
+
+    /// A release (`down = 0`) of the left flipper as `seq`, stamped `ts`,
+    /// applied at `tick`.
+    fn rel(seq: u64, ts: u64, tick: u64) -> InputRecord {
+        InputRecord {
+            down: false,
+            ..rec(seq, ts, tick)
+        }
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003, gate 163 round 13 finding 6 (review
+    /// comment 4712335633): press A (tick 2, move at tick 3) is released
+    /// and the same input pressed again (B) in tick 5. A frame drawn at
+    /// tick 5 that shows the bat raised shows B's raise, not A's: A's
+    /// eligible frames end before the release tick, so A gets no frame
+    /// (its `move_tick` stays) and B gets the tick-5 frame. Without the
+    /// re-press, or with the re-press at a later tick, the release tick
+    /// stays eligible for A.
+    #[test]
+    fn req_lat_001_same_tick_re_press_frame_is_not_the_released_press() {
+        let a = rec(0, 1_500_000, 2);
+        let frames = [frame(0, 4, 4_500_000), shown(1, 5, 5_500_000)];
+        // Release and re-press in tick 5.
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), rec(2, 4_900_000, 5)],
+            &[mv0(0, 3), mv0(2, 5)],
+            &frames,
+            &left0(),
+        );
+        assert_eq!(rows[0].move_tick, Some(3), "A's move is kept");
+        assert_eq!(rows[0].frame, None, "the tick-5 frame is B's");
+        assert_eq!(rows[0].frame_snap_tick, None);
+        assert_eq!(rows[0].present_ns, None);
+        assert_eq!(rows[0].frames_to_photon, None);
+        assert_eq!(rows[1].frame, None, "a release");
+        assert_eq!(rows[2].move_tick, Some(5));
+        assert_eq!(rows[2].frame, Some(1));
+        assert_eq!(rows[2].frame_snap_tick, Some(5));
+        assert_eq!(rows[2].frames_to_photon, Some(1));
+        // No re-press: the release tick stays eligible for A.
+        let rows = join_trace(&[a, rel(1, 4_800_000, 5)], &[mv0(0, 3)], &frames, &left0());
+        assert_eq!(rows[0].frame, Some(1));
+        assert_eq!(rows[0].frame_snap_tick, Some(5));
+        assert_eq!(rows[0].frames_to_photon, Some(2));
+        // Re-press at a later tick: A keeps the release tick eligible.
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), rec(2, 5_200_000, 6)],
+            &[mv0(0, 3), mv0(2, 6)],
+            &[
+                frame(0, 4, 4_500_000),
+                shown(1, 5, 5_500_000),
+                shown(2, 6, 6_500_000),
+            ],
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, Some(1));
+        assert_eq!(rows[2].frame, Some(2));
+        // A re-press of another input in the release tick changes nothing.
+        let mut other = rec(2, 4_900_000, 5);
+        other.input = CabinetInput::RightFlipper;
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), other],
+            &[mv0(0, 3)],
+            &frames,
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, Some(1));
+        // Release and re-press at tick 0 (no underflow): A has no
+        // eligible frame, B gets the tick-0 frame.
+        let mut a0 = rec(0, 100, 1);
+        a0.apply_tick = 0;
+        let mut r0 = rel(1, 200, 1);
+        r0.apply_tick = 0;
+        let mut b0 = rec(2, 300, 1);
+        b0.apply_tick = 0;
+        let rows = join_trace(
+            &[a0, r0, b0],
+            &[mv0(0, 0), mv0(2, 0)],
+            &[shown(0, 0, 1_000)],
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, None);
+        assert_eq!(rows[2].frame, Some(0));
+        // `release_ticks` itself is unchanged: the next release's tick.
+        assert_eq!(
+            release_ticks(&[a, rel(1, 4_800_000, 5), rec(2, 4_900_000, 5)]),
+            vec![Some(5), None, None]
+        );
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003, gate 163 round 13 finding 7 (review
+    /// comment 4712335637): a press carried over an engine swap counts its
+    /// frames from its own timestamp across the combined frame table. The
+    /// earlier engine presented at 10 and 20, the later one at 30; a
+    /// later-engine press stamped 15 and first shown in the frame at 30
+    /// counts frames 1 and 2 (`frames_to_photon` 2, the later engine alone
+    /// computed 1); a later press stamped 25 stays 1. The matched frame is
+    /// renumbered, ticks stay engine-local, the earlier rows are unchanged.
+    #[test]
+    fn req_lat_001_append_counts_frames_across_the_engine_swap() {
+        let earlier_frames = vec![shown(0, 3, 10), shown(1, 4, 20)];
+        let mut all = CollectedTrace {
+            rows: join_trace(&[rec(0, 5, 2)], &[mv0(0, 3)], &earlier_frames, &left0()),
+            frames: earlier_frames,
+            ..CollectedTrace::default()
+        };
+        let before = all.rows.clone();
+        assert_eq!(before[0].frames_to_photon, Some(1));
+        let later_frames = vec![shown(0, 7, 30)];
+        let later_rows = join_trace(
+            &[rec(0, 15, 6), rec(1, 25, 6)],
+            &[mv0(0, 7), mv0(1, 7)],
+            &later_frames,
+            &left0(),
+        );
+        assert_eq!(later_rows[0].frames_to_photon, Some(1), "engine-local");
+        all.append(CollectedTrace {
+            rows: later_rows,
+            frames: later_frames,
+            ..CollectedTrace::default()
+        });
+        assert_eq!(all.rows[0], before[0], "earlier rows unchanged");
+        let (p15, p25) = (&all.rows[1], &all.rows[2]);
+        assert_eq!(p15.frame, Some(2), "renumbered");
+        assert_eq!(p15.frames_to_photon, Some(2), "frames 1 and 2 count");
+        assert_eq!(p15.move_tick, Some(7), "engine-local");
+        assert_eq!(p15.frame_snap_tick, Some(7), "engine-local");
+        assert_eq!(p15.present_ns, Some(30));
+        assert_eq!(p15.input.apply_tick, 6);
+        assert_eq!(p25.frame, Some(2));
+        assert_eq!(p25.frames_to_photon, Some(1));
+        for r in &all.rows {
+            let f = r.frame.unwrap();
+            assert_eq!(
+                r.frames_to_photon,
+                Some(frames_to_photon(&all.frames, r.input.sdl_ts_ns, f)),
+                "agrees with the combined frame table"
+            );
+        }
+        // Guard: a later engine's first present (30) before the earlier
+        // engine's last (100) does not panic; `F0` is the last frame of the
+        // leading run presented at or before the press: frame 0 for a press
+        // at 15 (2 frames), the whole table for a press at 200 (0 frames).
+        let mut odd = CollectedTrace {
+            frames: vec![shown(0, 3, 10), shown(1, 4, 100)],
+            ..CollectedTrace::default()
+        };
+        let later_frames = vec![shown(0, 7, 30)];
+        odd.append(CollectedTrace {
+            rows: join_trace(
+                &[rec(0, 15, 6), rec(1, 200, 6)],
+                &[mv0(0, 7), mv0(1, 7)],
+                &later_frames,
+                &left0(),
+            ),
+            frames: later_frames,
+            ..CollectedTrace::default()
+        });
+        let f2p: Vec<Option<u64>> = odd.rows.iter().map(|r| r.frames_to_photon).collect();
+        assert_eq!(f2p, [Some(2), Some(0)]);
     }
 }

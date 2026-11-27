@@ -79,6 +79,9 @@ js-sys = "=0.3.107"
 web-sys = "=0.3.107"            # feature lists are chosen by the consuming crates
 wasm-bindgen-futures = "=0.4.80"
 
+# #163 KP-069 additions
+libc = "=0.2.191"  # #163: pin_app test-only xattr helpers (Linux setxattr/fgetxattr/removexattr)
+
 [profile.dev]
 # Keep the 1 kHz solver usable in debug test runs.
 opt-level = 1

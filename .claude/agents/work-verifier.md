@@ -22,7 +22,8 @@ or push, P5 "Batching"). Then the Orchestrator supplies the brief and the execut
 every executor group in the batch, and the pre-batch head SHA. Run every check once on that head
 commit: check 1 traces the requirements of each group's brief, and check 8 compares
 `<pre-batch head>..HEAD` (not the whole `<base>...HEAD`) against the union of all groups' OWNED
-PATHS. Report `requirements` and `failures` per item (per thread URL where given), so the
+PATHS (on a gate review, also the gate issue's owned paths and the `fix paths` of the gate's
+`docs/RUN_LOG.md` round rows; check 8). Report `requirements` and `failures` per item (per thread URL where given), so the
 Orchestrator can resolve each thread on its own result. A single-brief run is unchanged.
 
 **Log-only round.** A round whose only change is appended entries in the shared files
@@ -48,7 +49,10 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
    one passing test's name or doc comment, or in the R12 evidence of check 9. For a check across a
    whole tracking issue run
    `python3 -I scripts/req_coverage.py --milestone <tracking issue number> --tests crates tests scripts/tests`.
-   Report missing IDs.
+   Report missing IDs. A claimed ID that check 1 recorded as `untestable here` (it is in
+   `docs/HUMAN_ACCEPTANCE.md` or has a `[P8 hardware]` line) is reported as `untestable here` and
+   does not count as missing; every other claimed ID still needs a passing test name or doc
+   comment or R12 evidence.
 3. **Formatting and lints.** `cargo fmt --all --check`; `cargo clippy --all-targets -- -D warnings`
    on every touched crate, and with `--features gpu-tests` for render crates; the
    `tests/spec_ci` and `tables/*/rules-wasm` manifests when touched.
@@ -77,6 +81,11 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
    Take the union of the four lists; every path in it must be in OWNED PATHS or the allowed
    shared files listed below. `--no-renames` makes a move report both its source and its
    destination, so a file moved in from outside the owned paths is caught.
+   On a gate review (each fix batch, and the final run on the head that merges), OWNED PATHS is
+   the gate issue's owned paths plus every `fix paths: <paths>` entry in the gate's
+   `docs/RUN_LOG.md` round rows at HEAD (PROCESS.md P5 unit gate item 8). For a missed gate's
+   review head, check instead that `git diff --name-only <main commit last merged in> HEAD` is
+   empty (its changes passed check 8 in their own PRs).
    - committed: `git diff --no-renames --name-only <base>...HEAD`
    - staged: `git diff --no-renames --name-only --cached`
    - unstaged: `git diff --no-renames --name-only`
@@ -105,7 +114,7 @@ sources and rebuild before you call it a defect.
 ```
 status: pass | fail
 requirements: <n met / n total>; <each not-met item with file:line and the failing command>
-req ids: <claimed SPEC section / REQ ID → covered | missing>
+req ids: <claimed SPEC section / REQ ID → covered | untestable here | missing>
 fmt/clippy: <result per crate>
 tests: <suite → run/passed/failed/ignored>
 coverage: <crate/module → %; floor>

@@ -145,6 +145,11 @@ fn publishing_mech_slots_does_not_allocate() {
             let ((), n, _exempt) = count_allocs_split(|| sim.step_1ms(t, &[], &mut out));
             assert_eq!(n, 0, "tick {t}: {n} allocation(s) in step_1ms");
             assert_eq!(out.dynamic_mesh_count, 10);
+            assert_eq!(
+                out.ball_count as usize,
+                (sim.balls_in_play() + 1).min(16),
+                "tick {t}: free balls plus the captive Newton ball"
+            );
             for (i, m) in out.dynamic_meshes().iter().enumerate() {
                 moved[i] |= *m != rest.dynamic_meshes()[i];
             }

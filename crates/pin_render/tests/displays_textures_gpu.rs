@@ -200,6 +200,8 @@ fn read_all(ctx: &GpuContext, tex: &wgpu::Texture, w: u32, h: u32, levels: u32) 
 }
 
 /// Level k+1 is the 2x2 box average of level k (round to nearest), within 1.
+/// The check is per level: each level is rounded to nearest on its own, so
+/// level k+1 is compared with level k as stored, never with level 0.
 fn assert_box_chain(what: &str, levels: &[Img]) {
     for k in 1..levels.len() {
         let (src, dst) = (&levels[k - 1], &levels[k]);
@@ -242,6 +244,12 @@ fn assert_box_chain(what: &str, levels: &[Img]) {
 
 /// Mean of each level over the whole image and each quadrant is within 2/255
 /// of level 0's; the last level is 1x1 and within 3/255 of the global mean.
+/// Each level is rounded to nearest independently, so the 1x1 level is the
+/// area-weighted average computed level by level: it may differ from the
+/// global mean rounded once, by at most half a byte per reduction (so at
+/// most half a byte times the number of reductions). The 3/255 tolerance is
+/// what these contents need, not that worst case; the exact per-level
+/// checks are `assert_box_chain` and `assert_chain_is_oracle`.
 fn assert_mean_chain(what: &str, levels: &[Img]) {
     let base = &levels[0];
     let last = levels.last().unwrap();
@@ -766,6 +774,213 @@ fn req_view_002_texture_facts() {
     let _ = (b.view(), s.view());
 }
 
+/// Reads mip level 1 of the bound view with `textureLoad` into a target of
+/// that level's size (one texel per fragment).
+const SAMPLE_MIP1_WGSL: &str = r"
+@group(0) @binding(0) var tex: texture_2d<f32>;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(i & 2u) * 2.0 - 1.0;
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(tex, vec2<i32>(p.xy), 1);
+}
+";
+
+/// A pipeline that copies mip 1 of a bound `texture_2d<f32>` view into an
+/// `Rgba8Unorm` target, and its bind group layout.
+fn mip1_sampler(ctx: &GpuContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let device = ctx.device();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("sample mip 1"),
+        source: wgpu::ShaderSource::Wgsl(SAMPLE_MIP1_WGSL.into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("sample mip 1"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("sample mip 1"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sample mip 1"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bgl)
+}
+
+/// Binds `view` once (the bind group is reused for every later sample).
+fn bind_view(
+    ctx: &GpuContext,
+    bgl: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("display view, bound once"),
+        layout: bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(view),
+        }],
+    })
+}
+
+/// Draws mip 1 of the view in `bind` (a display of mip-0 size `w x h`) into
+/// a new target of the level-1 size and reads it back.
+fn sample_mip1(
+    ctx: &GpuContext,
+    pipeline: &wgpu::RenderPipeline,
+    bind: &wgpu::BindGroup,
+    w: u32,
+    h: u32,
+) -> Img {
+    let (lw, lh) = level_size(w, h, 1);
+    let device = ctx.device();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("sampled mip 1"),
+        size: wgpu::Extent3d {
+            width: lw,
+            height: lh,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sample mip 1"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    ctx.queue().submit([enc.finish()]);
+    read_level(ctx, &target, lw, lh, 0)
+}
+
+/// #163 gate round 13, finding 21 (REQ-VIEW-002): the public `view()` of
+/// both display textures exposes the whole mip chain to a material that
+/// binds it once. Each view is bound into one bind group; mip 1 is read
+/// through it after content A and again, through the same bind group, after
+/// a different content B. The sampled level equals the analytic colours and
+/// the texture's own level 1 byte for byte.
+#[test]
+fn req_view_002_view_samples_mip1_through_one_binding() {
+    let (_g, ctx) = setup!("req_view_002_view_samples_mip1_through_one_binding");
+    let (pipeline, bgl) = mip1_sampler(ctx);
+
+    // Score display (LCD, explicit-height image layer): image A, then B.
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut s = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    let s_bind = bind_view(ctx, &bgl, s.view());
+    for (step, colour) in [("A", IMG_A), ("B", IMG_B)] {
+        s.set_image(ctx, "art/flat.png", &solid(8, 8, colour))
+            .unwrap();
+        assert!(s.update(ctx, &content), "score {step} redraws");
+        let got = sample_mip1(ctx, &pipeline, &s_bind, w, h);
+        let (inside, outside) = image_and_background_means(&got, 1);
+        rgb_close(
+            &format!("score view mip 1, image {step}"),
+            inside,
+            colour,
+            1.0,
+        );
+        rgb_close(
+            &format!("score view mip 1, background {step}"),
+            outside,
+            BG_RGBA,
+            1.0,
+        );
+        let want = read_level(ctx, s.texture(), w, h, 1);
+        assert!(
+            got.px == want.px,
+            "score view mip 1 {step} equals texture level 1"
+        );
+    }
+
+    // Backglass: lamp off (BASE everywhere), then on (left half LIT).
+    let (bw, bh) = (128, 128);
+    let mut b = BackglassTexture::new(ctx, &lamp_desc(LayerBlend::Over, LIT), bw, bh).unwrap();
+    let b_bind = bind_view(ctx, &bgl, b.view());
+    for (step, lamp, left) in [("A", 0.0, BASE), ("B", 1.0, LIT)] {
+        assert!(b.update(ctx, &[0.0, lamp, 0.0]), "backglass {step} redraws");
+        let got = sample_mip1(ctx, &pipeline, &b_bind, bw, bh);
+        assert_eq!((got.w, got.h), (64, 64));
+        // Mip 1 is 64 x 64; the mask edge is at x = 32 there.
+        rgb_close(
+            &format!("backglass view mip 1, left {step}"),
+            mean(&got, 0, 0, 30, 64),
+            left,
+            1.0,
+        );
+        rgb_close(
+            &format!("backglass view mip 1, right {step}"),
+            mean(&got, 34, 0, 64, 64),
+            BASE,
+            1.0,
+        );
+        let want = read_level(ctx, b.texture(), bw, bh, 1);
+        assert!(
+            got.px == want.px,
+            "backglass view mip 1 {step} equals texture level 1"
+        );
+    }
+}
+
 /// REQ-VIEW-002: a non-power-of-two size constructs, updates and reads back
 /// with the documented level sizes.
 #[test]
@@ -838,4 +1053,545 @@ fn req_view_002_validation_refuses_bad_input() {
         BackglassTexture::new(ctx, &bad_base, 64, 64).is_err(),
         "bad base image"
     );
+}
+
+/// #163 gate round 13, finding 16 (REQ-VIEW-002, D25): `DmdSpec` has public
+/// fields, so a caller can bypass `DmdSpec::new`. A DMD spec outside its
+/// bounds (16..=512 x 8..=256 dots) is refused by `ScoreTexture::new` with
+/// `InvalidArgument` for a valid output size, never a wgpu panic on a
+/// zero-extent dot texture; the valid presets still construct.
+#[test]
+fn req_view_002_score_texture_refuses_invalid_dmd_spec() {
+    let (_g, ctx) = setup!("req_view_002_score_texture_refuses_invalid_dmd_spec");
+    for (w, h) in [
+        (0, 32),
+        (128, 0),
+        (0, 0),
+        (513, 32),
+        (128, 257),
+        (15, 32),
+        (128, 7),
+    ] {
+        let spec = DmdSpec {
+            width: w,
+            height: h,
+            color: DmdColor::Orange,
+        };
+        let got = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(spec), 128, 32);
+        assert!(
+            matches!(got, Err(GpuError::InvalidArgument(_))),
+            "DMD spec {w}x{h} with a 128x32 output: {:?}",
+            got.as_ref().err()
+        );
+    }
+    for spec in [
+        DMD_128X32,
+        DMD_192X64,
+        DmdSpec::new(16, 8, DmdColor::Red).unwrap(),
+        DmdSpec::new(512, 256, DmdColor::Rgb).unwrap(),
+    ] {
+        let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(spec), 128, 32)
+            .unwrap_or_else(|e| panic!("valid DMD {}x{}: {e:?}", spec.width, spec.height));
+        assert!(t.update(ctx, &DisplayContent::Dmd(dmd_frame(&spec, true))));
+    }
+    // The default LCD canvas still constructs.
+    let (spec, list) = lcd_content(1234);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), 256, 144).unwrap();
+    assert!(t.update(ctx, &DisplayContent::Lcd(list)));
+    ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(LcdSpec::default()), 128, 72).unwrap();
+}
+
+/// #163 gate round 13, finding 16, LCD part (D25): the LCD renderer creates
+/// no canvas-sized texture (the canvas only scales the draw list), so a zero
+/// or over-limit `LcdSpec` built with its public fields never reaches a wgpu
+/// panic: `ScoreTexture::new` either refuses it with `InvalidArgument` or
+/// builds a display that updates and reads back without a panic.
+#[test]
+fn req_view_002_score_texture_degenerate_lcd_spec_never_panics() {
+    let (_g, ctx) = setup!("req_view_002_score_texture_degenerate_lcd_spec_never_panics");
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    let (_, list) = lcd_content(1234);
+    for (w, h) in [
+        (0, 144),
+        (256, 0),
+        (0, 0),
+        (max + 1, 144),
+        (u32::MAX, u32::MAX),
+    ] {
+        let spec = LcdSpec {
+            width: w,
+            height: h,
+        };
+        match ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), 256, 144) {
+            Err(GpuError::InvalidArgument(_)) => {}
+            Err(e) => panic!("LCD {w}x{h}: unexpected error {e:?}"),
+            Ok(mut t) => {
+                assert!(
+                    t.update(ctx, &DisplayContent::Lcd(list.clone())),
+                    "LCD {w}x{h}"
+                );
+                let lv = read_level(ctx, t.texture(), 256, 144, 0);
+                assert_eq!((lv.w, lv.h), (256, 144), "LCD {w}x{h}");
+            }
+        }
+    }
+}
+
+// ---------- 8. LCD images registered on the score texture ----------
+// #163 gate review comment 4703749506: `ScoreTexture::set_image` registers
+// the images of LCD scene image layers; an unregistered file is skipped.
+
+/// LCD canvas of the image tests (16:9, the texture has the same aspect so
+/// the canvas fills it 1:1).
+const IMG_LCD: (u32, u32) = (256, 144);
+/// Background of the image scene.
+const IMG_BG: [u8; 3] = [0x14, 0x1e, 0x28];
+/// Flat colours of the registered image (opaque).
+const IMG_A: [u8; 4] = [200, 50, 100, 255];
+const IMG_B: [u8; 4] = [30, 220, 60, 255];
+/// Image rectangle on the canvas: x 0.25..0.75, y 0.25..0.75.
+const IMG_RECT: (u32, u32, u32, u32) = (64, 36, 192, 108);
+
+/// One LCD scene with a single image layer (file `art/flat.png`, white tint,
+/// opaque) over `IMG_BG`, composed into its draw list.
+fn image_scene_list() -> (LcdSpec, LcdDrawList) {
+    let scene = Scene::from_toml_str(
+        r##"
+schema_version = 1
+duration_ms = 0
+background = "#141e28"
+
+[[layers]]
+kind = "image"
+file = "art/flat.png"
+x = 0.25
+y = 0.25
+w = 0.5
+h = 0.5
+align = "left"
+valign = "top"
+color = "#ffffff"
+"##,
+    )
+    .expect("image scene parses");
+    let spec = LcdSpec::new(IMG_LCD.0, IMG_LCD.1).unwrap();
+    let list = LcdDrawList::compose(&spec, &scene, 0, &ScoreState::default(), &ImageSet::new());
+    assert_eq!(list.background, IMG_BG);
+    assert!(
+        matches!(list.items.as_slice(), [LcdItem::Image { file, .. }] if file == "art/flat.png"),
+        "the scene composes one image item: {:?}",
+        list.items
+    );
+    (spec, list)
+}
+
+/// Mean of the image rectangle (inset by 2 px against edge filtering) and
+/// of the background strip left of it, on mip `level` of `img`.
+fn image_and_background_means(img: &Img, level: u32) -> ([f64; 4], [f64; 4]) {
+    let (x0, y0, x1, y1) = IMG_RECT;
+    let s = |v: u32| v >> level;
+    let inside = mean(img, s(x0) + 2, s(y0) + 2, s(x1) - 2, s(y1) - 2);
+    let outside = mean(img, 0, 0, s(x0) - 2, img.h);
+    (inside, outside)
+}
+
+fn rgb_close(what: &str, got: [f64; 4], want: [u8; 4], tol: f64) {
+    for c in 0..4 {
+        assert!(
+            (got[c] - f64::from(want[c])).abs() <= tol,
+            "{what}: channel {c} mean {got:?} vs {want:?} (tolerance {tol})"
+        );
+    }
+}
+
+const BG_RGBA: [u8; 4] = [IMG_BG[0], IMG_BG[1], IMG_BG[2], 255];
+
+/// #97 / SPEC §7 (F.4), REQ-VIEW-002, R12 (a): an image registered with
+/// `ScoreTexture::set_image` renders in its layer's rectangle (region mean =
+/// the image colour), the rest shows the background, and mip levels 0, 1
+/// and 2 agree on both means.
+#[test]
+fn req_view_002_lcd_registered_image_renders() {
+    let (_g, ctx) = setup!("req_view_002_lcd_registered_image_renders");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .expect("a valid image registers");
+    assert!(t.update(ctx, &DisplayContent::Lcd(list.clone())));
+    for level in 0..3 {
+        let lv = read_level(ctx, t.texture(), w, h, level);
+        let (inside, outside) = image_and_background_means(&lv, level);
+        rgb_close(
+            &format!("registered image, mip {level}"),
+            inside,
+            IMG_A,
+            1.0,
+        );
+        rgb_close(&format!("background, mip {level}"), outside, BG_RGBA, 1.0);
+        if level == 0 {
+            save("lcd_image_registered_mip0", &lv);
+        }
+    }
+    // The texture equals the offscreen LCD renderer given the same image.
+    let mut images = ImageSet::new();
+    images.insert("art/flat.png", solid(8, 8, IMG_A));
+    let oracle = render_lcd_to_image(ctx, spec, &list, &images, w, h).unwrap();
+    assert_matches_oracle(
+        "lcd registered image",
+        &read_level(ctx, t.texture(), w, h, 0),
+        &oracle,
+    );
+}
+
+/// #97, documented behaviour: an image layer whose file is not registered
+/// is skipped (no error); its rectangle shows the background.
+#[test]
+fn req_view_002_lcd_unregistered_image_is_skipped() {
+    let (_g, ctx) = setup!("req_view_002_lcd_unregistered_image_is_skipped");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    // Another file is registered; the scene's file is not.
+    t.set_image(ctx, "art/other.png", &solid(4, 4, IMG_B))
+        .unwrap();
+    assert!(t.update(ctx, &DisplayContent::Lcd(list)));
+    let lv = read_level(ctx, t.texture(), w, h, 0);
+    let (inside, outside) = image_and_background_means(&lv, 0);
+    rgb_close("unregistered image rectangle", inside, BG_RGBA, 1.0);
+    rgb_close("background", outside, BG_RGBA, 1.0);
+    save("lcd_image_unregistered_mip0", &lv);
+}
+
+/// #97: registering the image after the first draw redraws on the next
+/// update with unchanged content, and setting the file again replaces the
+/// image in place (the output changes to the new colour).
+#[test]
+fn req_view_002_lcd_image_set_later_and_replaced() {
+    let (_g, ctx) = setup!("req_view_002_lcd_image_set_later_and_replaced");
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    assert!(t.update(ctx, &content));
+    assert!(
+        !t.update(ctx, &content),
+        "unchanged content does not redraw"
+    );
+    let before = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close(
+        "before registration",
+        image_and_background_means(&before, 0).0,
+        BG_RGBA,
+        1.0,
+    );
+
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .unwrap();
+    assert!(
+        t.update(ctx, &content),
+        "set_image marks the display changed"
+    );
+    let a = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close("image A", image_and_background_means(&a, 0).0, IMG_A, 1.0);
+    assert!(!t.update(ctx, &content));
+
+    t.set_image(ctx, "art/flat.png", &solid(16, 4, IMG_B))
+        .unwrap();
+    assert!(t.update(ctx, &content), "replacing the image redraws");
+    let b = read_level(ctx, t.texture(), w, h, 0);
+    let (inside, outside) = image_and_background_means(&b, 0);
+    rgb_close("image B (replaced in place)", inside, IMG_B, 1.0);
+    rgb_close("background after replace", outside, BG_RGBA, 1.0);
+    save("lcd_image_replaced_mip0", &b);
+}
+
+/// #97, D25, R11: an invalid or oversized image is refused with
+/// `InvalidArgument` (never a panic), does not mark the display changed,
+/// and the previous image of that file stays. A DMD score texture refuses
+/// every image (it has no image layers).
+#[test]
+fn req_view_002_lcd_bad_image_refused_previous_stays() {
+    let (_g, ctx) = setup!("req_view_002_lcd_bad_image_refused_previous_stays");
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    t.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A))
+        .unwrap();
+    assert!(t.update(ctx, &content));
+    let bad_images = [
+        (
+            "short pixel buffer",
+            RgbaImage {
+                width: 4,
+                height: 4,
+                pixels: vec![0; 10],
+            },
+        ),
+        (
+            "zero size",
+            RgbaImage {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            },
+        ),
+        ("wider than the device limit", solid(max + 1, 1, IMG_B)),
+        ("taller than the device limit", solid(1, max + 1, IMG_B)),
+    ];
+    for (what, img) in &bad_images {
+        assert!(
+            matches!(
+                t.set_image(ctx, "art/flat.png", img),
+                Err(GpuError::InvalidArgument(_))
+            ),
+            "{what} is refused with InvalidArgument"
+        );
+        assert!(
+            !t.update(ctx, &content),
+            "{what}: a refused image does not mark the display changed"
+        );
+    }
+    t.mark_dirty();
+    assert!(t.update(ctx, &content));
+    let lv = read_level(ctx, t.texture(), w, h, 0);
+    rgb_close(
+        "previous image stays after refusals",
+        image_and_background_means(&lv, 0).0,
+        IMG_A,
+        1.0,
+    );
+
+    let dmd = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();
+    let mut d = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(dmd), 256, 64).unwrap();
+    match d.set_image(ctx, "art/flat.png", &solid(8, 8, IMG_A)) {
+        Err(GpuError::InvalidArgument(msg)) => {
+            assert!(msg.contains("DMD"), "message names the DMD: {msg}")
+        }
+        other => panic!("a DMD score texture refuses images: {other:?}"),
+    }
+}
+
+// ---------- 9. Area-weighted mips of odd sizes ----------
+// #163 gate round 11 (review 6070807835, texture.rs mip shader): every texel
+// of an odd-sized level contributes to the next level, so the 1x1 mip is the
+// whole-image average; exact 2:1 reductions keep the four-texel average.
+// "Whole-image average" here means the area-weighted average computed level
+// by level: each level is rounded to nearest on its own, so the 1x1 byte is
+// within half a byte per reduction of the original mean and need not equal
+// it rounded once (#163 round 12, finding 22: a 5x1 red `[1, 1, 0, 0, 0]`
+// reduces to `[1, 0]` then `[1]`, while its mean 0.4 rounds to 0). The
+// oracle checks below stay exact per level.
+
+/// Per-axis weights `(w0, w1, w2, denominator)` of the source texels
+/// `2d, 2d + 1, 2d + 2` for destination texel `d` of a source side `s`:
+/// the overlap of each texel with the span `[d*s/t, (d+1)*s/t)`, `t =
+/// max(1, s / 2)`, scaled to integers summing to the denominator.
+fn axis_weights(s: u32, d: u32) -> [u64; 4] {
+    if s == 1 {
+        [1, 0, 0, 1]
+    } else if s.is_multiple_of(2) {
+        [1, 1, 0, 2]
+    } else {
+        let t = u64::from(s / 2);
+        let d = u64::from(d);
+        [t - d, t, d + 1, u64::from(s)]
+    }
+}
+
+/// Independent oracle of one mip step: area-weighted integer average of the
+/// bytes, rounded to nearest with halves up.
+fn mip_oracle(src: &Img) -> Img {
+    let (w2, h2) = ((src.w / 2).max(1), (src.h / 2).max(1));
+    let mut px = Vec::with_capacity((w2 * h2 * 4) as usize);
+    for y in 0..h2 {
+        let wy = axis_weights(src.h, y);
+        for x in 0..w2 {
+            let wx = axis_weights(src.w, x);
+            let den = wx[3] * wy[3];
+            for c in 0..4 {
+                let mut sum = 0u64;
+                for j in 0..3u32 {
+                    for i in 0..3u32 {
+                        let wgt = wx[i as usize] * wy[j as usize];
+                        if wgt > 0 {
+                            sum += wgt * u64::from(src.at(2 * x + i, 2 * y + j)[c]);
+                        }
+                    }
+                }
+                px.push(((sum + den / 2) / den) as u8);
+            }
+        }
+    }
+    Img { w: w2, h: h2, px }
+}
+
+/// A backglass texture of exactly the image's size whose level 0 is the
+/// image (one opaque layer drawn 1:1), updated once.
+fn image_texture(ctx: &GpuContext, image: RgbaImage) -> BackglassTexture {
+    let (w, h) = (image.width, image.height);
+    let desc = BackglassDesc {
+        layers: vec![BackglassLayer { image, lamp: None }],
+    };
+    let mut t = BackglassTexture::new(ctx, &desc, w, h).unwrap();
+    assert!(t.update(ctx, &[]));
+    t
+}
+
+/// Every level `k + 1` equals the oracle of level `k` byte for byte.
+fn assert_chain_is_oracle(what: &str, levels: &[Img]) {
+    for k in 1..levels.len() {
+        let want = mip_oracle(&levels[k - 1]);
+        let got = &levels[k];
+        assert_eq!((got.w, got.h), (want.w, want.h), "{what} level {k} size");
+        let bad = got.px.iter().zip(&want.px).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            bad,
+            0,
+            "{what}: REQ-VIEW-002 level {k} differs from the area-weighted average of level {} in {bad} channels",
+            k - 1
+        );
+    }
+}
+
+fn opaque(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 3]) -> RgbaImage {
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, b] = f(x, y);
+            data.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    RgbaImage::from_rgba(w, h, data).unwrap()
+}
+
+/// REQ-VIEW-002 (review 6070807835): a 3x1 image `[0, 0, 255]` red has the
+/// whole-image average 85 as its 1x1 mip (the old 2x2 taps gave 0).
+#[test]
+fn req_view_002_odd_mip_3x1_is_whole_average() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_3x1");
+    let img = opaque(3, 1, |x, _| [if x == 2 { 255 } else { 0 }, 0, 0]);
+    let t = image_texture(ctx, img.clone());
+    assert_eq!(t.mip_level_count(), 2);
+    let levels = read_all(ctx, t.texture(), 3, 1, 2);
+    assert_eq!(levels[0].px, img.pixels, "level 0 is the image");
+    assert_eq!(levels[1].at(0, 0), [85, 0, 0, 255], "REQ-VIEW-002 1x1 mip");
+    assert_chain_is_oracle("3x1", &levels);
+}
+
+/// REQ-VIEW-002 (review 6070807835): an edge-only 5x3 image (255 only in
+/// the last column and the last row) keeps its edge in every level.
+#[test]
+fn req_view_002_odd_mip_edge_only_5x3() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_edge_only_5x3");
+    let img = opaque(5, 3, |x, y| {
+        let v = if x == 4 || y == 2 { 255 } else { 0 };
+        [v, v, v]
+    });
+    let t = image_texture(ctx, img.clone());
+    let n = t.mip_level_count();
+    assert_eq!(n, 3);
+    let levels = read_all(ctx, t.texture(), 5, 3, n);
+    assert_eq!(levels[0].px, img.pixels, "level 0 is the image");
+    // Level 1 is 2x1: x weights (2, 2, 1)/5 and (1, 2, 2)/5, y (1, 1, 1)/3.
+    // Left: only row 2 is lit, weight 5/15 -> 85. Right: x = 4 in rows 0
+    // and 1 (2/15 each) plus row 2 (5/15) -> 9/15 of 255 = 153.
+    assert_eq!(
+        levels[1].at(0, 0),
+        [85, 85, 85, 255],
+        "REQ-VIEW-002 level 1 left"
+    );
+    assert_eq!(
+        levels[1].at(1, 0),
+        [153, 153, 153, 255],
+        "REQ-VIEW-002 level 1 right"
+    );
+    assert_chain_is_oracle("5x3 edge", &levels);
+    // Whole-image average: 7 lit of 15 texels -> 7 * 255 / 15 = 119.
+    let last = levels[2].at(0, 0);
+    assert_eq!(
+        last,
+        [119, 119, 119, 255],
+        "REQ-VIEW-002 1x1 mip of the edge-only image"
+    );
+}
+
+/// REQ-VIEW-002 (review 6070807835): a 255x129 odd chain (a gradient with a
+/// bright last column and row, and a pseudo-random image) equals the
+/// area-weighted oracle at every level; the 1x1 level is the whole-image
+/// average computed level by level (each level rounded to nearest, so within
+/// half a byte per reduction of the original mean). Every level of the
+/// gradient is written for the visual check.
+#[test]
+fn req_view_002_odd_mip_chain_255x129() {
+    let (_g, ctx) = setup!("req_view_002_odd_mip_chain_255x129");
+    let (w, h) = (255, 129);
+    let gradient = opaque(w, h, |x, y| {
+        if x == w - 1 || y == h - 1 {
+            [255, 255, 255]
+        } else {
+            [x as u8, (y * 255 / (h - 1)) as u8, ((x + y) / 2) as u8]
+        }
+    });
+    let noise = opaque(w, h, |x, y| {
+        let mut v = x.wrapping_mul(0x9e37_79b9) ^ y.wrapping_mul(0x85eb_ca6b);
+        v ^= v >> 15;
+        v = v.wrapping_mul(0x2c1b_3c6d);
+        v ^= v >> 12;
+        [v as u8, (v >> 8) as u8, (v >> 16) as u8]
+    });
+    for (name, img) in [("odd_gradient", gradient), ("odd_noise", noise)] {
+        let t = image_texture(ctx, img.clone());
+        let n = t.mip_level_count();
+        assert_eq!(n, mip_level_count(w, h));
+        let levels = read_all(ctx, t.texture(), w, h, n);
+        for (a, b) in levels[0].px.iter().zip(&img.pixels) {
+            assert!(a.abs_diff(*b) <= 1, "{name}: level 0 is the image");
+        }
+        assert_chain_is_oracle(name, &levels);
+        let (avg, last) = (mean_all(&levels[0]), mean_all(&levels[n as usize - 1]));
+        assert!(
+            max_diff4(avg, last) <= 1.5,
+            "{name}: REQ-VIEW-002 1x1 mip {last:?} vs whole-image average {avg:?}"
+        );
+        for (k, lv) in levels.iter().enumerate() {
+            save(&format!("{name}_mip{k}"), lv);
+        }
+    }
+}
+
+/// REQ-VIEW-002 (review 6070807835): exact 2:1 reductions keep the
+/// four-texel average `(sum + 2) / 4` byte for byte (a pseudo-random 64x64
+/// image, so every level is an exact 2:1 reduction on both axes).
+#[test]
+fn req_view_002_even_mip_chain_is_four_texel_average() {
+    let (_g, ctx) = setup!("req_view_002_even_mip_chain");
+    let (w, h) = (64, 64);
+    let img = opaque(w, h, |x, y| {
+        let v = (x * 131 + y * 71 + x * y * 17) ^ (x << 3);
+        [v as u8, (v >> 3) as u8, (v >> 5) as u8]
+    });
+    let t = image_texture(ctx, img);
+    let n = t.mip_level_count();
+    let levels = read_all(ctx, t.texture(), w, h, n);
+    for k in 1..levels.len() {
+        let (src, dst) = (&levels[k - 1], &levels[k]);
+        for y in 0..dst.h {
+            for x in 0..dst.w {
+                for c in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|(i, j)| u32::from(src.at(2 * x + i, 2 * y + j)[c]))
+                        .sum();
+                    assert_eq!(
+                        u32::from(dst.at(x, y)[c]),
+                        (sum + 2) / 4,
+                        "REQ-VIEW-002 level {k} ({x},{y}) ch {c}"
+                    );
+                }
+            }
+        }
+    }
 }
