@@ -38,7 +38,7 @@ fn entries() -> Vec<TableEntry> {
                     file: "preview.png".into(),
                     width: 2,
                     height: 1,
-                    rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+                    rgba: vec![255u8, 0, 0, 255, 0, 255, 0, 255].into(),
                 }),
                 preview_error: Some("preview.jpg ignored".into()),
                 warning_count: 2,

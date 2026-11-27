@@ -110,8 +110,17 @@ pub struct FrameStateSnapshot {
     pub dynamic_mesh_count: u8,
     /// Dynamic mesh transforms (normative slot convention, REQ-VIS-002).
     ///
-    /// `dynamic_meshes[i]` is the world transform of the moving part of the i-th `[[mechs]]`
-    /// entry in `table.toml` order. Every mech has exactly one slot, so there are no gaps and
+    /// Status: the convention below is normative for publishers. The production simulation
+    /// publishes the slots (work-unit #103, KP-023): one slot per `[[mechs]]` entry, in
+    /// `table.toml` order, up to [`MAX_DYNAMIC_MESHES`], and it sets `dynamic_mesh_count` to
+    /// the number of slots published. Renderers (#108, KP-027) draw any mech beyond
+    /// `dynamic_mesh_count` at its rest pose.
+    ///
+    /// `dynamic_meshes[i]` is a transform in world axes (metres, radians, quaternion
+    /// `[x, y, z, w]`) applied to the rest pose of the moving part of the i-th `[[mechs]]`
+    /// entry in `table.toml` order; per kind below, translation is either an absolute
+    /// position (pivot, hinge) or an offset from the rest or home pose, and the per-kind rule
+    /// wins. Every mech has exactly one slot, so there are no gaps and
     /// a renderer binds slot to mech with no further field. Slot data is world space, SI
     /// (metres, radians), quaternion `[x, y, z, w]`. Meaning per mech kind:
     ///

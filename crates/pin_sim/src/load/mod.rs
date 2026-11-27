@@ -857,6 +857,7 @@ impl Simulation {
                     newtons.push(NewtonBinding {
                         chain: index,
                         switch: mech.switch,
+                        layer: def.layer.unwrap_or(0),
                     });
                 }
                 _ => {}

@@ -5,15 +5,38 @@
 //! chain. Mip level 0 is drawn by the existing renderer
 //! ([`BackglassRenderer`] / [`ScoreRenderer`]) over the whole texture, exactly
 //! as `render_*_to_image` draws an offscreen image of the same size; levels
-//! 1.. are a 2 × 2 box average of the level above, computed on the stored
-//! (display-encoded) bytes with integer round-to-nearest. A redraw happens
-//! only when the content changed (DMD frame, LCD draw list, lamp levels per
+//! 1.. are an area-weighted average of the level above (the 2 × 2 box
+//! average for an exact 2:1 reduction; on an odd side every texel
+//! contributes by its overlap), computed on the stored (display-encoded)
+//! bytes in integers with round-to-nearest.
+//!
+//! Each level is rounded to nearest on its own, from the rounded bytes of
+//! the level above. The 1 × 1 level is therefore the area-weighted average
+//! computed level by level: every texel of level 0 contributes to it, but it
+//! need not equal the original mean rounded once. The area weighting keeps
+//! the mean of a level equal to the mean of the level above before rounding,
+//! so each reduction moves the mean by at most half a byte, and the 1 × 1
+//! byte is within half a byte times the number of reductions of the
+//! original mean. Example: a 5 × 1 image with red bytes `[1, 1, 0, 0, 0]`
+//! reduces to `[1, 0]` and then `[1]`, while its mean 0.4 rounds to 0.
+//!
+//! A redraw happens only when the content changed (DMD
+//! frame, LCD draw list, lamp levels per
 //! [`BackglassRenderer::needs_redraw`]) or after `mark_dirty`; it redraws
 //! level 0 and regenerates every mip in one submit. The GPU texture object is
 //! created once and kept for the life of the display, so a material bound to
 //! [`BackglassTexture::view`] / [`ScoreTexture::view`] never needs rebuilding.
+//!
+//! LCD images: the owner of an LCD [`ScoreTexture`] registers every image the
+//! scenes' image layers use with [`ScoreTexture::set_image`] (keyed by the
+//! layer's `file`). An image item whose file is not registered is skipped
+//! when drawing: a missing bundle image never aborts rendering (untrusted
+//! bundles, D25), and registering the file is the way to draw it.
 
-use super::{BackglassDesc, BackglassRenderer, DisplayContent, ScoreDisplayConfig, ScoreRenderer};
+use super::{
+    BackglassDesc, BackglassRenderer, DisplayContent, DmdSpec, RgbaImage, ScoreDisplayConfig,
+    ScoreRenderer,
+};
 use crate::gpu::{GpuContext, GpuError};
 use crate::topology::Rect;
 
@@ -45,9 +68,50 @@ pub(super) fn check_texture_size(width: u32, height: u32, max: u32) -> Result<()
     Ok(())
 }
 
-/// 2 × 2 box-filter mip step: one fullscreen triangle per level, reading the
-/// level above with `textureLoad` (edge texels clamped for odd sizes) and
-/// averaging the bytes as integers, rounded to nearest.
+/// Refuses a score display `config` its renderer cannot build without a
+/// wgpu panic: a DMD spec outside [`DmdSpec::new`]'s bounds, or whose dot
+/// texture has a side above `max` (the device's `max_texture_dimension_2d`).
+/// An LCD config creates no canvas-sized texture and is accepted.
+fn check_score_config(config: &ScoreDisplayConfig, max: u32) -> Result<(), GpuError> {
+    match *config {
+        ScoreDisplayConfig::Dmd(spec) => {
+            DmdSpec::new(spec.width, spec.height, spec.color)
+                .map_err(|e| GpuError::InvalidArgument(format!("score display: {e}")))?;
+            if spec.width > max || spec.height > max {
+                return Err(GpuError::InvalidArgument(format!(
+                    "score display: DMD dot texture {}x{} (each side must be 1..={max})",
+                    spec.width, spec.height
+                )));
+            }
+            Ok(())
+        }
+        ScoreDisplayConfig::Lcd(_) => Ok(()),
+    }
+}
+
+/// Area-weighted mip step: one fullscreen triangle per level, reading the
+/// level above with `textureLoad` and averaging its bytes with integer
+/// weights, rounded to nearest (halves round up).
+///
+/// Per axis, a source side `s` maps to `t = max(1, s / 2)` destination
+/// texels; destination texel `d` covers the source span
+/// `[d * s / t, (d + 1) * s / t)` and each source texel is weighted by its
+/// overlap with that span:
+///
+/// * `s` even (an exact 2:1 axis): texels `2d, 2d + 1`, weights `1, 1` of 2;
+/// * `s` odd and above 1: texels `2d, 2d + 1, 2d + 2`, weights
+///   `t - d, t, d + 1` of `s` (every texel of the axis contributes; with
+///   `s = 3` the one destination texel covers the whole axis);
+/// * `s == 1`: texel 0, weight 1 of 1.
+///
+/// The two axes combine as the product of their weights over the divisor
+/// `D = Dx * Dy`; the result is `floor((S + floor(D / 2)) / D)` of the
+/// weighted byte sum `S`, so an exact 2 × 2 reduction is
+/// `(sum + 2) / 4`, the plain four-texel average. `S` can exceed 32 bits on
+/// large odd sides, so it is carried as quotient and remainder per row
+/// (every intermediate stays below `2.5 * D`, within `u32` for sides up to
+/// 32 768). All arithmetic on bytes is integer, so the result is the same
+/// on every adapter.
 const MIP_WGSL: &str = r#"
 @group(0) @binding(0) var src: texture_2d<f32>;
 
@@ -58,20 +122,53 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-fn load_bytes(p: vec2<i32>, last: vec2<i32>) -> vec4<u32> {
-    let c = textureLoad(src, min(p, last), 0);
+fn load_bytes(p: vec2<u32>, last: vec2<u32>) -> vec4<u32> {
+    let c = textureLoad(src, vec2<i32>(min(p, last)), 0);
     return vec4<u32>(round(clamp(c, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0));
+}
+
+// Weights of the source texels 2d, 2d + 1, 2d + 2 for destination texel d
+// of a source side s, and their divisor (w).
+fn axis_weights(s: u32, d: u32) -> vec4<u32> {
+    if (s == 1u) {
+        return vec4<u32>(1u, 0u, 0u, 1u);
+    }
+    if ((s & 1u) == 0u) {
+        return vec4<u32>(1u, 1u, 0u, 2u);
+    }
+    let t = s / 2u;
+    return vec4<u32>(t - d, t, d + 1u, s);
 }
 
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let last = vec2<i32>(textureDimensions(src)) - vec2<i32>(1, 1);
-    let base = vec2<i32>(floor(pos.xy)) * 2;
-    let sum = load_bytes(base, last)
-        + load_bytes(base + vec2<i32>(1, 0), last)
-        + load_bytes(base + vec2<i32>(0, 1), last)
-        + load_bytes(base + vec2<i32>(1, 1), last);
-    let avg = (sum + vec4<u32>(2u)) / 4u;
+    let size = textureDimensions(src);
+    let last = size - vec2<u32>(1u, 1u);
+    let d = vec2<u32>(floor(pos.xy));
+    let base = d * 2u;
+    let wx = axis_weights(size.x, d.x);
+    let wy = axis_weights(size.y, d.y);
+    // S = dx * a + b with a = sum wy * (row / dx), b = sum wy * (row % dx).
+    var a = vec4<u32>(0u);
+    var b = vec4<u32>(0u);
+    for (var j = 0u; j < 3u; j = j + 1u) {
+        let wyj = wy[j];
+        if (wyj == 0u) {
+            continue;
+        }
+        var row = vec4<u32>(0u);
+        for (var i = 0u; i < 3u; i = i + 1u) {
+            let wxi = wx[i];
+            if (wxi == 0u) {
+                continue;
+            }
+            row = row + wxi * load_bytes(base + vec2<u32>(i, j), last);
+        }
+        a = a + wyj * (row / wx.w);
+        b = b + wyj * (row % wx.w);
+    }
+    let den = wx.w * wy.w;
+    let avg = a / wy.w + (wx.w * (a % wy.w) + b + den / 2u) / den;
     return vec4<f32>(avg) / 255.0;
 }
 "#;
@@ -82,8 +179,80 @@ pub(super) fn mip_shader_source() -> &'static str {
     MIP_WGSL
 }
 
+/// Per-axis weights `[w0, w1, w2, divisor]` of the source texels `2d`,
+/// `2d + 1`, `2d + 2` for destination texel `d` of a source side `s`, as in
+/// `axis_weights` of [`MIP_WGSL`].
+#[cfg(test)]
+pub(super) fn mip_axis_weights(s: u32, d: u32) -> [u32; 4] {
+    if s == 1 {
+        [1, 0, 0, 1]
+    } else if s.is_multiple_of(2) {
+        [1, 1, 0, 2]
+    } else {
+        let t = s / 2;
+        [t - d, t, d + 1, s]
+    }
+}
+
+/// CPU reference of one step of [`MIP_WGSL`]: the next level of the
+/// `w × h` level `src` (row-major texels), with its size
+/// `(max(1, w / 2), max(1, h / 2))`. Each byte is the area-weighted sum
+/// `S` over the divisor `D` of [`mip_axis_weights`], computed exactly in
+/// 64 bits and rounded to nearest with halves up: `(S + D / 2) / D`.
+#[cfg(test)]
+pub(super) fn mip_reference(src: &[[u8; 4]], w: u32, h: u32) -> (Vec<[u8; 4]>, u32, u32) {
+    assert_eq!(src.len(), (w as usize) * (h as usize), "mip_reference size");
+    let (w2, h2) = ((w / 2).max(1), (h / 2).max(1));
+    let at = |x: u32, y: u32| src[(y.min(h - 1) * w + x.min(w - 1)) as usize];
+    let mut out = Vec::with_capacity((w2 * h2) as usize);
+    for y in 0..h2 {
+        let wy = mip_axis_weights(h, y);
+        for x in 0..w2 {
+            let wx = mip_axis_weights(w, x);
+            let den = u64::from(wx[3]) * u64::from(wy[3]);
+            let mut texel = [0u8; 4];
+            for (c, out_c) in texel.iter_mut().enumerate() {
+                let mut sum = 0u64;
+                for j in 0..3 {
+                    for i in 0..3 {
+                        let weight = u64::from(wx[i as usize]) * u64::from(wy[j as usize]);
+                        sum += weight * u64::from(at(2 * x + i, 2 * y + j)[c]);
+                    }
+                }
+                *out_c = u8::try_from((sum + den / 2) / den).expect("weighted mean of bytes");
+            }
+            out.push(texel);
+        }
+    }
+    (out, w2, h2)
+}
+
+/// The final division of [`MIP_WGSL`] in its 32-bit form: given the weighted
+/// row sums `rows[j] = (wy_j, sum_i wx_i * byte_ij)` and the divisors
+/// `dx`, `dy`, returns `(S + D / 2) / D` for `S = sum_j wy_j * row_j`,
+/// `D = dx * dy`, or `None` if any intermediate overflows `u32`.
+#[cfg(test)]
+pub(super) fn mip_split_divide(rows: &[(u32, u32)], dx: u32, dy: u32) -> Option<u32> {
+    let (mut a, mut b) = (0u32, 0u32);
+    for &(wy, row) in rows {
+        a = a.checked_add(wy.checked_mul(row / dx)?)?;
+        b = b.checked_add(wy.checked_mul(row % dx)?)?;
+    }
+    let den = dx.checked_mul(dy)?;
+    let rest = dx
+        .checked_mul(a % dy)?
+        .checked_add(b)?
+        .checked_add(den / 2)?;
+    Some(a / dy + rest / den)
+}
+
 /// The texture, its views and the mip generator shared by both displays.
+/// The redraw encoder is created on, and submitted to, the device and queue
+/// of the context the texture was created with (kept here), never a
+/// caller's (#163 round 12, finding 21).
 struct MipTexture {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// One single-level view per mip level (render targets).
@@ -194,6 +363,8 @@ impl MipTexture {
             })
             .collect();
         let t = MipTexture {
+            device: device.clone(),
+            queue: ctx.queue().clone(),
             texture,
             view,
             level_views,
@@ -209,7 +380,7 @@ impl MipTexture {
         for v in &t.level_views {
             clear_pass(&mut encoder, v);
         }
-        ctx.queue().submit([encoder.finish()]);
+        t.queue.submit([encoder.finish()]);
         Ok(t)
     }
 
@@ -218,14 +389,14 @@ impl MipTexture {
     }
 
     /// Clears level 0, records `draw` into it over the whole texture,
-    /// regenerates every mip and submits it all at once.
+    /// regenerates every mip and submits it all at once, on the owning
+    /// device and queue.
     fn redraw(
         &mut self,
-        ctx: &GpuContext,
         draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, (u32, u32), Rect),
     ) {
-        let mut encoder = ctx
-            .device()
+        let mut encoder = self
+            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("display texture redraw"),
             });
@@ -260,7 +431,7 @@ impl MipTexture {
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..3, 0..1);
         }
-        ctx.queue().submit([encoder.finish()]);
+        self.queue.submit([encoder.finish()]);
         self.redraws += 1;
     }
 }
@@ -319,13 +490,20 @@ impl BackglassTexture {
     /// [`BackglassRenderer::needs_redraw`] says so (first call, after
     /// [`mark_dirty`](Self::mark_dirty), or a referenced lamp moved by at
     /// least [`LAMP_REDRAW_EPSILON`](super::LAMP_REDRAW_EPSILON)). Returns
-    /// whether it redrew; otherwise no GPU work is recorded.
+    /// whether it redrew; otherwise no GPU work is recorded and nothing is
+    /// allocated.
+    ///
+    /// `ctx` must be the context `self` was created with. The redraw is
+    /// recorded on that creating context's device and submitted to its
+    /// queue (both kept by `self`), never `ctx`'s (#163 round 12, finding
+    /// 21).
     pub fn update(&mut self, ctx: &GpuContext, lamps: &[f32]) -> bool {
+        let _ = ctx; // the owning device and queue are used (see above)
         if !self.renderer.needs_redraw(lamps) {
             return false;
         }
         let renderer = &mut self.renderer;
-        self.target.redraw(ctx, |encoder, view, size, viewport| {
+        self.target.redraw(|encoder, view, size, viewport| {
             renderer.encode(encoder, view, size, viewport, lamps);
         });
         true
@@ -379,35 +557,104 @@ pub struct ScoreTexture {
 impl ScoreTexture {
     /// Builds the renderer of `config` for [`DISPLAY_TEXTURE_FORMAT`] and a
     /// `width × height` texture with [`mip_level_count`] levels, every level
-    /// transparent black. A side of 0 or above the device's
-    /// `max_texture_dimension_2d` is a [`GpuError::InvalidArgument`].
+    /// transparent black.
+    ///
+    /// Errors, all [`GpuError::InvalidArgument`] and never a wgpu panic
+    /// (D25), checked before any GPU resource is created:
+    ///
+    /// * a `width` or `height` of 0 or above the device's
+    ///   `max_texture_dimension_2d`;
+    /// * a DMD `config` whose [`DmdSpec`] is outside the bounds of
+    ///   [`DmdSpec::new`] (16..=512 × 8..=256 dots; the fields are public, so
+    ///   a spec can bypass that constructor) or whose dot texture
+    ///   (`spec.width × spec.height`) exceeds `max_texture_dimension_2d`
+    ///   (#163 round 13, finding 16).
+    ///
+    /// An LCD `config` is not checked here: its renderer creates no
+    /// canvas-sized texture (the canvas only scales the draw list), so no
+    /// canvas size reaches a wgpu panic. Valid configurations are unchanged.
     pub fn new(
         ctx: &GpuContext,
         config: ScoreDisplayConfig,
         width: u32,
         height: u32,
     ) -> Result<ScoreTexture, GpuError> {
-        check_texture_size(
-            width,
-            height,
-            ctx.device().limits().max_texture_dimension_2d,
-        )?;
+        let max = ctx.device().limits().max_texture_dimension_2d;
+        check_texture_size(width, height, max)?;
+        check_score_config(&config, max)?;
         let renderer = ScoreRenderer::new(ctx, DISPLAY_TEXTURE_FORMAT, config);
         let target = MipTexture::new(ctx, "score texture", width, height)?;
         Ok(ScoreTexture { renderer, target })
     }
 
+    /// Registers the image that LCD scene image layers with `file = <file>`
+    /// draw (forwards to [`ScoreRenderer::set_image`]). Call it for every
+    /// image the scenes use (the bundle's [`ImageSet`](super::ImageSet));
+    /// setting the same file again replaces its texture in place. A
+    /// successful call makes the next `update` with LCD content redraw, so
+    /// the image appears without a content change.
+    ///
+    /// How much a caller must do depends on the layer's height (#163 round
+    /// 13, finding 17):
+    ///
+    /// * **Explicit height** (`h > 0`): the composed draw list already holds
+    ///   the [`LcdItem::Image`](super::LcdItem::Image) with its rectangle, so
+    ///   calling `set_image` before or after the first
+    ///   [`update`](Self::update) is enough (redraw only); replacing the
+    ///   image redraws the same rectangle with the new pixels.
+    /// * **Auto height** (`h = 0`): [`LcdDrawList::compose`](super::LcdDrawList::compose)
+    ///   takes the height from the image's aspect ratio, so the image must
+    ///   *also* be in the `ImageSet` passed to `compose`. When it is missing
+    ///   (or invalid) there, `compose` leaves the layer out of the draw list,
+    ///   and `set_image` cannot add it to an existing list. After
+    ///   registering such an image late, or replacing it with one of a
+    ///   different aspect ratio, add it to that `ImageSet`, recompose the
+    ///   draw list and pass the new list to [`update`](Self::update).
+    ///
+    /// An [`LcdItem::Image`](super::LcdItem::Image) whose file was never
+    /// registered is skipped when drawing (no error, no log): a missing
+    /// bundle image never aborts rendering, and the rest of the scene still
+    /// draws. Registering the file is the way to draw it.
+    ///
+    /// Errors, all [`GpuError::InvalidArgument`] and never a panic
+    /// (untrusted bundles, D25): an invalid image, or one with a side above
+    /// the device's `max_texture_dimension_2d` (a previous image of that
+    /// file stays and the display is not marked changed), and any image on a
+    /// DMD score display, which has no image layers.
+    ///
+    /// `ctx` must be the context `self` was created with. The upload always
+    /// uses the queue of that creating context (kept by the renderer), so
+    /// another context can neither panic wgpu nor replace the previous image
+    /// with a texture that lacks its pixels (#163 round 12, finding 21).
+    pub fn set_image(
+        &mut self,
+        ctx: &GpuContext,
+        file: &str,
+        image: &RgbaImage,
+    ) -> Result<(), GpuError> {
+        self.renderer.set_image(ctx, file, image)
+    }
+
     /// Takes `content` and, only when [`ScoreRenderer::update`] reports a
     /// change (a different DMD frame or LCD draw list, the first call, or
-    /// after [`mark_dirty`](Self::mark_dirty)), redraws level 0 and
-    /// regenerates every mip in one submit. Returns whether it redrew;
-    /// content of the other display mode is ignored (`false`).
+    /// after [`mark_dirty`](Self::mark_dirty) or a successful
+    /// [`set_image`](Self::set_image)), redraws level 0 and regenerates every
+    /// mip in one submit. Returns whether it redrew; content of the other
+    /// display mode is ignored (`false`). LCD image items draw the image
+    /// registered for their file with [`set_image`](Self::set_image); an
+    /// image item whose file is not registered is skipped (the rest of the
+    /// draw list still draws).
+    ///
+    /// `ctx` must be the context `self` was created with. Frame uploads and
+    /// the redraw use that creating context's device and queue (kept by
+    /// `self`), never `ctx`'s (#163 round 12, finding 21).
     pub fn update(&mut self, ctx: &GpuContext, content: &DisplayContent) -> bool {
-        if !self.renderer.update(ctx.queue(), content) {
+        let _ = ctx; // the owning device and queue are used (see above)
+        if !self.renderer.update(&self.target.queue, content) {
             return false;
         }
         let renderer = &mut self.renderer;
-        self.target.redraw(ctx, |encoder, view, size, viewport| {
+        self.target.redraw(|encoder, view, size, viewport| {
             renderer.encode(encoder, view, size, viewport);
         });
         true

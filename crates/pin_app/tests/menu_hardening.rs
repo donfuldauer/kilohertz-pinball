@@ -636,7 +636,7 @@ fn thumb_entry(k: usize, w: u32, h: u32) -> TableEntry {
                 file: "preview.png".into(),
                 width: w,
                 height: h,
-                rgba: vec![0u8; (w * h * 4) as usize],
+                rgba: vec![0u8; (w * h * 4) as usize].into(),
             }),
             preview_error: if k.is_multiple_of(7) {
                 Some("note".into())
@@ -878,7 +878,7 @@ fn table_list_is_virtualised() {
 // ------------------------------------------------------------------ T14
 
 fn preview_tables(n: usize) -> Vec<TableEntry> {
-    let shared = vec![128u8; THUMB];
+    let shared: std::sync::Arc<[u8]> = vec![128u8; THUMB].into();
     (0..n)
         .map(|k| {
             let mut e = plain_tables(1).remove(0);
