@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 16
 - Resolved queue lines: 323
-- Decision entries: 661
-- Run-log rows: 691
+- Decision entries: 668
+- Run-log rows: 713
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -640,6 +640,13 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #130: Additive `table_audio` instead of changing `RegisteredSound` (docs/DECISIONS.md)
 - #130: A streamed track owns its compressed bytes in memory (docs/DECISIONS.md)
 - Process: Gate reviews have a round limit (docs/DECISIONS.md)
+- #137 KP-056: validation lints (docs/DECISIONS.md)
+- #131: config.toml save: symlinks, mode and directory sync (docs/DECISIONS.md)
+- #131: Non-UTF-8 paths are left out of config.toml (docs/DECISIONS.md)
+- #131: Text form of f32 settings and preserved datetimes (docs/DECISIONS.md)
+- #131: Preview byte budgets: drop instead of re-decode (docs/DECISIONS.md)
+- #131: ui_scale range, step and fallback (docs/DECISIONS.md)
+- #131: Virtualised table rows: fixed row height (docs/DECISIONS.md)
 - #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
 - #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
 - #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
