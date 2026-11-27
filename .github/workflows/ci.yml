@@ -143,6 +143,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # No SDL/X11/audio packages here on purpose: the GPU-free crates must build
       # and test without display or GPU (PLAN.md §2.3 rule 3); only pin_app uses sdl3.
@@ -196,6 +198,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # No SDL/X11/audio packages here on purpose: the GPU-free crates must build
       # and test without display or GPU (PLAN.md §2.3 rule 3); only pin_app uses sdl3.
@@ -257,6 +261,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
         if: runner.os == 'Linux'
@@ -340,11 +346,14 @@ jobs:
       # image that ships a newer stable changed the key and no cache was ever restored. The key
       # is the pinned compiler plus Cargo.lock instead. cache-on-failure saves the compiled build
       # even when a step fails or times out, so a cold run that runs out of time still leaves a
-      # warm cache for the next run.
+      # warm cache for the next run. Issue #220: every rust-cache step in every workflow saves
+      # only on main (save-if), so pull-request caches cannot evict main's under the 10 GB
+      # repository limit; pull-request and branch runs restore main's caches and never save.
       - name: Rust cache
         id: rust-cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           add-rust-environment-hash-key: false
           key: rustc-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -368,7 +377,9 @@ jobs:
       # Gate #163 round 13: the build's timeout is min(32, JOB_TIMEOUT_MIN - reserve - elapsed),
       # computed before the build with the same reserve and elapsed formula as the Test-step
       # budget below (keep the two in step), so a timed-out build (which skips the test budget
-      # step) still leaves the 8 min cache-save reserve inside the job cap whatever the set-up time.
+      # step) still leaves the cache-save reserve inside the job cap whatever the set-up time.
+      # Issue #220: the cache-miss reserve is 5 min (about 3x the measured 1.2-1.5 min save of
+      # a ~630 MB cache), down from 8, so a cold run (~23 min build) leaves ~16 min for the tests.
       - name: Build-step budget
         id: build_budget
         if: runner.os != 'Linux'
@@ -379,7 +390,7 @@ jobs:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
           MAX_BUILD_MIN: "32"
         run: |
-          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
+          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=5; fi
           # Rounded up, plus 1 min for the runner's job set-up before the first step.
           elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
           minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
@@ -394,8 +405,9 @@ jobs:
         run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app --no-run
 
       # Issue #205: the test step's timeout is the job timeout minus the time used so far minus a
-      # reserve for the rust-cache post-step (8 min when it has to save, 1 min when the restored
-      # cache is an exact match and the save is skipped). A timed-out step fails the job but the
+      # reserve for the rust-cache post-step (5 min when it has to save, issue #220: the measured
+      # save takes 1.2-1.5 min; 1 min when the restored cache is an exact match and the save is
+      # skipped). Only main runs save (save-if). A timed-out step fails the job but the
       # cache is still saved (cache-on-failure), so the next run is warm. The reserve is never
       # reduced: when fewer than MIN_TEST_MIN minutes remain for the tests (the test run needs
       # roughly 15 minutes, so below MIN_TEST_MIN it cannot finish), this step fails the job
@@ -410,7 +422,7 @@ jobs:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
           MIN_TEST_MIN: "10"
         run: |
-          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
+          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=5; fi
           # Rounded up, plus 1 min for the runner's job set-up before the first step.
           elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
           minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
@@ -446,6 +458,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Linux packages (SDL3 build headers)
         if: runner.os == 'Linux'
@@ -497,6 +511,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
@@ -565,6 +581,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
@@ -623,6 +641,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: aarch64-unknown-linux-gnu-qemu
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, target aarch64-unknown-linux-gnu)
@@ -688,6 +707,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
@@ -734,6 +755,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }})
         shell: bash
@@ -785,6 +808,8 @@ jobs:
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 

@@ -51,6 +51,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             spikes -> target
             spikes/spec_0_1 -> target
