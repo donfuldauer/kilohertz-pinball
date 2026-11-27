@@ -59,14 +59,12 @@ pub fn add_module() -> Vec<u8> {
 /// #164 KP-070: validates `bytes` with wasmparser (default features) and
 /// counts the functions it defines.
 pub fn defined_functions(bytes: &[u8]) -> Result<u32, wasmparser::BinaryReaderError> {
-    let mut v = wasmparser::Validator::new();
+    wasmparser::validate(bytes)?;
     let mut n = 0;
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        let payload = payload?;
-        if let wasmparser::Payload::FunctionSection(r) = &payload {
+        if let wasmparser::Payload::FunctionSection(r) = payload? {
             n = r.count();
         }
-        v.payload(&payload)?;
     }
     Ok(n)
 }

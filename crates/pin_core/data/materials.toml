@@ -1,0 +1,189 @@
+# Built-in material library shipped with the engine (SPEC Appendix A.5, REQ-BUILD-004).
+#
+# Each [[materials]] entry names how a part looks (render parameters, Subphase 5.1) and, for
+# a part the ball can touch, how it plays: `physical` is a material of the Appendix C
+# material-pair table. Colours are sRGB "#rrggbb". A table's [[materials]] entry with the same
+# id replaces an entry here whole.
+#
+# The seven physical names come first; each plays as itself, so `material = "wood"` in a
+# layout.toml means exactly what it meant before this library existed. Their colours,
+# metallic, roughness and alpha are the generator's flat placeholder materials converted to
+# sRGB.
+
+schema_version = 1
+
+# --- the seven physical materials -----------------------------------------------------------
+
+[[materials]]
+id = "steel"
+base_color = "#ceced1"
+metallic = 1.0
+roughness = 0.25
+physical = "steel"
+
+[[materials]]
+id = "ceramic"
+base_color = "#f3f3f1"
+roughness = 0.2
+physical = "ceramic"
+
+[[materials]]
+id = "plastic"
+base_color = "#e7e7e7"
+roughness = 0.4
+physical = "plastic"
+
+[[materials]]
+id = "resin"
+base_color = "#b37c45"
+roughness = 0.35
+physical = "resin"
+
+[[materials]]
+id = "rubber"
+base_color = "#272727"
+roughness = 0.9
+physical = "rubber"
+
+[[materials]]
+id = "wood"
+base_color = "#c8a476"
+roughness = 0.55
+physical = "wood"
+
+[[materials]]
+id = "acrylic"
+base_color = "#edf6ff"
+roughness = 0.05
+alpha = 0.3
+translucent = true
+physical = "acrylic"
+
+# --- metals -----------------------------------------------------------------------------------
+
+[[materials]]
+id = "chrome"
+base_color = "#e8e8ec"
+metallic = 1.0
+roughness = 0.05
+physical = "steel"
+
+[[materials]]
+id = "brushed_steel"
+base_color = "#b4b4b8"
+metallic = 1.0
+roughness = 0.4
+physical = "steel"
+
+[[materials]]
+id = "brass"
+base_color = "#d6b25e"
+metallic = 1.0
+roughness = 0.3
+physical = "steel"
+
+# --- rubbers (ring and band colours) ----------------------------------------------------------
+
+[[materials]]
+id = "rubber_black"
+base_color = "#1a1a1a"
+roughness = 0.85
+physical = "rubber"
+
+[[materials]]
+id = "rubber_white"
+base_color = "#f0f0ec"
+roughness = 0.8
+physical = "rubber"
+
+[[materials]]
+id = "rubber_red"
+base_color = "#c01818"
+roughness = 0.8
+physical = "rubber"
+
+[[materials]]
+id = "rubber_blue"
+base_color = "#1838c0"
+roughness = 0.8
+physical = "rubber"
+
+# --- plastics and acrylic ---------------------------------------------------------------------
+
+[[materials]]
+id = "acrylic_clear"
+base_color = "#f4f8ff"
+roughness = 0.02
+clearcoat = 1.0
+alpha = 0.15
+translucent = true
+physical = "acrylic"
+
+[[materials]]
+id = "plastic_white"
+base_color = "#f2f2f2"
+roughness = 0.35
+physical = "plastic"
+
+[[materials]]
+id = "plastic_black"
+base_color = "#151515"
+roughness = 0.35
+physical = "plastic"
+
+[[materials]]
+id = "plastic_translucent"
+base_color = "#e0ecff"
+roughness = 0.2
+alpha = 0.6
+translucent = true
+physical = "plastic"
+
+[[materials]]
+id = "plastic_uv"
+base_color = "#f0f040"
+roughness = 0.3
+uv_reactive = true
+physical = "plastic"
+
+# --- ceramic and wood finishes ----------------------------------------------------------------
+
+[[materials]]
+id = "ceramic_pearl"
+base_color = "#f6f2ea"
+roughness = 0.1
+clearcoat = 1.0
+physical = "ceramic"
+
+[[materials]]
+id = "wood_clearcoat"
+base_color = "#c8a476"
+roughness = 0.35
+clearcoat = 1.0
+physical = "wood"
+
+[[materials]]
+id = "wood_painted"
+base_color = "#2b2d42"
+roughness = 0.5
+physical = "wood"
+
+# --- light-emitting lenses (visual only) ------------------------------------------------------
+
+[[materials]]
+id = "insert_lens"
+base_color = "#ffffff"
+roughness = 0.15
+alpha = 0.8
+translucent = true
+emissive = "#ffffff"
+emissive_strength = 1.0
+
+[[materials]]
+id = "lamp_lens"
+base_color = "#fff4e0"
+roughness = 0.1
+alpha = 0.7
+translucent = true
+emissive = "#fff4e0"
+emissive_strength = 4.0

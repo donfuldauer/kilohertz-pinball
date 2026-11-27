@@ -110,6 +110,57 @@ fn wasm_encoder_module_validates() {
     assert!(dep_smoke::defined_functions(b"\0asm\x02\0\0\0").is_err());
 }
 
+/// #164 KP-070 (CR-r1 finding 9): `defined_functions` validates function
+/// bodies, not just the section structure.
+#[test]
+fn defined_functions_rejects_invalid_body() {
+    use wasm_encoder::{
+        CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
+        TypeSection, ValType,
+    };
+    let mut types = TypeSection::new();
+    types
+        .ty()
+        .function([ValType::I32, ValType::I32], [ValType::I32]);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+    let mut exports = ExportSection::new();
+    exports.export("add", ExportKind::Func, 0);
+    let mut body = Function::new([]);
+    body.instruction(&Instruction::LocalGet(0))
+        .instruction(&Instruction::LocalGet(1))
+        .instruction(&Instruction::F32Add)
+        .instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&body);
+    let mut m = Module::new();
+    m.section(&types)
+        .section(&funcs)
+        .section(&exports)
+        .section(&code);
+    let bytes = m.finish();
+    assert!(dep_smoke::defined_functions(&bytes).is_err());
+}
+
+/// #164 KP-070: `defined_functions` never panics on arbitrary bytes (R11).
+#[test]
+fn defined_functions_survives_random_bytes() {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    for len in 0..300usize {
+        let mut buf = vec![0u8; len];
+        for b in &mut buf {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *b = (x >> 56) as u8;
+        }
+        let _ = dep_smoke::defined_functions(&buf);
+        let mut with_header = b"\0asm\x01\0\0\0".to_vec();
+        with_header.extend_from_slice(&buf);
+        let _ = dep_smoke::defined_functions(&with_header);
+    }
+}
+
 /// #164 KP-070: wasmi 2.0.2 (std, validate, auto-dispatch, deterministic)
 /// runs the module under fuel metering, deterministically.
 #[test]
