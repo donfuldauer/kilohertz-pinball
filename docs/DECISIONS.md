@@ -9234,6 +9234,66 @@ weakened).
 **Rationale:** `show_rows` needs one constant height. Computing it from the active text styles keeps the row legible at every `ui_scale`. Badges that do not fit are shown in full, wrapped, in the details column, so nothing is lost, and the existing layout tests (no text beyond the panel's inner edge) still hold.
 **Alternatives:** Wrapped badge rows of varying height (rejected: they cannot be virtualised with `show_rows`). A fixed height in points regardless of style (rejected: it would clip text if the style changes).
 
+## #180 — Web audio ABI, record format and pending list
+
+**Decision:** The `pwa_*` C ABI and the 16-byte command record are exactly as the brief fixes them, with no deviations. Four points the brief left open: (1) `pwa_submit` and `pwa_trigger` count as "accepted" only the records that entered the pending list. A valid record dropped because the list is full counts in stat 0, not in the return value, so for every submit `returned + Δstat0 + Δstat1 = records offered` (a trailing partial record included). (2) `pwa_trigger` with an id above 65535 counts in stat 1 (rejected), like the same record sent through `pwa_submit`. (3) Every function also accepts a null engine pointer and then does nothing: it returns null, 0 or NaN, and `pwa_register` returns `-6` (an added code that a pointer from `pwa_new` can never produce). (4) The pending list has 256 entries (the same as the command buffer, so one full `pwa_submit` always fits an empty list). It is kept sorted by (effective quantum, arrival) with a stable insert into a `Vec` whose capacity is never exceeded, so neither the insert nor the release allocates. `pwa_stage` reserves its growth with `try_reserve_exact` and returns null when the memory cannot be had, so a huge request on wasm32 fails cleanly and does not abort.
+**Rationale:** "1 = accepted, 0 = rejected or dropped" for `pwa_trigger` already treats a drop as not accepted, and `pwa_submit` follows the same rule. The null-pointer guard costs one branch per call and turns a host bug into a no-op rather than a wasm trap. 256 entries cover 64 quanta (about 170 ms at 48 kHz) of a heavy trigger load.
+**Alternatives:** Counting dropped records as accepted (rejected: `pwa_trigger` says otherwise). Trapping on null (rejected: a panic in wasm is an abort and kills the audio for the page). A binary heap for the pending list (rejected: not stable for equal quanta without an extra sequence key, and not needed at 256 entries).
+
+## #180 — Web audio wasm built with default flags
+
+**Decision:** `pin_web_audio.wasm` is built with `cargo build -p pin_web_audio --release --target wasm32-unknown-unknown`: no RUSTFLAGS, no `+simd128`, and no profile overrides (a member crate cannot set profiles, and `panic = "abort"` is already the wasm32-unknown-unknown behaviour). The browser test's nested build also strips `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` and the coverage wrappers, so it builds the same module even under `cargo llvm-cov`.
+**Rationale:** Bit-for-bit parity with native `Mixer::render` (R3) holds with the default flags. The Chromium test shows the same digest, `a08428a4c4bc78aa`, from the worklet, from the fallback and from native x86_64. The module has no imports, its only exports are `memory` and the nine `pwa_*` functions, and it is 45 KiB. `simd128` would only matter for speed. It is not needed for one 128-frame quantum at a time, and an explicit SIMD feature is the kind of width-dependent float change R3 asks us to avoid.
+**Alternatives:** Building with `-C target-feature=+simd128` like the S6 spike (rejected: no measured need, and one more flag for every build and CI job to carry).
+
+## #180 — Web audio fallback transport and block queue
+
+**Decision:** When the worklet cannot instantiate wasm (it posts `{type:'error'}`, or `addModule` or construction throws), `audio.js` instantiates the same wasm on the main thread with the asynchronous `WebAssembly.instantiate` and renders 128-frame quanta through the same ABI. It posts each quantum to the JS-only `pin-web-audio-fallback` processor as one planar block (128 left floats, then 128 right) in a transferred `ArrayBuffer`. There is no SharedArrayBuffer, so COOP/COEP is never needed (D43). The processor copies blocks into preallocated storage of `maxBlocks` blocks. `createWebAudio` takes an optional `maxBlocks`: 64 by default for a realtime context, and for an `OfflineAudioContext` the context length in quanta (at least 64), so `prerender` of a whole offline render fits. `prerender(n)` returns a Promise that resolves after a stats round trip to the processor, and `stats()` makes the same round trip first. Awaiting either therefore proves that every earlier message has reached the processor, which makes the offline render deterministic. The realtime pump is `setInterval` every 10 ms. It estimates the blocks consumed from `ctx.currentTime` and keeps at least 8 queued.
+**Rationale:** A transferred postMessage is the only cross-thread transport that works under the strict CSP with no cross-origin isolation. A planar layout matches the processor's output arrays, so the copy is two straight loops. The round-trip barrier uses the port's in-order delivery and needs no timer.
+**Alternatives:** A SharedArrayBuffer ring (rejected: it needs COOP/COEP, which D43 excludes). Interleaved blocks (rejected: it needs an extra deinterleave in the processor). Pumping from `requestAnimationFrame` (rejected by the brief: rAF stops in background tabs).
+
+## #180 — Gesture test: context created outside page.evaluate
+
+**Decision:** The Chromium gesture test creates its `AudioContext` from the page's module script at load time (`wa_index.html?gesture`), not from `page.evaluate`. It asserts `suspended` at creation and again 300 ms later, then clicks with `page.mouse.click` and asserts `running`, together with the `pin_web_audio latency:` console line. The browser is launched with Playwright's default arguments (no autoplay flag).
+**Rationale:** Playwright runs `page.evaluate` with a user gesture (`navigator.userActivation.isActive` is true inside it). A context created there starts `running` under every autoplay policy, which is what the first attempt showed. A context created at module load has no activation, so the default policy keeps it `suspended` until the real click, which is what REQ-WEB-022 "starts on the first user gesture" needs shown.
+**Alternatives:** Forcing `--autoplay-policy=user-gesture-required` (rejected: it did not help, because the evaluate gesture still counts, and it is not the default policy). Checking only that `resume` is called (rejected: it does not show the browser's real gating).
+
+## #180 — Worklet stats reply carries quantum sizes
+
+**Decision:** The worklet's `{type:'stats'}` reply carries `stats: [stat0..stat8]` and also `quantumFrames: {min, max}` and `processCalls`, both taken from `process`. The Chromium test uses them to assert that every quantum is 128 frames (600 calls, min = max = 128). The worklet itself does not compute a digest. The digest is computed in the page from the rendered `AudioBuffer`, and the brief makes the in-worklet digest optional.
+**Rationale:** The quantum size is checked where it happens and costs two compares per quantum. Adding hashing to the shipped worklet would put test code in production.
+**Alternatives:** A test-only worklet with a digest, as in S6 (rejected: the test would then not exercise the shipped `worklet.js`).
+
+## #180 (tester) — "`at` in the past" tested by suspending the offline context
+
+**Decision:** The Chromium protocol test checks a `cmds` record with `at` in the past by suspending the `OfflineAudioContext` at exactly 1.0 s (quantum 375 at 48 kHz, a time that is exact in binary). While the context is suspended, the test reads the worklet's stats (quantum index 375, 48 000 frames), posts one record with `at = 10`, waits for a stats round trip and resumes. The expected digest is native S6 plus the same trigger at quantum 375. Records posted before `startRendering()` use `at = quantum` (the S6 script), and the brief's "next quantum" and past-`at` cases at quantum 0 are covered natively in `spec_kp086_protocol.rs`.
+**Rationale:** Before the first render q = 0, so no `at` is in the past at quantum 0, and "apply at quantum 0" cannot tell a past `at` from a present one. A suspend at a quantum boundary is the only black-box way to post a message at a known q in an offline render. 1.0 s avoids rounding of the suspend time to a different quantum.
+**Alternatives:** Treating `at = 0` posted before rendering as "past" (rejected: it is the present quantum and proves nothing). A realtime context (rejected: q at arrival is not deterministic).
+
+## #180 (tester) — Spec model counts only records that enter the pending list as accepted
+
+**Decision:** The independent model in `tests/spec_kp086/oracle.rs` returns from `pwa_submit` and `pwa_trigger` only the records that entered the pending list. A valid record dropped because the list holds 256 entries counts in stat 0, not in the return value.
+**Rationale:** The brief's `pwa_trigger` says "1 accepted, 0 rejected or dropped", so a dropped record is not accepted, and `pwa_submit` "returns the number accepted" under the same meaning.
+**Alternatives:** Counting a dropped record as accepted (rejected: it contradicts the `pwa_trigger` contract).
+
+## #180 (tester) — Gesture test context created at page load
+
+**Decision:** The gesture test page (`/?gesture`) creates its realtime `AudioContext` and calls `resumeOnGesture(ctx, document)` from the module script at load time, not from `page.evaluate`. The browser is launched with Playwright's default arguments.
+**Rationale:** Playwright runs `page.evaluate` with a user activation, so a context created there starts `running` under the default autoplay policy. The first run showed `running` before any input. A context created at load has no activation, so the default policy keeps it `suspended` until the real `page.mouse.click`, which is what "starts on the first user gesture" needs shown.
+**Alternatives:** `--autoplay-policy=user-gesture-required` (rejected: the brief asks for the default policy, and the evaluate activation would still count).
+
+## #180 — Invalid wasm rejects createWebAudio; fallback only when the worklet cannot run the module
+
+**Decision:** `createWebAudio` rejects with an error when the mixer wasm is invalid. The worklet
+processor posts exactly one `{type:'error', error:<string>}` and outputs silence. The main-thread
+fallback (U6) is selected only when the worklet cannot run the module (for example `worklet.js`
+cannot load), and its output still equals native S6 bit for bit.
+
+**Rationale:** The fallback is for browsers that cannot instantiate wasm inside the worklet. It runs
+the same module on the main thread, so an invalid module cannot be rescued there. Silently
+resolving would hide a broken build.
+
+**Alternatives:** Resolve with a silent fallback: rejected, it hides a corrupt artifact.
 ## #164 KP-070 — Ownership extensions used for the backend feature split
 
 **Decision:** Besides the owned files, the unit made exactly these edits, each the minimum the feature split needs. `lua/api.rs`: the RNG helpers `next_u64`, `project`, `range`, `unit_float` are deleted and imported from `crate::rng` (`project` and `pin_core::{Pcg32, Rng}` only under `#[cfg(test)]`, because only the inline tests still name them). `wasm/host.rs`: the one import `crate::lua::api::range` became `crate::rng::range`. `lua/sandbox.rs`: one `#[cfg(feature = "wasmtime")]` on `syntax_check`, whose only caller is the hot-reload module. `wasm/limits.rs`: `wasmparser` is imported directly instead of `wasmtime::wasmparser`; `super::EXPORTS` became `super::EXPORT_NAMES` (the re-export check only needs the names); the WAT branch of `precheck` and the `truncated` helper it uses are gated on `wasmtime` (see "Pre-scan without wasmtime" below). No cost, limit or message changed. `crates/pin_script/Cargo.toml` lists the 26 existing suites under `[[test]]` with `required-features = ["lua", "wasmtime"]`, so `--no-default-features` builds skip them; with the default features they build and run unmodified.

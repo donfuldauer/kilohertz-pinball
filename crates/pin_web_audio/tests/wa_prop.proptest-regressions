@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e1177d63b365dcb54186b70e9de580aaffa78dc2bcf0550ce0615e1b56906030 # shrinks to ring = 1, ops = [Submit([(1, 1, 0, Next), (1, 1, 2139095040, Next)], []), Render(1)]

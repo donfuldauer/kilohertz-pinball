@@ -2148,6 +2148,15 @@ name = "pin_testmain"
 version = "0.1.0"
 
 [[package]]
+name = "pin_web_audio"
+version = "0.1.0"
+dependencies = [
+ "pin_audio",
+ "pin_core",
+ "proptest",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

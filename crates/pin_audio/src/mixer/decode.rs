@@ -153,6 +153,10 @@ impl DecodeBudget {
     /// Default budget per bundle: 512 MiB of decoded audio.
     pub const DEFAULT_BYTES: u64 = 512 * 1024 * 1024;
 
+    /// Budget of decoded audio in the browser build (SPEC §3 web limits,
+    /// D25, REQ-WEB-022): 64 MiB.
+    pub const WEB_BYTES: u64 = 64 * 1024 * 1024;
+
     /// A budget of `limit_bytes` bytes of decoded data, none used.
     pub fn new(limit_bytes: u64) -> Self {
         Self {
@@ -201,6 +205,17 @@ impl DecodeBudget {
                 attempted_bytes,
                 used_bytes,
             })
+    }
+
+    /// Charges exactly [`Sample::bytes`] of `sample`, all or nothing, e.g.
+    /// when a sample built from PCM handed over by another component (the
+    /// web worklet) is registered; returns whether the charge was made.
+    ///
+    /// The addition is checked and atomic and never takes `used` past the
+    /// limit; when the sample does not fit, nothing changes and `false` is
+    /// returned. Undo a successful charge with [`release`](Self::release).
+    pub fn try_charge_sample(&self, sample: &Sample) -> bool {
+        self.try_charge_exact(sample.bytes())
     }
 
     /// Charges up to `want` frames of `bytes_per_frame` bytes each; returns
@@ -1392,6 +1407,98 @@ mod tests {
         for k in (60..flipped.len()).step_by(101) {
             flipped[k] ^= 0x5a;
             let _ = decode(&flipped, 48_000);
+        }
+    }
+
+    /// REQ-WEB-022 / D25: the web budget is 64 MiB.
+    #[test]
+    fn web_budget_is_64_mib() {
+        assert_eq!(DecodeBudget::WEB_BYTES, 64 << 20);
+        assert_eq!(
+            DecodeBudget::new(DecodeBudget::WEB_BYTES).limit_bytes(),
+            67_108_864
+        );
+    }
+
+    /// REQ-WEB-022 / D25: `try_charge_sample` charges exactly
+    /// `Sample::bytes`, all or nothing at the limit, and pairs with `release`.
+    #[test]
+    fn try_charge_sample_is_exact_and_all_or_nothing() {
+        let mono = Sample::from_mono(&[0.5; 10]); // 40 bytes
+        let stereo = Sample::constant(10, 0.1, 0.2); // 80 bytes
+        let budget = DecodeBudget::new(120);
+        assert!(budget.try_charge_sample(&mono));
+        assert_eq!(budget.used_bytes(), 40);
+        assert!(budget.try_charge_sample(&stereo));
+        assert_eq!(budget.used_bytes(), 120);
+        assert_eq!(budget.remaining_bytes(), 0);
+        // Full: nothing changes.
+        assert!(!budget.try_charge_sample(&Sample::from_mono(&[0.0; 1])));
+        assert_eq!(budget.used_bytes(), 120);
+        // An empty sample always fits (0 bytes).
+        assert!(budget.try_charge_sample(&Sample::default()));
+        assert_eq!(budget.used_bytes(), 120);
+        assert_eq!(budget.release(&stereo), Ok(()));
+        assert_eq!(budget.used_bytes(), 40);
+        // 81 bytes do not fit in 80 remaining: all or nothing.
+        let budget = DecodeBudget::new(40 + 80 - 1);
+        assert!(budget.try_charge_sample(&mono));
+        assert!(!budget.try_charge_sample(&stereo));
+        assert_eq!(budget.used_bytes(), 40);
+        assert_eq!(budget.release(&mono), Ok(()));
+        assert_eq!(budget.used_bytes(), 0);
+        assert!(budget.release(&mono).is_err());
+    }
+
+    /// R11: `try_charge_sample` never overflows near `u64::MAX`.
+    #[test]
+    fn try_charge_sample_no_overflow() {
+        let budget = DecodeBudget::unlimited();
+        let s = Sample::from_mono(&[0.0; 4]); // 16 bytes
+        // Bring `used` to u64::MAX - 8 via the exact charge helper.
+        assert!(budget.try_charge_exact(u64::MAX - 8));
+        assert!(!budget.try_charge_sample(&s));
+        assert_eq!(budget.used_bytes(), u64::MAX - 8);
+        let small = Sample::from_mono(&[0.0; 2]); // 8 bytes: exactly fits
+        assert!(budget.try_charge_sample(&small));
+        assert_eq!(budget.used_bytes(), u64::MAX);
+        assert!(!budget.try_charge_sample(&small));
+        assert_eq!(budget.used_bytes(), u64::MAX);
+    }
+
+    proptest::proptest! {
+        /// REQ-WEB-022: random charge/release sequences keep `used` equal to
+        /// the sum of the successful charges and never above the limit.
+        #[test]
+        fn try_charge_sample_model(
+            limit in 0u64..2_000,
+            ops in proptest::collection::vec((0usize..60, 1usize..3, proptest::bool::ANY), 0..40),
+        ) {
+            let budget = DecodeBudget::new(limit);
+            let mut held: Vec<Sample> = Vec::new();
+            let mut used = 0u64;
+            for (frames, ch, release) in ops {
+                if release {
+                    if let Some(s) = held.pop() {
+                        proptest::prop_assert_eq!(budget.release(&s), Ok(()));
+                        used -= s.bytes();
+                    }
+                } else {
+                    let s = if ch == 1 {
+                        Sample::from_mono(&vec![0.0; frames])
+                    } else {
+                        Sample::constant(frames, 0.0, 0.0)
+                    };
+                    let fits = used + s.bytes() <= limit;
+                    proptest::prop_assert_eq!(budget.try_charge_sample(&s), fits);
+                    if fits {
+                        used += s.bytes();
+                        held.push(s);
+                    }
+                }
+                proptest::prop_assert_eq!(budget.used_bytes(), used);
+                proptest::prop_assert!(used <= limit);
+            }
         }
     }
 
