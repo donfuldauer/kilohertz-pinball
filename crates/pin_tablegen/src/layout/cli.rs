@@ -1,5 +1,10 @@
 //! The `pin_tablegen` command line:
-//! `pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir>`.
+//! `pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir>
+//! [--force] [--backbox <backbox_layout.toml>]`.
+//!
+//! With `--backbox` the bundle also gets the backbox (`backbox.glb`,
+//! `backbox_colliders.glb`, the aimed VUK and one merged `table.toml`; see
+//! [`crate::backbox::cli`]).
 
 use super::{GenError, generate, parse_layout_bytes, write_bundle};
 use core::fmt;
@@ -7,8 +12,8 @@ use pin_core::schema::TableManifest;
 use std::path::{Path, PathBuf};
 
 /// Usage text.
-pub const USAGE: &str =
-    "usage: pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir> [--force]";
+pub const USAGE: &str = "usage: pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir> \
+     [--force] [--backbox <backbox_layout.toml>]";
 
 /// Largest input file read, bytes (the loader's manifest limit).
 pub const MAX_INPUT_BYTES: u64 = 4 << 20;
@@ -55,12 +60,14 @@ struct Args {
     table: PathBuf,
     out: PathBuf,
     force: bool,
+    backbox: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, CliError> {
     let mut layout = None;
     let mut table = None;
     let mut out = None;
+    let mut backbox = None;
     let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -71,6 +78,7 @@ fn parse_args(args: &[String]) -> Result<Args, CliError> {
         let slot = match key {
             "--table" => &mut table,
             "--out" => &mut out,
+            "--backbox" => &mut backbox,
             "--force" if inline.is_none() => {
                 force = true;
                 continue;
@@ -102,37 +110,14 @@ fn parse_args(args: &[String]) -> Result<Args, CliError> {
         table: table.ok_or_else(|| CliError::Usage("missing --table <table.toml>".into()))?,
         out: out.ok_or_else(|| CliError::Usage("missing --out <bundle_dir>".into()))?,
         force,
+        backbox,
     })
 }
 
+/// One bounded read of at most [`MAX_INPUT_BYTES`]; errors name `path`.
 fn read(path: &Path) -> Result<Vec<u8>, CliError> {
-    use std::io::Read;
-    let fail = |e: std::io::Error| CliError::Failed(format!("{}: {e}", path.display()));
-    let file = std::fs::File::open(path).map_err(fail)?;
-    let too_big = |size: u64| {
-        CliError::Failed(format!(
-            "{}: file is {size} bytes (max {MAX_INPUT_BYTES})",
-            path.display()
-        ))
-    };
-    let size = file.metadata().map_err(fail)?.len();
-    if size > MAX_INPUT_BYTES {
-        return Err(too_big(size));
-    }
-    // One bounded read from the same handle: the metadata size can be stale
-    // or meaningless (a growing file, a pipe, a device), so the limit is
-    // enforced on the bytes actually read.
-    let mut bytes = Vec::new();
-    file.take(MAX_INPUT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(fail)?;
-    if bytes.len() as u64 > MAX_INPUT_BYTES {
-        return Err(CliError::Failed(format!(
-            "{}: file is larger than {MAX_INPUT_BYTES} bytes",
-            path.display()
-        )));
-    }
-    Ok(bytes)
+    crate::backbox::cli::read_capped(path, &path.display().to_string(), MAX_INPUT_BYTES)
+        .map_err(CliError::Failed)
 }
 
 /// Runs the command with `args` (without the program name). On success,
@@ -171,20 +156,58 @@ pub fn run_cli(args: &[String]) -> Result<String, CliError> {
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.table.display())))?;
     let generated = generate(&layout, &base)
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.layout.display())))?;
-    write_bundle(&generated, &args.out)
-        .map_err(|e| CliError::Failed(format!("{}: {e}", args.out.display())))?;
-    let mut out = format!(
-        "wrote {} ({} bytes) and {} to {}",
-        super::PLAYFIELD_FILE,
-        generated.glb.len(),
-        super::TABLE_FILE,
-        args.out.display()
-    );
+    let mut out = match &args.backbox {
+        None => {
+            write_bundle(&generated, &args.out)
+                .map_err(|e| CliError::Failed(format!("{}: {e}", args.out.display())))?;
+            format!(
+                "wrote {} ({} bytes) and {} to {}",
+                super::PLAYFIELD_FILE,
+                generated.glb.len(),
+                super::TABLE_FILE,
+                args.out.display()
+            )
+        }
+        Some(path) => write_with_backbox(&generated, path, &args.out)?,
+    };
     for w in &generated.warnings {
         out.push_str("\nwarning: ");
         out.push_str(&w.to_string());
     }
     Ok(out)
+}
+
+/// The `--backbox` path: parses `path` (bounded read), generates the
+/// backbox on the merged manifest, aims its VUK and writes the playfield,
+/// the backbox and one merged `table.toml` into `out`. Nothing is written
+/// when any step fails.
+fn write_with_backbox(
+    generated: &super::GeneratedTable,
+    path: &Path,
+    out: &Path,
+) -> Result<String, CliError> {
+    use crate::backbox::{self, cli as bcli};
+    let fail = |m: String| CliError::Failed(format!("{}: {m}", path.display()));
+    let layout =
+        backbox::parse_backbox_layout_bytes(&read(path)?).map_err(|e| fail(e.to_string()))?;
+    let bb = backbox::generate_backbox(&layout.backbox, &generated.table)
+        .map_err(|e| fail(e.to_string()))?;
+    let mut table = bb.table.clone();
+    bcli::aim_backbox_vuk(&mut table, &bb.frame).map_err(fail)?;
+    let text = bcli::backbox_table_toml(&table).map_err(fail)?;
+    bcli::write_bundle_with_backbox(generated, &bb, &text, out)
+        .map_err(|e| CliError::Failed(format!("{}: {e}", out.display())))?;
+    Ok(format!(
+        "wrote {} ({} bytes), {} ({} bytes), {} ({} bytes) and {} to {}",
+        super::PLAYFIELD_FILE,
+        generated.glb.len(),
+        backbox::BACKBOX_SCENE_FILE,
+        bb.scene_glb.len(),
+        backbox::BACKBOX_COLLIDERS_FILE,
+        bb.colliders_glb.len(),
+        super::TABLE_FILE,
+        out.display()
+    ))
 }
 
 #[cfg(test)]
