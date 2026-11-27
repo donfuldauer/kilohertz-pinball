@@ -1,6 +1,10 @@
 //! KP-010 (#90) gate review round 1 (PR #269): regression tests for the eight CodeRabbit
 //! findings on the part resolver (SPEC Appendix A.5; REQ-BUILD-003, REQ-BUILD-004,
 //! REQ-BUILD-005). One test per finding, `r1_f<N>_…`.
+//!
+//! Round 2 (PR #269, findings 4720145612 and 4720145601): the direct layout entrypoints
+//! validate bound instance fields and reject `position` on a `layout.toml` bind, as
+//! `TableManifest::all_parts` does. Tests `r2_f<N>_…`.
 
 mod kp010_common;
 
@@ -414,4 +418,73 @@ fn r1_req_build_005_plain_table_unchanged() {
     assert_eq!(get(&parts, "posts[0]").physical(), Some(Material::Rubber));
     assert_eq!(get(&parts, "walls[0]").physical(), Some(Material::Wood));
     assert_eq!(get(&parts, "lanes[0]").physical(), Some(Material::Steel));
+}
+
+/// Round 2 finding 1 (comment 4720145612), A.5 `[[parts]]`: bound instance fields are
+/// validated (finite, in range, applicable to the kind) in every entrypoint.
+#[test]
+fn r2_f1_direct_layout_entrypoints_validate_bound_fields() {
+    let l = layout();
+    let lib = PartLibrary::builtin().unwrap();
+    for h in [f32::NAN, f32::INFINITY] {
+        let mut p = bound("p", PartKind::Post, "posts[0]");
+        p.overrides = Some(StyleFields {
+            height: Some(h),
+            ..StyleFields::default()
+        });
+        let mut t = ok_table("");
+        t.parts.push(p);
+        for m in [
+            err_text(l.resolve_parts(&t, &lib)),
+            err_text(l.check_parts(&t)),
+            err_text(t.all_parts(&l)),
+        ] {
+            assert!(m.contains("`p`") && m.contains("height"), "{m}");
+        }
+    }
+    let mut p = bound("p", PartKind::Post, "posts[0]");
+    p.overrides = Some(StyleFields {
+        height: Some(5.0),
+        ..StyleFields::default()
+    });
+    let mut t = ok_table("");
+    t.parts.push(p);
+    l.check_parts(&t).unwrap();
+    for parts in [l.resolve_parts(&t, &lib).unwrap(), t.all_parts(&l).unwrap()] {
+        assert_eq!(get(&parts, "posts[0]").fields.height, Some(5.0));
+    }
+}
+
+/// Round 2 finding 2 (comment 4720145601), A.5 "A `layout.toml` bind never takes
+/// `position`": rejected by every entrypoint; bindings without it stay valid.
+#[test]
+fn r2_f2_direct_layout_entrypoints_reject_position() {
+    let l = layout();
+    let lib = PartLibrary::builtin().unwrap();
+    for (kind, b) in [(PartKind::Post, "posts[0]"), (PartKind::Deck, "decks[0]")] {
+        let mut t = ok_table("");
+        t.parts.push(PartDef {
+            position: Some([100.0, 200.0, 0.0]),
+            ..bound("p", kind, b)
+        });
+        for m in [
+            err_text(l.resolve_parts(&t, &lib)),
+            err_text(l.check_parts(&t)),
+            err_text(t.all_parts(&l)),
+        ] {
+            assert!(
+                m.contains("`p`")
+                    && m.contains("`position` is not allowed with a `layout.toml` bind"),
+                "{m}"
+            );
+        }
+    }
+    let mut t = ok_table("");
+    t.parts.push(bound("p", PartKind::Post, "posts[0]"));
+    l.check_parts(&t).unwrap();
+    for parts in [l.resolve_parts(&t, &lib).unwrap(), t.all_parts(&l).unwrap()] {
+        let at = get(&parts, "posts[0]").placement.position;
+        assert_eq!(at[0], l.posts[0].position[0]);
+        assert_eq!(at[1], l.posts[0].position[1]);
+    }
 }

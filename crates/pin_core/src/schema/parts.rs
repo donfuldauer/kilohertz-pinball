@@ -1613,6 +1613,18 @@ fn find_elements(t: &TableManifest, section: Option<&str>, id: &str) -> Vec<Elem
     out
 }
 
+/// A `layout.toml` bind never takes `position` (SPEC A.5); shared by
+/// [`TableManifest::resolve_parts`] and [`LayoutManifest::resolve_parts`].
+fn check_layout_bind_position(what: &str, p: &PartDef) -> Result<(), SchemaError> {
+    if p.position.is_some() {
+        return Err(invalid(format!(
+            "{what}: `position` is not allowed with a `layout.toml` bind \
+             (the element's own keys place it)"
+        )));
+    }
+    Ok(())
+}
+
 /// The `layout.toml` bind kind check shared by [`TableManifest::resolve_parts`] and
 /// [`LayoutManifest::resolve_parts`].
 fn check_layout_bind_kind(what: &str, kind: PartKind, section: &str) -> Result<(), SchemaError> {
@@ -1813,12 +1825,7 @@ impl TableManifest {
                 Some(b) => {
                     let (key, section) = if let Some((section, n)) = parse_layout_bind(b) {
                         check_layout_bind_kind(&what, p.kind, section)?;
-                        if p.position.is_some() {
-                            return Err(invalid(format!(
-                                "{what}: `position` is not allowed with a `layout.toml` bind \
-                                 (the element's own keys place it)"
-                            )));
-                        }
+                        check_layout_bind_position(&what, p)?;
                         (format!("{section}[{n}]"), section)
                     } else {
                         let (section, id) = match b.split_once(':') {
@@ -1962,7 +1969,9 @@ impl LayoutManifest {
     /// height is unset take `playfield.wall_height`. Errors name the part: a bind to an
     /// element index that does not exist, a kind the section does not allow, a second part
     /// bound to one element (`posts[00]` is `posts[0]`), and both `material` and
-    /// `overrides.material` on a bound part.
+    /// `overrides.material` on a bound part. A bound part is validated with
+    /// [`PartDef::validate`] (finite, in-range, kind-applicable fields) and may not give
+    /// `position`, exactly as in [`TableManifest::all_parts`].
     pub fn resolve_parts(
         &self,
         table: &TableManifest,
@@ -1975,7 +1984,9 @@ impl LayoutManifest {
             };
             if let Some((section, n)) = parse_layout_bind(b) {
                 let what = part_label(&p.id, i);
+                p.validate(i)?;
                 check_layout_bind_kind(&what, p.kind, section)?;
+                check_layout_bind_position(&what, p)?;
                 let len = match section {
                     "walls" => self.walls.len(),
                     "posts" => self.posts.len(),
@@ -1989,7 +2000,6 @@ impl LayoutManifest {
                         "{what}: `bind` `{section}[{n}]` but layout.toml has {len} {section}"
                     )));
                 }
-                p.check_material_keys(&what)?;
                 // `posts[00]` and `posts[0]` name one element.
                 if let Some((j, _)) = bound.insert((section, n), (i, p)) {
                     return Err(already_bound(&what, b, j));
