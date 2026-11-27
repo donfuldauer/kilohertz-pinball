@@ -9233,3 +9233,81 @@ weakened).
 **Decision:** Every table-list row is `ceil(2 × 2 + body text height + item_spacing.y + max(small text height, interact_size.y))` points high: a 2-point vertical margin, then the title (one line, truncated with an ellipsis), then a second line with the author (truncated) and as many whole badges as fit, or, for a broken table, its first error line (truncated). Everything is clipped to the row. The list uses `ScrollArea::show_rows` with that height. When the focus changes, the focused row's rect is computed from its index and passed to `scroll_to_rect`, so a row that is not laid out is still scrolled into view. Rows keep their click ids (`("pin_menu_table_row", path)`).
 **Rationale:** `show_rows` needs one constant height. Computing it from the active text styles keeps the row legible at every `ui_scale`. Badges that do not fit are shown in full, wrapped, in the details column, so nothing is lost, and the existing layout tests (no text beyond the panel's inner edge) still hold.
 **Alternatives:** Wrapped badge rows of varying height (rejected: they cannot be virtualised with `show_rows`). A fixed height in points regardless of style (rejected: it would clip text if the style changes).
+
+
+## #149 — Late snapshot latch; check b gates the raw count
+
+**Decision:** The render thread latches its snapshot late. It reads the triple buffer once at the
+top of each render-loop iteration (display commands, menu, debug view) and the table presenter reads
+it again for the first playfield slot immediately before encoding, after the playfield surface's
+acquire returned and no earlier than `LATE_LATCH_MIN_LAG` (11 ms) after the previous playfield
+present returned; the render thread sleeps the rest of that lag (`SnapshotLatch` in
+`crates/pin_app/src/orchestrator/present.rs`). The late snapshot is the one drawn, traced
+(`presented_at`) and published as `render_last_tick`; a latch whose tick is below the previous
+latch's (early or late) is counted in `render_non_monotonic`. Display commands are drained up to
+the early latch's tick, which is never later than the snapshot the frame draws. Slots drawn
+before or after the playfield draw the latched snapshot (no third read), so a frame's playfield,
+its secondary windows and its trace row agree. Check b of the windowed harness gates the raw
+count only: `n_raw = frame - F0 <= 2` (`frame + 1` before the first presented frame). The
+in-flight allowance (`n_adj`, the adjusted max and p99, `in_flight_shifted`) is removed.
+
+This supersedes, in "#82 — Windowed latency check definitions", the check b in-flight allowance
+("Exactly one allowance: if the frame in flight at the press (`F0 + 1`) was presented in
+`(sdl_ts_ns, sdl_ts_ns + bound_a + 8 ticks]` the count may start after it") and the paragraph
+"SPEC erratum (REQ-LAT-001, CI form)" with its proposed SPEC edit: SPEC §7.5 stays as written and
+the app now meets its CI form. The queue line `[P8 spec] [KP-002-lat001-frame-form]` is struck as
+resolved (`git log -S KP-002-lat001-frame-form -- docs/HUMAN_QUEUE.md docs/SPEC.md` shows only
+#82's commit that added it; the owner had not edited SPEC §7.5).
+
+**Rationale:**
+- **Why a minimum lag, not only a read after the acquire.** A first windowed run with the late
+  read placed right after the acquire and no lag failed check b (raw max 3, 17 of 168 presses at 3):
+  on lavapipe the acquire returns at once (the late read landed −1.9 to +2.7 ms from the previous
+  present), so it read the same stale snapshot as before. A frame can show a press that landed
+  just before the previous present returned only if it reads its snapshot at least the
+  press-to-raise time after that present. 11 ms is check a's bound on that time (REQ-LAT-004's
+  one tick plus 2 ms forwarding and wake-up, then at most 8 ticks to the 1 degree raise), so every
+  press that passes check a is visible in the frame after the one in flight.
+- **Cost.** The lag only tops up the time from the previous present to the acquire's return. On
+  lavapipe it lengthens a frame from about 36 ms to about 47 ms (about 27 to 21 frames per
+  second); a display-paced acquire that already waited 11 ms adds nothing. No frame is queued:
+  the playfield keeps `desired_maximum_frame_latency` 1 (REQ-LAT-006), and the render thread
+  sleeps, so the sim thread is never blocked (R4); dropped ticks did not rise (check c: 15, 0 and 9
+  of 60 000 in the three runs below).
+- **Raw count only.** With the late latch the frame after the in-flight one shows the press, so
+  the SPEC's raw form holds and an allowance would only hide a renderer that is a frame slow.
+- **Measured (three consecutive 60 s head runs, lavapipe, `LP_NUM_THREADS=2`):** 172, 172 and
+  171 presses; raw max 2 and p99 2 in each; presses at `n_raw` 2 / 1: 138 / 34, 148 / 24,
+  142 / 29; none at 3; 1243, 1247 and 1264 frames presented. With KP-001 (#81) reverted the run
+  still fails checks a and b (coil 43 to 54 ticks late, raw max 3).
+
+**Alternatives:**
+- Read only after the acquire, no lag: rejected, measured above (the acquire does not wait on
+  lavapipe).
+- A lag derived from the measured render cost and the display's refresh interval (latch at
+  `next refresh − render cost`): rejected for this unit; on lavapipe the render cost (about 36 ms)
+  exceeds any refresh interval, so it gives no lag where the gate is measured, and the render
+  thread does not know the display's refresh interval.
+- Waiting for the next tick boundary only: rejected, one tick is less than the 4 to 6 ticks the bat
+  needs to reach 1 degree.
+- Keeping the in-flight allowance or the SPEC erratum: rejected by the issue; the brief allows the
+  owner's SPEC edit only as a fallback when a late latch cannot meet the raw count.
+
+## #149 — Independent Tester: the check b property oracle
+
+**Decision:** The black-box property for check b (`req_lat_001_check_b_passes_iff_every_raw_count_is_at_most_two`
+in `crates/pin_app/tests/windowed/main.rs`) expects a pass if and only if at least one press is
+checked and every checked press has `n_raw <= 2`, and checks the failure list one way: every press
+a failure names is a checked press with `n_raw > 2`, named with that count, and some failure names
+a raw count whenever one exceeds 2. The excluded press of the end-exclusion test is checked by
+name (never in a failure) rather than by check b passing.
+
+**Rationale:** The verdict fails a run whose every press falls in the final 500 ms ("every press
+fell in the final window"), and it caps its failure list ("... more failures not listed"); both
+are existing behaviour that this unit leaves unchanged, so the oracle models them instead of
+asserting that every failing press is listed. The pass/fail equivalence over raw counts, which is
+what the brief requires, is asserted in full.
+
+**Alternatives:** Generate only timelines with a checked press and at most ten failures: rejected,
+it narrows the property; assert every failing press is named: rejected, it contradicts the
+existing cap.
