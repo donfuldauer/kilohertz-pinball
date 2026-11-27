@@ -9852,3 +9852,71 @@ O(n·k)). A rigorous bound for sloped ceilings (needs the full branch analysis o
 routine in 3D; left out to keep the proof small). Pruning whole BVH subtrees (would also cut the
 broad-phase time, but needs per-node level/mesh data in `geom.rs` and a per-mesh threshold inside
 the index; left for a follow-up if the broad phase matters).
+
+## #257 KP-119 — diagnostic workflow parameterised for profiler_gpu
+
+**Decision:** Phase 1 of #257 extends `.github/workflows/diag-srgb-blend-warp.yml` (file name kept;
+`name:` now `diag-gpu-warp (KP-100 / #209 srgb_blend_gpu, KP-119 / #257 profiler_gpu)`) instead of
+adding a second workflow. A new ubuntu `setup` job picks the target, the modes and the run count
+and passes them on as job outputs; the diagnose matrix is `fromJSON` of its `modes` output.
+- `workflow_dispatch` inputs: `target` (choice `profiler_gpu` | `srgb_blend_gpu`, default
+  `profiler_gpu`), `runs` (default `"50"`), `modes` (comma-separated, default `as-is,serial`;
+  allowed `as-is`, `serial`, `validation`, `pageheap`, `contended`; duplicates dropped, an unknown
+  mode, an empty list or a non-positive `runs` fail the setup job as an input error).
+- A push has no inputs, so the branch decides: `issue/209-*` keeps the old behaviour
+  (`srgb_blend_gpu`, `as-is,serial,validation,pageheap`, 200 runs); `issue/257-*` runs
+  `profiler_gpu` in `as-is,serial` with 200 runs. Both stay behind `paths:` on this file; still no
+  `pull_request` trigger, no reference from `ci.yml`, not a required check; `concurrency` per ref
+  and `permissions: contents: read` unchanged.
+- Target map: `srgb_blend_gpu` → package `pin_render`, working directory `crates/pin_render`;
+  `profiler_gpu` → `pin_app`, `crates/pin_app` (also its `CARGO_MANIFEST_DIR`). The build filters
+  cargo's JSON on the target name exactly as before. "Runner facts" prints the first line of
+  `cargo tree -i wgpu` and of `cargo tree -i wgpu-hal` for that package.
+- Names carry the target: binary artifact `diag-bin-<target>`, log artifacts
+  `logs-<target>-<mode>`, rust-cache key suffix `-diag-<target>`, job names
+  `diagnose <target> (<mode>)`.
+- A new disjoint class `fail_fast` = exit 0xC0000409 sits next to `heap_corruption` = 0xC0000374;
+  RESULT is `RESULT mode=… target=… runs=… pass=… fail=… heap_corruption=… fail_fast=… timeout=…
+  other_exit=… runs_with_FAILED_or_panic_lines=… requested=… faults=… mean_run_s=… adapters=…
+  tests_passed_total=…` (plus the validation, contended and `stopped=` fields). `faults` is now
+  reported for every mode; `$faultRx` also matches `misaligned pointer dereference`.
+- A run is a fault in every mode (not only `pageheap`) when it exits 0xC0000374 or 0xC0000409 or
+  its output matches `$faultRx`; the loop stops starting runs after three faults in any mode.
+  The failure excerpt now starts at the `panicked at` line just before the first fault signal (or
+  `non-unwinding panic`) and keeps 120 lines of the full backtrace, followed by the first 20
+  panic/abort lines of the stream; without a fault signal it falls back to the old first-panic
+  excerpt (80 lines).
+- The 82-minute budget, the 90-minute job cap and the 300 s per-run timeout are unchanged; the
+  RESULT line gains `mean_run_s` (mean wall time of the counted runs), so a run cut by
+  `stopped=time_budget_after_run_N` shows how many runs a job can hold for this heavier binary.
+- Optional `contended` mode (only when `modes` names it): each run starts two more copies of the
+  same exe (own processes, own devices) with the same args and env just before the counted one,
+  waits for them with the same 300 s timeout from their start, logs their exits in the per-run line
+  (`companions=`) and counts them separately (`companion_runs`, `companion_nonpass`,
+  `companion_faults`); the RESULT classes count the main process only.
+
+**Rationale:** The #257 incident (misaligned pointer dereference in windows-core under wgpu-hal
+dx12 `Device::load_shader`, from `PostChain::new` in `profiler_gpu`) is a non-unwinding panic,
+which aborts with STATUS_STACK_BUFFER_OVERRUN 0xC0000409 through `__fastfail`; that is a different
+mechanism from 0xC0000374, the heap manager's corruption fail-fast seen in #209, so lumping it into
+`other_exit` or `heap_corruption` would hide which incident recurred. Comparing `as-is` (libtest's
+parallel threads, several `TableRenderer::new` pipelines on one device) with `serial`
+(`--test-threads=1`) separates the threading candidate from a single-thread defect. The
+Orchestrator reads runs through GitHub MCP job logs and cannot open artifacts, so the rate inputs
+(`runs`, the classes, `faults`) and the stack text are written to the job log. Stopping after three
+faults in every mode keeps a high-rate reproduction from spending the job on repeats; the rate is
+still `faults / runs` over the runs that ran. The 200-run push default is kept for symmetry with
+#209 and the time guard reports how far it got rather than the timeouts being raised silently.
+Extending the existing file keeps one reviewed harness (exit-code classification, page heap,
+always-undo) for both incidents. `ci.yml` is owned by open PR #196 (#163) and root `Cargo.toml` /
+`Cargo.lock` by open PRs #256, #253 and #196, and a wgpu update is out of scope, so they are not
+touched; the diagnosis uses the unmodified test binary at the workspace's pinned versions.
+
+**Alternatives:** A second workflow file for profiler_gpu (duplicates the harness; two copies to
+keep in step). Renaming the file to a neutral name (out of scope: the owned path is named). Folding
+0xC0000409 into `heap_corruption` or `other_exit` (loses the distinction above). Keeping the
+three-fault stop for `pageheap` only (a 200-run as-is job with a high fault rate would spend its
+whole budget on repeats). Raising the per-run timeout or the job cap for the heavier binary (would
+change the #209 behaviour silently; `mean_run_s` and `stopped=` show the need first). Dispatch
+default `modes` of all four modes (the #257 comparison needs only as-is and serial; `srgb_blend_gpu`
+on dispatch now names its modes explicitly, its push default is unchanged).
