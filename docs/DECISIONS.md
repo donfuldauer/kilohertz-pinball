@@ -9534,3 +9534,108 @@ usable if it recurs.
 - File an upstream wgpu or Microsoft report now: rejected; no stack, panic text or reproducer.
 - Run more diagnostic runs until a failure appears: rejected for this issue; at about 1/850 the
   cost is high, and the dispatchable workflow remains for a recurrence.
+
+## #209 KP-100 — Addendum: a stack from main (profiler_gpu, 13714be)
+
+Occurrence: push CI on `main` commit 13714be, run
+https://github.com/donfuldauer/kilohertz-pinball/actions/runs/45938526968, job 140308284621,
+`gpu-tests (x86_64-pc-windows-msvc, WARP)`. Same image family (windows-2025), rustc 1.97.0
+(build 2d8144b78), wgpu 30.0.1, wgpu-hal 30.0.1, windows-core 0.62.2, adapter Microsoft Basic
+Render Driver (Dx12, Cpu), Windows Server 2025 10.0.26100. The crashing binary is `pin_app`
+`tests/profiler_gpu.rs` (4 tests sharing one device; two had already passed); the test running was
+`hud_draws_hud_lines_only_when_enabled`. The change merged in 13714be (#238 KP-055) touched only
+`pin_tablegen` and table build files, nothing in `pin_render` or `pin_app` rendering. Trimmed log
+(frames 3-21 plus the panic and exit lines):
+
+```
+thread 'hud_draws_hud_lines_only_when_enabled' (4552) panicked at C:\Users\runneradmin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-core-0.62.2\src\interface.rs:41:18:
+misaligned pointer dereference: address must be a multiple of 0x8 but is 0xb5000000085
+stack backtrace:
+   0: std::panicking::panic_handler
+   1: core::panicking::panic_nounwind_fmt
+   2: core::panicking::panic_misaligned_pointer_dereference
+   3: windows_core::interface::Interface::assume_vtable            (windows-core-0.62.2\src\interface.rs:41)
+   4: windows_core::interface::Interface::vtable                   (interface.rs:29)
+   5: windows_core::unknown::impl$1::clone                         (unknown.rs:34)
+   6: windows::Win32::Graphics::Direct3D::impl$243::clone          (imp\mod.rs:64)
+   7: wgpu_hal::dx12::impl$186::clone                              (wgpu-hal-30.0.1\src\dx12\mod.rs:1351)
+   8: wgpu_hal::dx12::Device::load_shader                          (wgpu-hal-30.0.1\src\dx12\device.rs:415)
+   9: wgpu_hal::dx12::device::impl$1::create_render_pipeline       (device.rs:2069)
+  10: wgpu_hal::dynamic::device::impl$0::create_render_pipeline<wgpu_hal::dx12::Device>
+  11: wgpu_core::device::resource::Device::create_render_pipeline_inner (wgpu-core-30.0.1\src\device\resource.rs:4988)
+  12: wgpu_core::device::resource::Device::create_render_pipeline (resource.rs:4191)
+  13: wgpu_core::global::Global::device_create_general_render_pipeline (global.rs:1556)
+  14: wgpu_core::global::Global::device_create_render_pipeline     (global.rs:1367)
+  15: wgpu::backend::wgpu_core::impl$12::create_render_pipeline     (wgpu-30.0.1\src\backend\wgpu_core.rs:1408)
+  16: pin_render::post::chain::impl$1::new::closure$1               (crates\pin_render\src\post\chain.rs:407)
+  17: pin_render::post::chain::PostChain::new                       (chain.rs:443)
+  18: pin_app::orchestrator::view::TableRenderer::with_layer_format (view.rs:591)
+  19: pin_app::orchestrator::view::TableRenderer::new               (view.rs:560)
+  20: profiler_gpu::renderer                                        (tests\profiler_gpu.rs:57)
+  21: profiler_gpu::hud_draws_hud_lines_only_when_enabled           (tests\profiler_gpu.rs:298)
+thread caused non-unwinding panic. aborting.
+process didn't exit successfully: `...\profiler_gpu-2459c7e97214b8a6.exe` (exit code: 0xc0000409, STATUS_STACK_BUFFER_OVERRUN)
+```
+
+The Orchestrator re-ran the failed job once; that result goes in `docs/RUN_LOG.md`, not here.
+
+Interpretation (stated with care): Rust's debug-build alignment check caught wgpu-hal's dx12
+backend cloning a COM interface pointer. The clone impl is in `windows::Win32::Graphics::Direct3D`,
+so it is a `Direct3D` interface, and the call is inside `Device::load_shader`, the shader
+compilation path of render-pipeline creation. The value 0xb5000000085 is not a valid pointer, so
+the field it was read from held garbage. That points to memory corruption, or a data race or
+use-after-free on the dx12 device's shader-compiler state, while several test threads create
+pipelines on one shared device. It is the same family as the `srgb_blend_gpu` failure (concurrent
+tests on one WARP device, native-side corruption, then abort: 0xc0000374 there, 0xc0000409
+fail-fast here). It now favours hypothesis (b) (wgpu-hal dx12 threading or state on one device) or
+(a) (WARP or the D3D12 runtime writing into that memory) over (d), "not reproduced". It does not
+separate (a) from (b). It is not caused by `pin_render`: the `pin_render` frame is a safe
+`create_render_pipeline` call.
+
+Rate: 2 occurrences known on WARP (`srgb_blend_gpu` once, `profiler_gpu` once), against 790 clean
+diagnostic runs of `srgb_blend_gpu` plus the about 58 earlier `ci` runs. Roughly 2 in about 850
+test-binary runs.
+
+**Decision:** No test lock is added to `srgb_blend_gpu`. The issue's condition, that serialising
+removes the failure, is still not shown, and the crash is in pipeline creation, which every GPU
+test shares, so a per-file lock would not address it. An upstream report to wgpu (gfx-rs/wgpu) is
+now possible. Its ready-to-file text:
+
+> Title: dx12: misaligned/invalid COM pointer cloned in Device::load_shader during concurrent
+> create_render_pipeline on WARP (wgpu 30.0.1)
+>
+> Versions: wgpu 30.0.1, wgpu-hal 30.0.1, wgpu-core 30.0.1, windows-core 0.62.2, rustc 1.97.0
+> (build 2d8144b78), debug build, target x86_64-pc-windows-msvc.
+> Adapter: Microsoft Basic Render Driver (Dx12, Cpu). OS: Windows Server 2025 10.0.26100 (GitHub
+> Actions windows-2025 runner).
+>
+> Symptom: in a test binary where several test threads each create render pipelines on one shared
+> device, the process panics in `windows_core::Interface::assume_vtable` with "misaligned pointer
+> dereference: address must be a multiple of 0x8 but is 0xb5000000085", reached from
+> `wgpu_hal::dx12::Device::load_shader` (device.rs:415) cloning a Direct3D interface
+> (mod.rs:1351). The panic is non-unwinding, so the process aborts with 0xc0000409. A different
+> test binary on the same adapter failed once with 0xc0000374 (heap corruption) after test
+> failures, which may be the same underlying fault.
+>
+> Repro conditions: several threads calling `create_render_pipeline` on one device; the rate is
+> roughly 2 in about 850 test-binary runs; not reproduced in 790 targeted runs with the D3D12 debug
+> layer or full page heap.
+>
+> Stack: the trimmed stack above.
+
+Filing needs access outside this repository, so this session cannot file it. The text is ready for
+whoever files it; the next agent with access should file it and link the upstream issue here.
+
+**Rationale:** The earlier conclusion, "not reproduced", no longer holds as the whole picture: a
+second crash with a stack now exists and it lands in wgpu-hal dx12 code, not in `pin_render`. The
+evidence still cannot separate a wgpu-hal threading defect from a WARP or runtime fault, and it
+does not show that serialising one test file helps. A lock in `srgb_blend_gpu` would leave the
+`profiler_gpu` path and every other GPU test exposed, and would hide the signal. Recording the
+stack, the rate and a complete report keeps the evidence usable.
+
+**Alternatives:**
+- Re-run blind until green: rejected as a root cause (R10); the re-run is only logged.
+- A process-wide lock around pipeline creation in `pin_render`: rejected here; it is outside this
+  issue's owned paths and would hide a real concurrency bug. A follow-up issue may evaluate a wgpu
+  update, or a fix, once upstream answers.
+- A per-file lock in `srgb_blend_gpu`: rejected; see the Decision.
