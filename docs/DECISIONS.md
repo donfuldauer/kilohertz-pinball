@@ -9427,3 +9427,18 @@ Real impacts in every existing test (0.2 to 20 m/s) are far above the threshold.
 gain (a pressed chain's tiny neighbour impulses would still bounce); skip gravity for a ball on
 the stop (changes the pressed-chain and finding-G behaviour bit for bit); a new tunable in
 physics_defaults.toml (owned elsewhere; the brief rules it out).
+
+## #211 tester — rolling kinetic energy in the energy checks
+**Decision:** The energy checks in the KP-102 tests (strike test and proptest 7b) use E = 0.7 v² − g·p per unit mass, not the brief's 0.5 v² − g·p.
+**Rationale:** The brief's own contract says gravity along the path accelerates the captive at 5/7 of the along-path component, i.e. it is a rolling ball with kinetic energy (1/2)(1 + 2/5) v² = 0.7 v². With 0.5 v² the expression rises by about 3e-4 per tick during a legitimate roll; with 0.7 v² the per-tick change is about −2e-5. The 1e-6 slack and all other assertions are unchanged.
+**Alternatives:** Keep 0.5 v² (contradicts the 5/7 contract, fails on correct behaviour); widen the slack (weakens the test).
+
+## #211 — autoplay_endless re-baseline after the Newton end-stop rest rule
+
+**Decision:** Game 6's pinned end tick in `the_pre_fix_greybox_traps_are_caught_and_named` is re-baselined 82_935 -> 84_586 (still GameOver, no EndlessBall, no vuk_sw). Game 82 is unchanged in kind (EndlessBall bumper_1_ring at tick 305_924, ends max_ticks at 330_000). Game 763 no longer produces its StuckBall: it now ends game_over at tick 46_037 with no findings. The sling-pocket pin is re-seeded from game 763 to game 756 (same trap class), so the test keeps proving all three trap classes; 763 is replaced, not weakened.
+
+**Search (round 2):** a scratch test (removed, not committed) played games 0..1000 of the soak (seed 1, standard skill, legacy bot settings, cap 120_000, two worker threads, `cargo test -p pin_sim --test zz_scratch_211 -- --nocapture --ignored`) and printed every game with a StuckBall. Candidates: game 756 `walls[3] @ (107, 241, 14) mm` at tick 47_867 (GameEnd::Stuck, "within one ball diameter"); game 930 `walls[3] @ (114, 247, 14) mm` at tick 30_805 (same class); game 957 `walls[0] @ (240, 1039, 14) mm` at tick 71_246 (different wall and place, rejected). The lowest game of the sling-pocket class, 756, is pinned: exactly one StuckBall, subject `walls[3] @ (107, 241, 14) mm`, summary.end Stuck. The range 0..1000 sufficed; no extension was needed.
+
+**Rationale:** The rest rule legitimately changes output for tables with a Newton ball (R3: re-baseline once). Game 763 no longer reaching the trap means the seed no longer proves the StuckBall detector; re-seeding after intentional output changes is the established practice (44 -> 334 -> 763 -> 756). All other assertions are unchanged.
+
+**Alternatives:** Dropping or loosening the 763 assertion (rejected, R10); editing pin_sim/src to restore the trap (rejected, out of owned paths).
