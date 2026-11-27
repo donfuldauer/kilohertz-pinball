@@ -10963,7 +10963,11 @@ then built on the calling thread while the earlier presenter may still be buildi
 The app's `gpu_lock` covers surface configure and submission, not pipeline creation. The fix for
 that path is the wgpu update in #265, not a test lock; this entry does not change production code.
 
-**Acceptance evidence pending:** 50 of 50 green WARP runs of `profiler_gpu` with the lock (the
-diagnostic workflow dispatched on this branch's head with `target=profiler_gpu`, `modes=as-is`,
-`runs=50` or more; each run exit 0 with `test result: ok. 4 passed; 0 failed; 0 ignored`,
-`fail_fast=0`, `heap_corruption=0`). The Orchestrator adds the run URL and RESULT line here.
+**Acceptance evidence:** 1000 of 1000 green WARP runs of `profiler_gpu` with the lock, at least
+the 50 of 50 the issue requires: dispatch
+[45984385100](https://github.com/donfuldauer/kilohertz-pinball/actions/runs/45984385100) on head
+eda21cc (the lock commit; the later merge of `main`, 8b45ceb, adds only `main`'s changes), job 140461582961, mode `as-is` (libtest's default thread pool, one
+shared device, as CI runs it): `RESULT mode=as-is target=profiler_gpu runs=1000 pass=1000 fail=0
+heap_corruption=0 fail_fast=0 timeout=0 other_exit=0 runs_with_FAILED_or_panic_lines=0
+requested=1000 faults=0 mean_run_s=1.2 tests_passed_total=4000`. Every run printed `tests=4/0/0`
+(4 passed, 0 failed, 0 ignored).
