@@ -41,8 +41,11 @@ struct Trace {
     energy: Vec<f64>,
 }
 
+/// Mechanical energy per unit mass. The captive is a rolling ball (gravity
+/// along the path accelerates it at 5/7 of the along-path component, SPEC
+/// Subphase 2.2), so its kinetic energy is (1/2)(1 + 2/5) v^2 = 0.7 v^2.
 fn energy(g: Vec3, speed: f32, pos: Vec3) -> f64 {
-    0.5 * f64::from(speed) * f64::from(speed) - f64::from(g.dot(pos))
+    0.7 * f64::from(speed) * f64::from(speed) - f64::from(g.dot(pos))
 }
 
 /// Runs one captive ball for `ticks` steps; `strike` is applied before tick 1.
