@@ -276,6 +276,24 @@ fn scan_pair(
     found
 }
 
+/// The parts of what one [`worst_under`] call adds to
+/// `IndexStats::pairs_examined` (#266): the rest of the counter is one per
+/// (support, ceiling) candidate the main loop does not prune.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct Spent {
+    /// Everything the seed step added: its pairs and their wall queries
+    /// (zero without `prune`).
+    seed: u64,
+    /// The seed pairs alone (one per ceiling mesh with a floor below
+    /// `need`; zero without `prune`).
+    seed_pairs: u64,
+    /// The wall queries of [`laterally_free`] in every [`scan_pair`] call
+    /// (seed step and main loop). Their number depends on the `limit` each
+    /// pair is scanned with, so on which entries were kept before it.
+    walls: u64,
+}
+
 /// The smallest headroom under each ceiling mesh for `ball`: for each
 /// ceiling mesh, the first sample (supports in `w.tris` order, then the
 /// index's candidates ascending, then the samples in order) that reaches
@@ -297,15 +315,18 @@ fn scan_pair(
 /// The seed of a ceiling mesh is the lowest valid headroom of its first
 /// pair with the lowest floor below `need` (a bound-only pass over the
 /// pairs first, counting nothing; then that pair is sampled, and counted).
-/// Without `prune`, this is the original loop. Also gives the part of
-/// the counter the seed step added (zero without `prune`).
+/// Without `prune`, this is the original loop. Also gives the parts of the
+/// counter in [`Spent`]. Only the candidate pairs are bounded by the
+/// unpruned loop's (plus the seed pairs): a pruned pair that would have
+/// lowered the kept entry leaves later pairs a higher `limit`, so more of
+/// their samples may reach the wall test (#266).
 fn worst_under(
     w: &World<'_>,
     ball: &Ball,
     prune: bool,
     cands: &mut Vec<u32>,
     idx: &mut Vec<u32>,
-) -> (BTreeMap<usize, Worst>, u64) {
+) -> (BTreeMap<usize, Worst>, Spent) {
     let r = ball.r();
     let need = ball.needed();
     let reach = need - r; // distance the ceiling must keep from the centre
@@ -351,6 +372,14 @@ fn worst_under(
     // Seeds: per ceiling mesh, the first pair with the lowest floor below
     // `need`, then its lowest valid headroom.
     let mut seeds: BTreeMap<usize, f64> = BTreeMap::new();
+    let (walls, mut seed_pairs) = (core::cell::Cell::new(0u64), 0u64);
+    // `scan_pair`, also counting its wall queries in `walls`.
+    let scan = |s: &Tri, c: &Tri, b: (DVec2, DVec2), limit: f64, idx: &mut Vec<u32>| {
+        let at = w.pairs.get();
+        let found = scan_pair(w, &k, (s, c), b, limit, idx);
+        walls.set(walls.get() + (w.pairs.get() - at));
+        found
+    };
     let before = w.pairs.get();
     if prune {
         let mut first: BTreeMap<usize, (f64, usize, u32)> = BTreeMap::new();
@@ -378,7 +407,8 @@ fn worst_under(
         for (mesh, (_, si, ci)) in first {
             let (s, c) = (&w.tris[si], &w.tris[ci as usize]);
             w.count(1);
-            let seed = reach_box(s, c, pad).and_then(|b| scan_pair(w, &k, (s, c), b, need, idx));
+            seed_pairs += 1;
+            let seed = reach_box(s, c, pad).and_then(|b| scan(s, c, b, need, idx));
             if let Some(seed) = seed {
                 seeds.insert(mesh, seed);
             }
@@ -413,7 +443,7 @@ fn worst_under(
                 }
             }
             let limit = kept.map_or(need, |g| min_f64(g, need));
-            if let Some(gap) = scan_pair(w, &k, (s, c), (lo, hi), limit, idx) {
+            if let Some(gap) = scan(s, c, (lo, hi), limit, idx) {
                 worst.insert(
                     c.mesh,
                     Worst {
@@ -428,7 +458,14 @@ fn worst_under(
         // Every candidate the query returned except the pruned pairs.
         w.count(cands.len() - pruned);
     });
-    (worst, seed_cost)
+    (
+        worst,
+        Spent {
+            seed: seed_cost,
+            seed_pairs,
+            walls: walls.get(),
+        },
+    )
 }
 
 /// Headroom under non-steep colliders of other layers above every walkable
@@ -576,14 +613,15 @@ mod tests {
     /// One `worst` entry as comparable bits.
     type Entry = (usize, u64, usize, u8, u8);
 
-    /// `worst_under` with and without the prune, plus both counters.
+    /// `worst_under` with and without the prune, plus the whole counter and
+    /// its parts.
     fn run(
         table: &LoadedTable,
         scene: &GltfScene,
         ball: &Ball,
         index: SpatialIndex,
         prune: bool,
-    ) -> (Vec<Entry>, u64, u64) {
+    ) -> (Vec<Entry>, u64, Spent) {
         let tris = collider_triangles(scene);
         let index = TriIndex::new(&tris, index);
         let w = World {
@@ -595,7 +633,7 @@ mod tests {
             glb: "playfield.glb",
             backbox: None,
         };
-        let (worst, seed_cost) = worst_under(&w, ball, prune, &mut Vec::new(), &mut Vec::new());
+        let (worst, spent) = worst_under(&w, ball, prune, &mut Vec::new(), &mut Vec::new());
         let entries = worst
             .into_iter()
             .map(|(m, e)| {
@@ -608,7 +646,7 @@ mod tests {
                 )
             })
             .collect();
-        (entries, w.pairs.get(), seed_cost)
+        (entries, w.pairs.get(), spent)
     }
 
     fn ball(d: f64, allowed: Allowed) -> Ball {
@@ -664,8 +702,13 @@ mod tests {
         /// SPEC 2.8, 6.0 (#231): the pruned headroom check keeps exactly
         /// the entries of the unpruned loop (ceiling mesh, gap bits, named
         /// support) on random scenes full of exact ties, for unrestricted
-        /// and area-restricted balls and either index; it never examines
-        /// more pairs, and the fine index never more than the legacy one.
+        /// and area-restricted balls and either index. #266: it never
+        /// examines more candidate pairs (the counter less its wall
+        /// queries) than the unpruned legacy loop plus its seed pairs (at
+        /// most one per ceiling mesh); the wall queries alone may exceed the
+        /// unpruned loop's (a pruned pair leaves later pairs a higher
+        /// `limit`). The whole counter of the fine index is never above the
+        /// legacy one's.
         #[test]
         fn pruned_headroom_equals_unpruned(
             scene in scenes(),
@@ -685,14 +728,22 @@ mod tests {
                 Allowed::Anywhere
             };
             let b = ball(d, allowed);
-            let (reference, ref_pairs, _) = run(&table, &scene, &b, SpatialIndex::Legacy, false);
+            let (reference, ref_pairs, ref_spent) =
+                run(&table, &scene, &b, SpatialIndex::Legacy, false);
+            let ref_cands = ref_pairs - ref_spent.walls;
             for index in [SpatialIndex::Legacy, SpatialIndex::Fine] {
-                let (entries, pairs, seed_cost) = run(&table, &scene, &b, index, true);
+                let (entries, pairs, spent) = run(&table, &scene, &b, index, true);
                 prop_assert_eq!(&entries, &reference, "{:?}", index);
+                prop_assert!(spent.seed_pairs <= scene.meshes.len() as u64, "{:?}", spent);
                 // Legacy reference: the fine index examines no more.
-                prop_assert!(pairs <= ref_pairs + seed_cost, "{} {} {}", pairs, ref_pairs, seed_cost);
+                let cands = pairs - spent.walls;
+                prop_assert!(
+                    cands <= ref_cands + spent.seed_pairs,
+                    "{:?}: {} {} {} {:?} {:?}", index, pairs, ref_pairs, cands, spent, ref_spent
+                );
                 let (unpruned, _, none) = run(&table, &scene, &b, index, false);
-                prop_assert_eq!(none, 0);
+                prop_assert_eq!(none.seed, 0);
+                prop_assert_eq!(none.seed_pairs, 0);
                 prop_assert_eq!(&unpruned, &reference);
             }
             let fine = run(&table, &scene, &b, SpatialIndex::Fine, true).1;
