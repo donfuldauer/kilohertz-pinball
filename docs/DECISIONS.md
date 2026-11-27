@@ -9920,3 +9920,102 @@ whole budget on repeats). Raising the per-run timeout or the job cap for the hea
 change the #209 behaviour silently; `mean_run_s` and `stopped=` show the need first). Dispatch
 default `modes` of all four modes (the #257 comparison needs only as-is and serial; `srgb_blend_gpu`
 on dispatch now names its modes explicitly, its push default is unchanged).
+
+## #257 KP-119 — profiler_gpu WARP fault: reproduction, upstream and mitigation
+
+Failure under diagnosis: intermittent WARP/DX12 crashes of the `pin_app` test binary
+`profiler_gpu` (`crates/pin_app/tests/profiler_gpu.rs`), first recorded in "#209 KP-100 — Addendum:
+a stack from main (profiler_gpu, 13714be)". Diagnostic workflow:
+`.github/workflows/diag-srgb-blend-warp.yml` at head b94c733 (the #257 phase 1 commit), runner
+`windows-latest` (Windows Server 2025), adapter "Microsoft Basic Render Driver (Dx12, Cpu)", wgpu
+30.0.1, wgpu-hal 30.0.1, windows-core 0.62.2, rustc 1.97.0. Modes: `as-is` (the binary as CI runs it,
+libtest's default thread pool, four tests on one shared device), `serial` (`--test-threads=1`),
+`contended` (as-is while two companion processes run the same binary, each with its own device).
+
+| Run (head b94c733) | Mode | Runs | Passes | Failures | Exit codes of the failures |
+|---|---|---|---|---|---|
+| push [45961967410](https://github.com/donfuldauer/kilohertz-pinball/actions/runs/45961967410) | as-is | 200 | 200 | 0 | none |
+| push 45961967410 | serial | 200 | 200 | 0 | none |
+| dispatch [45966001147](https://github.com/donfuldauer/kilohertz-pinball/actions/runs/45966001147) | as-is | 2500 | 2498 | 2 | 0xC0000374 (run-786), 0xC0000409 (run-1419) |
+| dispatch 45966001147 | serial | 2500 | 2500 | 0 | none |
+| dispatch 45966001147 | contended | 1839 (time budget) | 1839 | 0 | none; companions 3678 runs, 0 non-pass |
+
+Both faults (as-is job 140397101646) came after two tests had passed, in
+`hud_draws_hud_lines_only_when_enabled`, inside `pin_render::pbr::renderer::make_pipelines` →
+`Device::create_render_pipeline`:
+
+- run-786, exit 0xC0000374 (STATUS_HEAP_CORRUPTION): panic at `wgpu-30.0.1 src/backend/wgpu_core.rs:1414`,
+  "Validation Error / Internal error in ShaderStages(VERTEX | FRAGMENT) shader: Unspecified error
+  (0x80004005)", then the process died of heap corruption.
+- run-1419, exit 0xC0000409 (fail fast): panic at `windows-core-0.62.2 src/interface.rs:41`,
+  "misaligned pointer dereference: address must be a multiple of 0x8 but is 0x1", stack
+  `Interface::assume_vtable` → `IUnknown::clone` → `ID3DBlob` clone → `wgpu_hal::dx12::Device::load_shader`
+  → `create_render_pipeline`.
+
+**Reproduction rate.** as-is 2 / 2700 (0.074 %) over both runs; serial 0 / 2700; contended
+(separate devices, separate processes) 0 / 1839 main and 0 / 3678 companion runs. Combined with
+the #209 data for the sibling binary `srgb_blend_gpu` (790 clean diagnostic runs): 2 faults in
+3490 diagnostic runs of the two binaries in the shared-device modes (0.057 %); in ordinary CI #209
+counted about 2 in 850 binary runs. The fault needs several threads creating pipelines on one
+device in one process; separate devices under CPU contention do not trigger it.
+
+**Upstream.** gfx-rs/wgpu#10547 (https://github.com/gfx-rs/wgpu/issues/10547), "DX12: the shader
+cache shares FXC blobs across threads, but FXC's ID3DBlob reference count isn't thread-safe
+(use-after-free, heap corruption)", reported against wgpu / wgpu-core / wgpu-hal 30.0.1, windows
+0.62.2, WARP, FXC (d3dcompiler_47, no DXC). Its symptoms are both of ours: STATUS_HEAP_CORRUPTION
+and the windows-core misaligned-pointer assertion in `IUnknown::clone` via `ID3DBlob::clone` during
+`create_render_pipeline`; the Internal error 0x80004005 of run-786 is consistent with a freed blob
+handed to the pipeline. Closed as completed on 2026-11-11 by PR gfx-rs/wgpu#10805 "Fix FXC shader
+cache use-after-free across threads, fixes #10547" (https://github.com/gfx-rs/wgpu/pull/10805),
+merged to trunk as commit b036222 (the cache stores copies of the bytecode, not FXC blobs). **No
+fixed release:** wgpu-hal 30.0.2 (2026-11-12) is the latest on crates.io and does not contain it;
+the v30.0.2 and v30.0.1 changelog sections were checked and mention neither FXC, the shader cache,
+#10547 nor #10805. The upstream issue exists, so nothing needs filing (no P8 line). The wgpu update
+is follow-up #265 (KP-123), blocked until a wgpu release contains #10805.
+
+**Decision:** Case A of the issue. `profiler_gpu.rs` serialises its use of the one shared device:
+a process-wide `static GPU_LOCK: Mutex<()>` and a helper `serial()` (poison-tolerant,
+`unwrap_or_else(PoisonError::into_inner)`, so one failed test does not mask the others); each of
+the four tests binds `let _serial = serial();` as its first statement and holds it to its end,
+because the fault state is shared by every call into the device and queue, not only by
+`renderer()`. The file gains only added lines (the doc paragraph, the static, the helper, one line
+per test); every assertion, message, constant and test name is unchanged, the one-`GpuContext`
+`OnceLock` stays, no test is skipped or ignored (R10), and no dependency or manifest changes.
+
+**Rationale:** The lock goes in on the strength of the confirmed upstream root cause plus the
+absence of a fixed release (issue deliverable 3), not on the statistical power of 2 vs 0 alone
+(2 / 2700 against 0 / 2700 is suggestive but not conclusive by itself). The #209 decision rule
+(a lock only if serialising removes the failure) is met: serial was 0 / 2700, and the upstream
+mechanism (FXC blob reference counts raced by threads sharing the device's shader cache) explains
+why only the multi-threaded, one-device mode fails and why separate-device contention does not. A
+flake is not a root cause (R10): the root cause is named, the test keeps every assertion, and the
+lock removes only the upstream race, not any behaviour under test (the four tests never needed
+concurrency; the w8f-q6 evidence is per test).
+
+**Alternatives:** Update wgpu now (out of scope here: open PRs #256, #253 and #196 touch root
+`Cargo.toml` and `Cargo.lock`, and no release contains the fix; tracked in #265). Vendor or patch
+wgpu-hal with #10805 backported through `[patch.crates-io]` (rejected: touches the root manifest
+and adds a fork to maintain). Switch the DX12 backend to DXC (needs a manifest / feature change and
+`dxcompiler.dll` on every runner and player machine). `--test-threads=1` in CI or docs only (not
+owned: `ci.yml` belongs to #163 / PR #196, and a doc-only rule does not protect the binary). Lock
+the other GPU test binaries too, such as `srgb_blend_gpu` (not owned here, and its #209 data showed
+0 faults in 790 runs); #265 reconsiders all of them, this lock included, once the fixed release
+lands. `#[ignore]`, `cfg`-skips or a `serial_test`-style dependency (R10; no manifest change).
+
+**Residual production risk.** The app itself can create pipelines from more than one thread on one
+device, so on DX12 with FXC (Windows without DXC) it is exposed to the same upstream race until
+#265 lands. Found by reading: in threaded presentation, `add_slot`
+(`crates/pin_app/src/orchestrator/present.rs`) builds each slot's `TableRenderer` (PBR, post chain,
+debug and display pipelines: `pin_render` `pbr/renderer.rs`, `post/chain.rs`, `debug/renderer.rs`,
+`displays/*`) on the calling thread and then spawns a `presenter-<window>` thread whose body
+(`run_presenter` → `FrameCopy::with_source`, `crates/pin_app/src/orchestrator/presenter.rs`)
+creates its blit pipeline on that thread when the copy path is a blit; the next slot's renderer is
+then built on the calling thread while the earlier presenter may still be building its pipeline.
+`pin_render::gpu::surfaces` `spawn_presenter` likewise builds `Blit::new` on its presenter thread.
+The app's `gpu_lock` covers surface configure and submission, not pipeline creation. The fix for
+that path is the wgpu update in #265, not a test lock; this entry does not change production code.
+
+**Acceptance evidence pending:** 50 of 50 green WARP runs of `profiler_gpu` with the lock (the
+diagnostic workflow dispatched on this branch's head with `target=profiler_gpu`, `modes=as-is`,
+`runs=50` or more; each run exit 0 with `test result: ok. 4 passed; 0 failed; 0 ignored`,
+`fail_fast=0`, `heap_corruption=0`). The Orchestrator adds the run URL and RESULT line here.
