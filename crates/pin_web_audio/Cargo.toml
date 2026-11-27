@@ -1,0 +1,21 @@
+[package]
+name = "pin_web_audio"
+description = "Browser audio: pin_audio's Mixer in an AudioWorklet wasm module, with a main-thread fallback."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib: the AudioWorklet wasm module; rlib: the engine module links it and
+# the native tests call the `pwa_*` functions as plain Rust.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# No SDL: the browser build mixes offline into worklet buffers.
+pin_audio = { path = "../pin_audio", default-features = false }
+pin_core.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
