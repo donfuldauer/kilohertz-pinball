@@ -262,17 +262,24 @@ impl LcdRenderer {
     /// the same file again replaces its texture in place). Marks the display
     /// changed. An invalid image, or one with a side above the device's
     /// `max_texture_dimension_2d` (untrusted bundles, D25), is refused with
-    /// [`GpuError::InvalidArgument`]; a previous image of that file stays.
+    /// [`GpuError::InvalidArgument`]; a previous image of that file stays
+    /// and the display is not marked changed.
+    ///
+    /// `ctx` must be the context the renderer was created with. The upload
+    /// always goes through the queue of that creating context (kept by the
+    /// renderer), never `ctx`'s, so another context can neither panic wgpu
+    /// nor leave a texture without its pixels (#163 round 12, finding 21).
     pub fn set_image(
         &mut self,
         ctx: &GpuContext,
         file: &str,
         image: &RgbaImage,
     ) -> Result<(), GpuError> {
+        let _ = ctx; // the owning queue is used (see above)
         match self.images.get(file) {
-            Some(&i) => self.quads.replace_image(ctx.queue(), i, image)?,
+            Some(&i) => self.quads.replace_image(i, image)?,
             None => {
-                let i = self.quads.add_image(ctx.queue(), image)?;
+                let i = self.quads.add_image(image)?;
                 self.images.insert(file.to_owned(), i);
             }
         }
@@ -296,6 +303,10 @@ impl LcdRenderer {
     /// Takes `list` as the content; returns whether the display needs a
     /// redraw: the content differs from the current one, or an image was set
     /// or [`mark_dirty`](Self::mark_dirty) was called since the last call.
+    ///
+    /// `queue` must belong to the context the renderer was created with; it
+    /// is not used (an LCD uploads nothing per draw list, and image uploads
+    /// use the renderer's own queue).
     pub fn set_draw_list(&mut self, _queue: &wgpu::Queue, list: &LcdDrawList) -> bool {
         let dirty = core::mem::take(&mut self.dirty);
         if self.list.as_ref() == Some(list) {

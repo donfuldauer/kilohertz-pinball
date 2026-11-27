@@ -376,10 +376,14 @@ pub fn profile_name(sim: &Simulation, profile: pin_core::ProfileId) -> String {
         .to_owned()
 }
 
-/// Profile names of the balls in the last snapshot.
+/// Profile names of the free balls in the last snapshot. Captive balls
+/// appear as ordinary balls entries (SPEC Appendix A "Dynamic mesh slot
+/// convention"), published after the free balls, so the free balls are
+/// exactly `balls()[..balls_in_play()]`.
 pub fn snapshot_profiles(sim: &Simulation) -> Vec<String> {
-    sim.snapshot()
-        .balls()
+    let snap = sim.snapshot();
+    let free = sim.balls_in_play().min(snap.balls().len());
+    snap.balls()[..free]
         .iter()
         .map(|b| profile_name(sim, b.profile))
         .collect()

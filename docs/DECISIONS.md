@@ -9852,3 +9852,942 @@ O(n·k)). A rigorous bound for sloped ceilings (needs the full branch analysis o
 routine in 3D; left out to keep the proof small). Pruning whole BVH subtrees (would also cut the
 broad-phase time, but needs per-node level/mesh data in `geom.rs` and a per-mesh threshold inside
 the index; left for a follow-up if the broad phase matters).
+## #163 KP-069 — One assert script for every replay-hash leg
+
+**Decision:** The record / 10 replays / golden comparison lives in a single new file,
+`scripts/ci/replay_hash_assert.sh` (`<pin_sim> [<runner prefix>] [<golden>]`), run by the x86_64
+`replay-hash` job, both `replay-hash-cross` legs, the new `replay-hash-aarch64` job (with the
+`qemu-aarch64 -L /usr/aarch64-linux-gnu` prefix) and release.yml's Rosetta 2 verify leg (with the
+`/usr/bin/arch -x86_64` prefix). It strips `\r` from the golden and from pin_sim's output, compares
+only the `state_hash=` line, validates the golden's format, uses `mktemp -d` under `$TMPDIR` (not
+`$RUNNER_TEMP`) and is written for bash 3.2 and Git Bash. The new file is outside the issue's code
+paths but explicitly allowed by the brief.
+**Rationale:** Five legs on three shells must apply the same rule; one file means one place to fix,
+and it is the exact thing a person runs locally with a wrong golden (the brief's acceptance proof).
+`tests/spec_ci` now asserts the record/replay/golden logic in the script and that each leg calls it.
+**Alternatives:** the same inline block in every job (rejected: five copies drift, and the Rosetta
+leg lives in another workflow); a Rust test in pin_sim (rejected: crates/ is out of scope, and the
+gate is about the shipped binary under each runner).
+
+## #163 KP-069 — Seam digests on Windows checked from the printed lines
+
+**Decision:** Every replay-hash leg runs `ball_seam_bitident -- --nocapture`, captures it with
+`tee` under `set -euo pipefail`, and runs `replay_hash_assert.sh --seam-digests <log>`, which fails
+unless exactly five `[seam digest]` lines were printed and all say `same` (any `differs` fails).
+On x86_64 Linux and aarch64 the test's own `RECORDING_TARGET` assert already gates; on Windows
+x86_64 this CI-side check is the gate. Widening `RECORDING_TARGET` to Windows is requested from
+the Orchestrator as a change outside this issue's owned paths.
+**Rationale:** The amended D9 gates Windows x86_64 on the seam digests, and `crates/` is not owned
+here. Running the check on every leg makes the intent visible and is harmless where the test
+asserts. The exact-five rule also catches a run where `PRINT_SEAM_HASHES` short-circuits the test.
+**Alternatives:** editing `RECORDING_TARGET` now (rejected: outside owned paths); Windows report-only
+(rejected: D9 as amended gates it, and the spike measured it already equal).
+
+## #163 KP-069 — aarch64 path filter as a fourth `changes` output
+
+**Decision:** `changes` gets an `aarch64` output, computed in the existing NUL-separated loop with a
+`case` block next to `gpu` and `dof`: true for `crates/pin_core`, `pin_physics`, `pin_input`,
+`pin_sim`, `pin_script`, `pin_assets`, `third_party/lua-src`, `tables`, `Cargo.toml`, `Cargo.lock`,
+`versions.toml`, `.github/workflows/ci.yml` and the assert script. It defaults to true (push,
+dispatch, an unlistable diff) and is cleared only for a PR with a file list. `replay-hash-aarch64`
+runs when `aarch64 == 'true' || github.event_name != 'pull_request'` and is in `pr-checks`.
+**Rationale:** The cross build costs 2-4 min warm and 8-12 cold; PRs that cannot change simulation
+output (docs, render, app, tools) should not pay it, while fail-closed defaults keep the gate on
+whenever the diff is in doubt. Reusing the existing step keeps one diff listing and one place for
+the filters.
+**Alternatives:** a separate paths-filter action (rejected: a second diff source and a new action
+pin); running it on every code PR (rejected: cost with no coverage gain).
+
+## #163 KP-069 — No separate Independent Tester
+
+**Decision:** #163 has no Independent Tester pass; the Implementer updates `tests/spec_ci`
+(which this issue owns) and the work-verifier runs its mutation checks.
+**Rationale:** The deliverable is workflow structure plus a shell script; `tests/spec_ci` is the
+specification of that structure and is updated in the same PR by convention (DEVELOPMENT.md "CI").
+The behavioural part (wrong golden, CRLF, seam `differs` / four lines) is covered by tests that
+execute the script, and by the local qemu-aarch64 and wrong-golden runs in the report.
+**Alternatives:** a black-box spec test file by a second agent (rejected: it would read the same
+workflow text and duplicate `spec_ci_yml.rs`).
+
+## #163 KP-069 — First gate-review base is the PR #154 merge `5714c49`
+
+**Decision:** The first gate review (phase `30-web-prereq`, gate issue #163) uses `5714c49`, the
+merge commit of PR #154, as `review-base/30-web-prereq`. `docs/PROCESS.md` P6 and the `work-issue`
+skill name `4113e42` as "the last commit of the former per-PR review rhythm (the merge of PR
+#154)", but no commit `4113e42` exists in the repository; `5714c49` is the commit that description
+names.
+
+**Rationale:** The prose identifies the commit unambiguously; the abbreviated SHA does not resolve.
+Using the described commit keeps the review cumulative over everything merged since the rhythm
+changed.
+
+**Alternatives:** Base on `main` before #158 (would skip the M1 units merged since #154 from any
+gate review); stop and ask (R8 forbids waiting).
+
+## #163 gate review — windowed workflow filter, run.sh setup artifacts, spec_ci coverage
+
+**Decision:** (1) `windowed.yml` `pull_request.paths` gains `scripts/windowed/**`; the push trigger
+stays unfiltered. (2) `scripts/windowed/run.sh` rejects a non-empty `CARGO_BUILD_TARGET` with exit
+status 2, also under `--print-paths`, instead of resolving the executable. (3) After
+`--print-paths` has exited, `run.sh` creates the output directory and removes the previous run's
+`latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png`; a later setup failure
+(tool check, grey-box build, `cargo build`) writes `verdict: FAIL (windowed setup: <what>)` to
+`summary.txt` through an `EXIT` trap that is cleared just before the final `exec`. (4) The
+workflow structure is asserted in the required Rust suite `tests/spec_ci/tests/spec_windowed_yml.rs`;
+the Python suite keeps its checks.
+
+**Rationale:** A harness script change must run the harness it changes. Rejecting
+`CARGO_BUILD_TARGET` keeps `--print-paths` and the measured binary identical with a small change;
+the CI workflow never sets it. Clearing before preflight means a failed retry cannot present the
+previous run's passing summary. The Python suite is not run in CI, so only a `tests/spec_ci` test
+makes a regression in triggers, concurrency, permissions, toolchain pin, upload or `pr-checks`
+independence fail a required check (DEVELOPMENT.md: `tests/spec_ci` asserts the workflow
+structure).
+
+**Alternatives:** Resolve the executable under `<target>/<triple>/release` (rejected: needs
+Cargo metadata or triple handling in sh, and the driver defaults already cover the unset case);
+drop `KP_PIN_APP` when the triple is set (rejected: `--print-paths` would no longer report the
+measured app); move the Python checks into Rust and delete them (rejected: no assertion is removed
+without an equal one, and the Python suite also runs `run.sh` itself).
+
+## #163 gate review — gate detection ordering, gate merge conditions and split reviews
+
+**Decision:** (1) Gate detection is made race-free by ordering, not by a lock: the gate test runs
+again immediately before every merge call, and a ready PR waits while another open `work-unit`
+issue of the same phase (or tracking issue) has an open non-draft PR with a lower `KP-NNN`
+number, so the higher-numbered issue always tests last and becomes the gate issue. A backstop
+after every routine merge re-reads the phase's open issues; if none is left, the missed gate's
+review opens at once on `review/<gate>-missed` (at the merge commit) against
+`review-base/<gate>`, and no phase-gate row is recorded until it is approved. (2) The gate merge
+conditions (PROCESS.md P6 "Gate reviews" step 6) are split: pre-merge checks on the candidate
+head (routine conditions, CI green, CodeRabbit approval on every review PR's current head, every
+thread dispositioned, the phase's automated gates and a milestone's exit criteria), and the P5
+phase gate on `main` as the post-merge confirmation recorded in `docs/RUN_LOG.md`; a red
+post-merge gate becomes new issues and never reverts the merge by itself. (3) Area review PRs
+are rebuilt from the current gate head after each fix push, record the gate-head SHA they were
+built from, and are approved on their own heads; the superseded oversized review PR is closed
+without merging and excluded from the approval requirement.
+
+**Rationale:** CodeRabbit findings on gate review PR #197 showed that two sessions could each
+merge one of a phase's last two issues as routine, that step 6 required a P5 phase gate on `main`
+that the unmerged last issue cannot yet satisfy, and that area PRs cannot share the gate head
+commit. The ordering rule uses only data the sessions already read (open issues, open PRs, plan
+IDs), needs no new label or tool, and leaves only a narrow window (a lower-numbered PR opening
+between another session's check and its merge), which the backstop closes without blocking any
+merge.
+
+**Alternatives:** a lock label or claim comment on the tracking issue held from detection to
+merge (rejected: a new label, and a crashed session would leave a stale lock a person must
+clear); blocking routine merges in a phase until all its PRs are ready (rejected: stalls parallel
+work); keeping the shared-head wording for area PRs (rejected: unsatisfiable by construction).
+
+## #163 gate review — trace stall window, trace permissions and harness hygiene
+
+**Decision:** (1) Stall window (finding I2): while the sim thread runs ticks of one catch-up
+batch (each already due when the previous tick started, `end_ns <= prev.drain_ns`) and a stall
+record exists, a batch tick that again starts more than `STALL_GAP_NS` late or after newly
+dropped ticks extends the record (original `start_drain`, its own drain as the new
+`end_drain`) instead of replacing it; a stall that starts outside a batch replaces the record,
+and the first tick that was not due clears it, as before. A press stamped in the window and
+delivered by any tick of the batch gets `stall = 1` with the original start and the extended end.
+The state stays in `SimTraceWriter`; nothing is carried from the scheduler. (2) Trace
+permissions (M2, CWE-732): the destination's `0o777` bits are copied to the temp file only when
+the temp file's owner and group (`fstat`) equal the destination's; otherwise the group bits are
+cleared and the owner and other bits kept; a new destination stays `0600`; special bits are never
+copied (`trace_mode`). (3) Temp name (M4): `.kp-trace.<pid>.<n>.tmp` in the destination's
+directory, still `create_new` with the same retry count, so a destination name at the file-name
+limit works. (4) App exit in the summary (M5): a failed app exit makes the overall
+`summary.txt` line `verdict: FAIL (app exit status <status>)`, appended after the measurement
+report, whose own verdict line is kept as `measurements verdict: ...`; a successful exit leaves
+the report unchanged.
+
+**Rationale:** (1) The writer already sees every tick's drain and end, so the batch rule it uses
+to keep the record also decides when a later delay belongs to the same stall; a press stamped in
+the original window was not applicable before the batch's catch-up, so its allowance must reach
+the tick that applied it (REQ-LAT-004: the stall is added to the bound until the catch-up ends).
+Extending (rather than keeping the first window unchanged) also covers a press stamped during the
+second delay; it never widens the bound for a press after the batch. Carrying the window from the
+scheduler would touch `SimLoop`'s hot path for no extra information. (2) The group of a new file
+in a setgid directory is the directory's, not the destination's; copying group bits would give
+that group read access the destination never granted. Clearing only group bits keeps owner access
+and never exceeds the destination's other bits (DECISIONS "#82 — Trace file permissions": never
+widen access). (3) A basename-derived temp name overflows `NAME_MAX` for long names and leaks the
+name into the directory listing; a fixed prefix with pid and counter is unique enough with
+`create_new`. (4) The job already fails on a failed exit; a summary that said `verdict: PASS`
+contradicted it. Keeping the measurement report keeps the evidence.
+
+**Alternatives:** (1) keep the first window unchanged for the batch (rejected: a press stamped
+during the second delay would lose its allowance); carry the window from `SimLoop` (rejected: no
+new information, a change to the sim loop's hot path). (2) `fchown` the temp file to the
+destination's group (rejected: needs membership or privilege and can fail; clearing is always
+possible); always `0600` (rejected: drops a deliberate same-group `0640`). (3) a random suffix
+(rejected: needs a random source; pid plus counter with `create_new` suffices). (4) replace the
+report with the exit failure (rejected: loses the measurements); leave the summary and rely on the
+job status (rejected: the artifact and the job disagree).
+
+## #163 gate review round 2 — windowed workflow trigger paths and run.sh failure summary
+
+**Decision:** `windowed.yml` `pull_request.paths` is now `crates/**`, `Cargo.toml`, `Cargo.lock`,
+`tables/**`, `scripts/windowed/**` and the workflow file; the push trigger to `main` stays
+unfiltered. `run.sh` no longer disables its EXIT trap or `exec`s Cargo: it runs
+`cargo test --release -p pin_app --test windowed` as a normal command, so Cargo's status is the
+script's status, and the trap writes `verdict: FAIL (windowed setup: <stage>)` only when the status
+is non-zero and `summary.txt` is missing or empty (the script clears old summaries first, so an
+existing one is the driver's). The workflow stays out of `pr-checks`.
+
+**Rationale:** `pin_app` is built from nearly every crate, so a change anywhere under `crates/` or in
+the lockfile can move key-to-photon latency or dropped ticks, and R12 wants real windowed evidence
+before merge, not only after the push to `main`. A Cargo compile or launch failure of the windowed
+test target never reaches the driver, which left no summary; keeping the trap active closes that gap
+without touching a summary the driver wrote.
+
+**Alternatives:** listing each dependency crate by hand (rejected: a new dependency would be
+missed silently); keeping the trap off and `exec` (rejected: no summary on a Cargo failure); having
+the trap `exit` with a fixed code (rejected: loses Cargo's status); adding the workflow to
+`pr-checks` (rejected: it becomes required only through the owner's repository setting, P8).
+
+## #163 gate review round 2 — gate ordering exceptions, optional blocked issues, area snapshots and commit-msg comment rule
+
+**Decision:** (1) PROCESS.md P6 "Gate issue" ordering rule (2): a ready PR does not wait for a
+lower-numbered open PR whose issue depends on the ready PR's issue; a prerequisite, such as a
+blocking fix issue created under "Review PR" step 4, never waits for the issue that waits for it.
+The brief's wording ("except an issue that the ready PR's issue depends on") read as excluding the
+other direction, which would not break the deadlock (the gate issue depends on the fix, not the fix
+on the gate), so the rule names the direction that does. (2) The gate test, rule (2) and the
+missed-gate backstop count one set: open `work-unit` issues of the phase (or open sub-issues of the
+tracking issue) minus `status:blocked-failure` issues that P7 item 4 skips; a blocked core issue
+still counts, so its phase does not become a gate while it is blocked. (3) Area review branches are
+rebuilt fresh with `git switch -C review/<gate>-<area> review-base/<gate>` and a committed
+`git restore --source=<gate head> --staged --worktree -- <paths>` snapshot; tested in a throw-away
+repository, it records deletions, also for a path the gate head removed entirely. (4) The
+commit-msg hook treats a message as empty only when every non-blank line (above a verbose-mode
+scissors line) is a template comment line: the configured `core.commentString` or
+`core.commentChar` (else `#`, also for `auto`) followed by a space, a tab or the line end.
+
+**Rationale:** each closes a CodeRabbit round-2 finding with one clause: the ordering rule could
+deadlock a gate issue against its own blocking fix; an optional blocked issue left open hid the
+phase's last issue and the backstop, so no gate review ran; `git checkout <rev> -- <paths>` is an
+overlay and keeps files the gate head deleted; `git stripspace --strip-comments` dropped a
+`git commit -m '#123 Fix'` subject that Git keeps (cleanup `whitespace` for `-m`), so the trailer
+was lost. A message the editor writes as `#123 Fix` alone is now treated as content and gets the
+trailer, after which Git commits it with only the trailer; that is the accepted cost, because the
+hook cannot tell the two cleanup modes apart.
+
+**Alternatives:** a lock label for the ordering rule (rejected: adds a label and a stale-lock
+failure mode; the dependency exception is enough); counting every blocked issue as open (rejected:
+an optional blocked issue would then prevent the phase's gate review forever, though P5 lets the
+phase finish); `git checkout` plus `git rm` of the deleted paths (rejected: two steps, and the
+deleted list must be computed; `git restore` does both); reading the commit's cleanup mode in the
+hook (not possible: Git passes the hook only the message file, and `auto` comment characters are
+not observable either).
+
+## #163 gate review round 2 — trace permission clamp, driver startup summary and retry deadline
+
+**Decision.** (A1) `trace_mode` keeps the destination's `0o777` bits unchanged only when the temp
+file has the destination's owner and group; otherwise (uid or gid differs) it returns
+`(bits & 0o700) | ((bits >> 3) & bits & 0o007)`: owner bits kept, group bits cleared, each other bit
+kept only if the old group class also had it. (A2) `release_held` skips the retry of a key that
+already had an attempt once the shared budget is spent (it stays in the failed list with its last
+error); a key's first attempt always runs with the 50 ms floor. (A4) A failure of Xvfb, of the app
+spawn or of taking the stderr pipe writes `summary.txt` through `startup_failed` (the spawn is
+factored into `spawn_app`) and writes no `pin_app_stderr.log`. (A3) The stderr capture reads byte
+lines, decodes lossily and logs a read error. (A5) `parse_trace` rejects timing fields above
+2^60 ns as unreadable output; the bound uses saturating adds and the slack uses `i128`.
+
+**Rationale.** With group 100 on the old file and another group on the new one, clearing group
+bits alone left the other bits granting access to users the old file kept out; limiting the other
+bits to the old group's bits never widens access. Skipping late retries keeps the cleanup within
+the one shared deadline. A startup failure must not leave the previous (or no) summary, since the
+preflight removed it. 2^60 ns is far above any real run and leaves room for sums in `u64`.
+
+**Alternatives.** Preserving the old file's group by `fchown` (rejected: needs privileges the
+process may lack). Counting a skipped retry as a new error (rejected: the last real error is the
+useful one). Checked arithmetic with errors in the evaluator instead of a parser range (rejected:
+range validation at the parse boundary covers every downstream use).
+
+## #163 gate review round 2 — trace replacement never widens ACL access
+
+**Decision.** Before the rename, the latency-trace commit probes the temp file with
+`fgetxattr(fd, "system.posix_acl_access", NULL, 0)` (`acl_state`). Present (the attribute exists)
+or Unknown (any errno other than ENODATA, ENOTSUP or EOPNOTSUPP) leaves the temp file at its created
+`0600` with no chmod (`trace_chmod` returns `KeepCreated`); Absent chmods it as `trace_mode` says
+(the rule of "#163 gate review round 2 — trace permission clamp, driver startup summary and retry
+deadline", unchanged). Off Linux the probe always answers Absent, so behaviour there is unchanged.
+`libc` becomes a direct, Linux-only dependency of `pin_app`.
+
+**Rationale.** A temp file created in a directory with a default ACL inherits its named entries,
+masked to nothing by the `0600` create mode; a chmod to the destination's group bits raises the ACL
+mask, so a named user the old destination denied could read the published trace (CWE-732).
+Leaving the `0600` mask keeps every named entry ineffective: the rule is a pure never-widens (the
+file can only end narrower than the destination), needs no privileges, and fails closed when the
+ACL state cannot be read. `libc` 0.2 is already in Cargo.lock through other crates (no new crate),
+and `unsafe` FFI is already used in `pin_app` (`platform/mod.rs`). A table test of the decision
+function covers every platform and a real-filesystem test (a hand-built default ACL naming another
+user) checks that the published file's mask stays `---`.
+
+**Alternatives.** Copying the destination's ACL xattr onto the temp file (rejected: the
+destination's ACL may name users the temp file's owner cannot reproduce, and a copy bug would
+widen; keeping `0600` provably never widens). Recomputing a mask by intersecting with the
+destination's mask (rejected: more code for the same guarantee). The `exacl` or `posix-acl` crates
+(rejected: new dependencies and lock entries for a single probe). Accepting the bound (overruled by
+the repository owner).
+
+## #163 gate review round 3 — destination ACL probe, libc workspace pin, retry timeout and gate-process wording
+
+**Decision.** (1) Trace replacement probes the temp file (`fgetxattr`) and the existing destination
+(`getxattr` on its path) for `system.posix_acl_access`; the two states combine fail-closed
+(`AclState::combine`: Unknown if either is Unknown, else Present if either is Present, else
+Absent). Present or Unknown on either keeps the temp file's created `0600` (no chmod); Absent on
+both chmods as `trace_mode` says; non-Linux is unchanged (the probes return Absent there). (2) libc
+is the exact workspace pin `=0.2.191` (root `[workspace.dependencies]`, under
+`# #163 KP-069 additions`) and pin_app inherits it with `libc.workspace = true`; Cargo.lock is
+unchanged. (3) A key-release retry is bounded by the remaining budget with no 50 ms floor
+(`key_up_retry_timeout`); a key's first attempt keeps the floor (`key_up_timeout`). (4)
+Gate-process wording (task A, no code): pr-watch monitors every review PR of a split gate (area PRs
+found by base `review-base/<gate>`) and judges each against its own head and recorded built-from
+SHA; a failed pre-merge check is edited on the PR that reported it; a blocked issue never holds
+another PR waiting (it still counts for gate detection); the missed-gate backstop fires when either
+the phase's or the tracking issue's set is empty. (5) Accepted bound: the commit-msg hook treats a
+message whose every non-blank line is the comment character followed by a space, tab or line end
+as empty, so `git commit -m '# fix'` gets no trailer; the hook cannot read the commit's cleanup
+mode and an editor-stripped `# fix` must still abort as empty. The round-3 regression test builds
+its destination ACL blob with a new test helper (`acl_blob`) instead of editing the round-2 test,
+which builds its blob inline and stays unchanged.
+
+**Rationale.** With no default ACL the temp file has no ACL even when the destination has
+named-user entries, so copying mode bits drops a denial (CWE-732); keeping the `0600` temp file
+never widens and needs no privilege. The repository's dependency policy is exact workspace pins. A
+floor on a retry can run up to 49 ms past the shared deadline the doc comment promises. The process
+items close the round-3 findings with one clause each (the backstop mirrors the gate definition,
+which is either scope).
+
+**Alternatives.** Copy the destination ACL (rejected: it may name users the temp file's owner
+cannot reproduce and a copy bug would widen). Probe only through the temp file (rejected: misses
+the finding). Skip a retry when less than 50 ms is left (rejected: needlessly drops a retry the
+budget still allows). A `prepare-commit-msg` hook to see `-m` (rejected for now: new hook and scope
+for a subject that is never a bare comment line; revisit if a real case appears). Accept the
+destination-ACL bound (overruled by the repository owner).
+
+## #163 gate review round 3 — gpu-tests job time after a manifest change
+
+**Decision:** Keep the `gpu-tests` 45-minute timeout and the current rust-cache configuration. A change to any Cargo manifest or `Cargo.lock` changes the rust-cache key, so the next run of each job starts cold. That run takes about 30 minutes instead of 15-21, and this is accepted as a one-off cost.
+
+**Rationale:** The issue-investigator compared the `gpu-tests` logs at 7d5c19b (16 and 21 min) with those at f5a810d (29 and 34 min):
+- The first slow run missed the cache, because round 2 changed `Cargo.lock` and `crates/pin_app/Cargo.toml`.
+- The second slow run restored the cache, but its runner compiled the identical `pin_app` source about four times slower.
+- The new round-2 tests (the windowed harness binary, the ACL and trace tests) finish in under a second.
+
+This is not a code or test regression.
+
+**Alternatives:**
+- Raise `timeout-minutes` to 60.
+- Add `restore-keys` to the cache step.
+
+Both are kept in reserve: if a warm-cache run exceeds about 30 minutes, adopt one of them in a CI unit.
+
+## #163 gate review round 4 — destination permission read from one inode, symlink destinations, fixture ACLs
+
+**Decision.** Three fixes in `crates/pin_app/src/main.rs`, all fail-closed to the temp file's
+created `0600`:
+1. Thread 4699765150 (CWE-732): the destination is inspected with `symlink_metadata`, so a symlink
+   (or any other non-regular file, or a missing file) supplies no permission bits; the published
+   file at the link path keeps `0600` and the link's target is untouched.
+2. Thread 4699765169 (CWE-367): the destination's mode, owner, group and access-ACL state come
+   from one inode. A new private `dest_inode_inputs` opens the regular-file destination read-only
+   once (on Linux with `O_NOFOLLOW | O_NONBLOCK`), requires the descriptor to be a regular file
+   with the inspected `(dev, ino)`, and takes `fstat` and `fgetxattr` from that descriptor. Any
+   open or `fstat` failure, or a mismatch, keeps `0600` with no chmod. The path-based probe
+   `acl_state_of_path` and its non-Linux stub are removed. `dest_inode_inputs` returns
+   `io::Result<Option<..>>` rather than a bare `Option`: an inspection error other than "not
+   found" is still returned, as before this round, so the commit behaviour for such paths does
+   not change. The round-3 NUL-byte path case is removed with the path API it tested.
+3. Thread 4699765184: the test helper `fresh_dir` removes any inherited
+   `system.posix_acl_default` (best effort), so the ACL-free fixtures hold whatever the temp root's
+   ACLs are; the inherited-ACL test installs its own default ACL after `fresh_dir`.
+
+**Rationale.** (i) The three fixes make the copied bits always describe the inode whose ACL was
+probed, never a symlink's target. (ii) Residual window: a writer that can create files in the
+destination directory can still replace the destination between our read and the rename. Such a
+writer can already delete or replace the trace, so the published trace is never more readable than
+the inode we read, and `rename(2)` offers no way to close the window further. (iii) Not a defect:
+thread 4699765195 (pass an absolute shared deadline through `run_bounded`). The overrun is bounded
+by scheduling jitter between sampling the remaining budget and starting the child timer, inside the
+documented 50 ms first-attempt floor of `release_held`. Threading an absolute deadline would change
+four signatures and about 12 test call sites for no observable gain. (iv) Deferred #201 (KP-097): pr-watch
+gate-issue-PR threads and the area-PR head (threads 4699765126 and 4699765141) go to M2 (#80),
+Depends on #163.
+
+**Alternatives.** A stat-before / stat-after `(dev, ino, ctime)` comparison on the path (rejected:
+weaker, open to ABA replacement). Copy no mode bits at all (rejected: changes the existing
+`0640 stays 0640` behaviour the tests cover). Return a bare `Option` from `dest_inode_inputs`
+(rejected: would silently turn an inspection error into a successful `0600` commit, a behaviour
+change outside these findings).
+
+## #163 gate review round 4 follow-up — pr-watch area-PR gate head and gate issue PR threads
+
+**Decision.** `pr-watch` §1 now says that a watcher started on an area PR first resolves the gate
+issue PR (the open PR into `main` whose head is the gate branch, named in the area PR's body), uses
+its `headRefOid` as the gate head for CI and the built-from comparison, and treats it as `<P>`. It
+also reads the gate issue PR's own review threads and review bodies (when it is not itself a review
+PR) and accounts for them before reporting completion (threads 4699765141 and 4699765126). The two
+items were first deferred to #201 (KP-097); they are fixed here instead, and #201 is closed as done
+by this change.
+
+**Rationale.** The area-PR case is a verified correctness defect (the built-from comparison always
+failed and CI was read from the area snapshot), and PROCESS P6 never defers verified correctness
+defects. The fix is one clause each, so it is cheaper than a separate work item.
+
+**Alternatives.** Keep the deferral to #201 (rejected: P6 forbids deferring a verified correctness
+defect). Rewrite §1 around separate area-PR and gate-PR modes (rejected: larger than needed).
+
+## #163 gate review round 5 — same-inode permission snapshot
+
+**Decision.** `dest_inode_inputs` now reads the destination's mode, owner, group and ACL state
+between two `fstat` calls of the one opened descriptor and uses them only if the two
+`InodeSnapshot`s (`dev`, `ino`, `mode`, `uid`, `gid`, `ctime`, `ctime_nsec`) are identical. A
+change in between, or a failed second `fstat`, gives `Ok(None)` and the trace keeps its created
+`0600`. The check lives in a private `dest_inode_inputs_with(dest, probe)` that takes the ACL
+probe as a closure, so a test can chmod the file inside the window and observe the fail-closed
+result (R8: this split was the brief's preferred option; the public behaviour and return type are
+unchanged).
+
+**Rationale.** `chmod`, `chown`, `setfacl` and `removexattr` all update `ctime`, which an
+unprivileged process cannot set, so any permission or ACL change between the mode read and the
+ACL probe is seen as a snapshot mismatch. Failing closed is the owner's rule for trace-file
+permission findings (they are fixed, not accepted as bounds). Residual: `ctime` has a finite
+granularity, so a change (or a change and revert) that leaves mode, owner, group and `ctime`
+identical within one timestamp tick is not detectable; a writer able to do that to the destination
+could also replace the trace itself. The round-4 rename residual (the destination can still be
+replaced between our read and the `rename(2)`) stays as recorded in round 4.
+
+**Alternatives.** Accept the race as a documented bound (rejected: the owner decided these
+findings are fixed). Probe the ACL with `fgetxattr` before `fstat` (rejected: only moves the race
+to the other order). Retry until two snapshots agree (rejected: unbounded; failing closed to
+`0600` is simpler and never widens access). `flock` or file leases (rejected: advisory, they do not
+stop `chmod` or `setfacl`).
+
+## #163 gate review round 5 — pr-watch gate issue PR from any review PR
+
+**Decision.** `.agents/skills/pr-watch/SKILL.md` §1: a watcher started on any review PR of a gate
+(the step-2 review PR or an area PR) first resolves the gate issue PR (for the step-2 review PR,
+the open PR into `main` with the same head branch; for an area PR, the PR named in its body) and
+treats it as `<P>`. On a gate the gate issue PR's own review threads and review bodies are always
+read, in addition to every review PR.
+
+**Rationale.** CodeRabbit showed the round-4 follow-up still missed a watcher started on an
+unsplit review PR (for example #197), which would never read the gate issue PR's (#196's) threads.
+It is a correctness defect in the watcher, so it is fixed rather than deferred (P6).
+
+**Alternatives.** Cover only the area-PR case (rejected: leaves the reported gap).
+
+## #163 gate review round 6 — trace published owner-only (0600)
+
+**Decision.** The repository owner decided: "Always 0600". Every committed `--latency-trace` file
+is published owner-only (`0600` on Unix), whether or not a destination already exists. The temp
+file is created `0600` (`OpenOptionsExt::mode(0o600)` with `create_new`, before any data is
+written), is never chmod-ed, and is renamed over the destination. Nothing is read from an existing
+destination: no mode, owner, group, ACL or inode. `trace_mode`, `AclState`, `TraceChmod`,
+`trace_chmod`, `acl_state`, `acl_state_from`, `InodeSnapshot`, `dest_inode_inputs`,
+`dest_inode_inputs_with` and `keep_dest_permissions` are removed, with their tests; `libc` is no
+longer a production dependency of `pin_app` (it stays a Linux-only dev-dependency for the test
+xattr helpers, with the root `=0.2.191` pin). A device written directly is unchanged.
+
+**Rationale.** CodeRabbit comment 4700710254: the destination can still change after the second
+`fstat` and before the rename (its owner can chmod `0644` to `0600` without write access to the
+parent directory), so with different owners and no ACL the trace could still be published `0604`.
+Any copy of the destination's bits races with a destination chmod after the last check (CWE-367)
+and can publish wider access than the destination now has (CWE-732); no further re-check closes
+that window. SPEC REQ-LAT-003 does not require keeping the destination's permissions. A trace holds
+input timing, so owner-only is the safe default. Accepted behaviour change: overwriting a trace
+that others could read makes it owner-only. With nothing chmod-ed, a directory default ACL gives
+the trace an ACL mask of `---`, so its named entries grant nothing. The ACL probe, the inode
+snapshot and libc in production are gone, so there is less unsafe FFI and no window left to race.
+
+**Alternatives.** Another re-check, or a chmod after the rename (rejected: still racy, and a chmod
+after the rename widens access to a file already published). A lock (rejected: an advisory lock
+cannot stop another user's chmod of their own file). Keeping only the ACL probe (rejected: not
+needed once nothing is chmod-ed).
+
+**Supersedes.** The permission-copy decisions of "#163 gate review round 3 — destination ACL
+probe, libc workspace pin, retry timeout and gate-process wording" (item 1, and item 2 as far as
+it makes libc a production dependency), "#163 gate review round 4 — destination permission read
+from one inode, symlink destinations, fixture ACLs" (the destination read; symlink destinations
+still publish `0600` and leave the target untouched) and "#163 gate review round 5 — same-inode
+permission snapshot"; the libc production-dependency part of "#163 gate review round 2 — trace
+replacement never widens ACL access". For the same reason the bit-copying rules of "#82 — Trace
+file permissions", "#163 gate review — trace stall window, trace permissions and harness hygiene"
+(item 2) and "#163 gate review round 2 — trace permission clamp, driver startup summary and retry
+deadline" (A1) no longer apply; their other items stand.
+
+## #163 gate review round 6 — directory-inherited ACLs on macOS and Windows
+
+**Decision.** The repository owner decided "Accept folder ACLs". On macOS (extended ACL entries
+inherited from the directory) and Windows (the DACL inherited from the parent directory), a
+directory ACL that grants other accounts access to new files is treated as the directory owner's
+deliberate choice to share files created there. The trace's baseline stays owner-only (created
+`0600`, never chmod-ed; round 6 "trace published owner-only (0600)"). No code clears inherited
+ACLs. On Linux, a directory default ACL is already neutralised because a file created with mode
+`0600` gets the ACL mask `---` (test
+`req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users`). Finding: the CodeRabbit
+thread on `crates/pin_app/src/main.rs` line 315 (comment 4700770504).
+
+**Rationale.** This is standard behaviour for every tool that saves files: inheritance is how a
+directory owner shares a folder. Overriding it needs platform ACL code that PR CI cannot test (PR
+CI runs Linux only). The trace holds input timing, not secrets.
+
+**Alternatives.** Clear inherited ACLs on macOS through `acl_set_fd` (rejected by the owner:
+untested here, and it overrides a deliberate share). Also set a protected owner-only DACL on
+Windows (rejected by the owner, same reasons).
+
+## #163 gate review round 6 — pr-watch backstop path and disposition routing
+
+**Decision.** (1) `pr-watch` §1 gets a missed-gate backstop path: when the review PR is a P6
+backstop review (head `review/<gate>-missed`, base `review-base/<gate>`), its gate issue's PR has
+already merged, so the watcher resolves no gate issue PR. `<P>` is the backstop review PR itself,
+CI and the current head are read from its own `headRefOid`, and fixes land on `main` through
+ordinary PRs that are then merged into the review branch, as P6 "Gate issue" (3) says. P6 does
+not say which SHA CI reads; the review PR's own head is the choice most consistent with it (it is
+the commit CodeRabbit reviews). (2) `pr-watch` §5 step 4 posts each finding's disposition on the
+PR that contains it: a thread gets a reply in that thread, a review-body finding a top-level
+comment on that PR, so findings on the gate issue PR are answered there. Every finding still gets
+a disposition.
+
+**Rationale.** A backstop review has no open gate issue PR, so the round 5 resolution rule could
+not establish the head. A reply posted on a PR that does not hold the thread fails or goes
+unseen.
+
+**Alternatives.** Resolving the merged gate issue PR as `<P>` (rejected: it is closed and its head
+is not what is reviewed). Replying to every finding on the review PR (rejected: the reply API is
+per PR and the finding stays unanswered where it was raised).
+
+## #163 gate review round 7 — trace permission wording by platform; split missed-gate watch
+
+**Decision.** (1) Trace permission docs (`TraceSink`, `owner_only`, `commit`, `commit_trace`,
+`docs/DEVELOPMENT.md`) now say the owner-only guarantee is the Unix mode bits (`0600`, never
+chmod-ed): on Linux a directory default ACL gets mask `---`; on macOS inherited extended ACL
+entries are not removed and can grant other accounts access; on Windows `owner_only` is a no-op,
+so the trace takes the DACL inherited from its directory and there is no owner-only guarantee.
+Directory-inherited ACLs stay accepted (owner decision "Accept folder ACLs"). (2) pr-watch
+missed-gate backstop: for a split missed gate, `<P>` is the gate head (the `main` commit the
+backstop was cut at plus later merges, the SHA area PRs record as built-from; P6 is silent on how
+a split missed gate names it, so this follows P6 "Review PR" step 3 and the stale rule), each open
+area PR is a review PR `<R>` read in turn, and the gate completes only when every area PR is
+approved on its own head; fixes go through ordinary PRs to `main`, then area PRs are rebuilt.
+
+**Rationale.** Claiming "owner-only" overstated what mode bits give on macOS and Windows; the
+code is unchanged. The split case otherwise left the watcher with no resolvable PR.
+
+**Alternatives.** Clearing macOS ACLs or setting a Windows DACL (rejected by the owner decision);
+requiring a new single review PR after a split (contradicts P6 step 3).
+
+## #163 gate round 8 — dynamic mesh publication deferred
+
+**Decision:** the `dynamic_mesh_count` and `dynamic_meshes` doc comments in `pin_core::snapshot` gain a status note: the slot convention is normative for publishers, the production simulation does not publish slots yet (it sets the count to 0), publication is work-unit #103 (KP-023), and renderers (#108, KP-027) treat a count below the mech count as "draw the rest pose". Publication stays with #103.
+
+**Rationale:** this is not a contract shape change, the owning unit is scheduled and open, nothing reads slots before #108, and a doc-only status note is not an R2 contract change.
+
+**Alternatives:** implement publication here (rejected: simulation output work belongs to #103 and its gates); leave the doc as is (rejected: misleading).
+
+## #163 gate round 8 — dynamic mesh slot meaning
+
+**Decision:** each slot is a transform in world axes (metres, radians, quaternion [x,y,z,w]) applied to the moving part's rest pose. For each kind, the per-kind rule says whether translation is an absolute position (spinner, gate and diverter pivot or hinge; newton_ball and toys full transform) or an offset from the rest/home pose (drop_target z, sling/kickback, plunger, bumper ring). The per-kind rule wins over the "world transform" header. The `dynamic_meshes` doc says so; the SPEC edit is queued for the owner as a P8 line (`KP-008-slot-meaning`).
+
+**Rationale:** this matches how every per-kind rule is already written, so no per-kind rule changes and no renderer needs re-work; nothing reads slots until #108.
+
+**Alternatives:** all-absolute (rejected: changes every displacement rule and needs rest poses in the snapshot); all-offsets (rejected: pivots are positions).
+
+## #163 gate round 8 — Router swap also flushes owed gamepad-swap releases and resets the digital nudge
+
+**Decision.** `InputRouter::release_all` first emits any releases the router still owes from an earlier gamepad profile swap, then releases `HeldInputs::release_all` in order, resets the `DigitalNudge`, and emits a 0.0 axis for each nonzero nudge axis, all at the swap timestamp. Analog axes a gamepad last drove (triggers, plunger) are not neutralised.
+
+**Rationale.** The old router is dropped, so owed releases would otherwise never reach the simulation. Resetting the nudge keeps a later `poll` on the old router from re-emitting it and makes a second call emit nothing. Analog axes are absolute readings the new router updates on the next motion, and the user may still be holding the trigger; the finding concerned held digital inputs.
+
+**Alternatives.** Release only `held.release_all()` (owed releases lost). Neutralise every pad-driven analog axis as well (beyond the finding; would snap a still-held trigger to 0 until it next moves).
+
+## #163 gate round 9 — cabinet floor height must vary with x
+
+**Decision.** CodeRabbit comment 4703749514 on `docs/SPEC.md` (REQ-BUILD-002) is accepted as a SPEC erratum and deferred. Proposed SPEC wording: "their height above the floor is that plus the body bottom's height at that point, which the legs give: the body bottom is the plane through the four leg-top centres (each leg's effective length less `body.leg_overlap`), so its height at cabinet `(x, y)` varies linearly with `y` between the front and rear leg centrelines and with `x` between the left and right leg centrelines; with equal left and right legs it reduces to the present rule." The implementation (`body_bottom_height_mm(x, y)`, `floor_height_mm(x, y, z)`, a breaking `pin_core` API change under R2) is work-unit #217 (KP-103), which depends on #89 and on the owner's SPEC edit (`[P8 spec] [KP-009-floor-height-xy]`). This proposal is incomplete and is NOT ready to adopt. REQ-CAB-007 sets front and rear legs and left and right levelers independently, so the four leg-top centres need not be coplanar (for example, rectangular leg positions with effective lengths `h`, `h`, `h`, `h+1`, where no plane passes through all four). The proposed wording "the body bottom is the plane through the four leg-top centres" is undefined for that case. This entry deliberately does not choose a rule: the SPEC owner must define one, and may pick any rule (for example a least-squares plane, a plane through three designated legs, or a validation error for non-coplanar legs; these are examples of the kind of options, not a recommendation). #217 (KP-103) must not implement `body_bottom_height_mm(x, y)` / `floor_height_mm(x, y, z)` until the owner has edited SPEC.md with a rule that covers the non-coplanar case. Until then the current SPEC rule stays in force; neither the code nor the SPEC has changed.
+
+**Rationale.** With the right legs longer than the left, REQ-CAB-008 gives a positive body roll, but a height rule linear in `y` only gives the body bottom the same height at every `x`, so it cannot represent that roll. Nothing outside `cabinet.rs` and its tests consumes `floor_height_mm`, so no output is wrong today. SPEC edits are owner-only (P8), and a public `pin_core` signature change needs R2. The round-10 review (comment 4704516474) found the non-coplanar gap.
+
+**Alternatives.** Change the code now against the SPEC text (would contradict the SPEC until the owner edits it); edit SPEC.md directly (P8); choose a rule here (rejected: a SPEC rule is the owner's decision, P8).
+
+## #163 gate round 9 — gpu-tests-cross budget fails instead of clamping
+
+**Decision.** When the time left for the test step after the cache-save reserve (8 min on a miss, 1 min on an exact hit) is below `MIN_TEST_MIN` (10), the `Test-step budget` step emits `::error::` and exits 1 before the test step; no `minutes=` is written and the reserve is never reduced (CodeRabbit comment 4703749438).
+
+**Rationale.** The roughly 15 min test run cannot finish in under 10 min, and clamping to 1 min let the test step eat the cache-save reserve so the rust-cache post-step might not save. Failing early keeps the save (cache-on-failure), so the next run starts warm.
+
+**Alternatives.** Skip the test step silently (looks green with no GPU coverage); clamp to a minimum (what the review rejected).
+
+## #163 gate round 9 — roll clearance measured from the documented origin
+
+**Decision.** The containment checks (REQ-CAB-005) place the playfield from its documented origin, the front-left surface corner at cabinet (offset_x − width/2, inset, height) (REQ-BUILD-002). Mount roll turns the playfield about its left edge through that origin, so the right corners rise by width × sin(roll) and the left corners stay at mount.height; negative roll lowers the right side. Pitch raises the rear edge by length × sin(pitch) and puts it at y = inset + length × cos(pitch). The glass top sits (glass height + sheet thickness) × cos(pitch) × cos(roll) above each surface corner (small-angle composition, f64, libm). Every corner, surface and glass top, must be at or below the side wall top at its own y; for the backbox height test the highest glass-top corner governs (CodeRabbit comment 4703749502).
+
+**Rationale.** SPEC Appendix A fixes the origin at the front-left corner and says positive roll raises the right side. A centreline pivot understated the raised side: at 45° roll and height 80 the right corner is at 443.5 mm against a 404.7 mm wall, and the old check accepted it. At roll 0 the new numbers are bit-identical to the old pitch-only edge heights, so every preset and fixture is unchanged.
+
+**Alternatives.** Keep the centreline pivot with |sin| (contradicts the documented origin); pivot about the right edge for negative roll (the origin is fixed at front-left); full rotation-matrix composition (SPEC specifies independent angles with small-angle composition).
+
+## #163 gate round 9 — Vfs opens only regular files
+
+**Decision.** `Vfs::open_with_limits` refuses any path that is not a folder or a regular file: after the folder branch and the archive-extension check it returns `AssetError::Io("{path}: not a regular file")` when `!metadata.is_file()`, before `File::open`. The extension check stays first, so non-archive inputs keep their old error; symlinks to regular archives still open because `metadata` follows them. Both the table browser scan and table load go through this check (CodeRabbit comment 4703749487, second finding, CWE-400). The narrow race where the path's type changes between `metadata` and `open` is accepted: exploiting it needs write access to the table directory, and reads stay bounded by `read_bounded`.
+
+**Rationale.** A FIFO, device or socket named `x.zip` would block `File::open` or stall reads on the browser's I/O worker, a denial of service reachable from a table folder; R11 treats table inputs as untrusted. Checking the file type first is the minimal change and loosens no `ZipLimits` cap.
+
+**Alternatives.** Open with `O_NONBLOCK` and fstat the handle (closes the race but needs platform-specific code); refuse symlinks (breaks symlinked archives, which must keep working).
+
+## #163 gate round 9 — unregistered LCD scene images are skipped; ScoreTexture::set_image registers them
+
+**Decision.** The owner of an LCD `ScoreTexture` registers scene images with `ScoreTexture::set_image(ctx, file, image)`, which forwards through `ScoreRenderer::set_image` to `LcdRenderer::set_image`. It works before or after the first `update`; a successful call makes the next `update` redraw, and setting the same file again replaces the image in place. An `LcdItem::Image` whose file is not registered is skipped without error or log, and the rest of the scene still draws. A DMD score display refuses every image with `GpuError::InvalidArgument` (a DMD has no image layers). An invalid or oversized image is refused with `InvalidArgument`; the previous image of that file stays and the display is not marked changed (CodeRabbit comment 4703749506).
+
+**Rationale.** Bundles are untrusted (D25), so a missing image must never abort or blank the display. An explicit registration method keeps `ScoreTexture::new` unchanged (additive API) and matches the existing `LcdRenderer::set_image` contract; the render path does no logging, keeping I/O off the redraw path.
+
+**Alternatives.** Pass an `ImageSet` to `ScoreTexture::new` (changes the constructor; no later replacement); make an unregistered image an error from `update` (a bundle defect would blank the display); draw a placeholder for missing images (visible debug art).
+
+## #163 gate round 9 — close before swap
+
+**Decision.** The render thread records every window `CloseRequested` the close policy accepts, including events still queued in the window ring when it is stopped (one `record_close` helper, policy single-sourced in `ClosePolicy::quits`). After joining the old engine, `stop_for_swap` returns its final counters when `close_requested` is set; `swap_table` then returns `Swap::Closed`, starts nothing, and the event loop shuts down with those counters (CodeRabbit comment 4703749444).
+
+**Rationale.** A close the user issued before the swap must end the app regardless of render-thread timing; the join is a deterministic point to read the flag.
+
+**Alternatives.** Record closes in the main-thread forwarder (duplicates the close policy); start the new table then quit (opens a table the user asked to leave).
+
+## #163 gate round 9 — latency trace merged across engines
+
+**Decision.** After each successful table swap the stopped engine's trace collector is collected and appended to an accumulator; at shutdown `final_trace` appends the last engine and writes one file. `CollectedTrace::append` concatenates in engine order and offsets later frame numbers (frame table and row `frame` fields) and `event_seq` by one past the previous last value; tick numbers stay engine-local, overflows are summed and the last `run_end_ns` wins. The CSV format is unchanged. After a failed or cancelled swap the old collector is still held and collected at shutdown (CodeRabbit comment 4703749460). The run end is sampled when the event loop exits, before the browser worker is joined (comment 4703749463).
+
+**Rationale.** Each engine is joined separately, so a tick never meets another engine's frame; offsetting keeps frame and event numbers unique and ascending without a format change.
+
+**Alternatives.** One shared collector across engines (clocks and rings restart per engine); one file per engine (breaks the single `--latency-trace <file>` contract); dropping earlier engines (the reported loss).
+
+## #163 gate round 9 — browser selection must not alias the trace file
+
+**Decision.** While tracing, the table-browser I/O worker runs a guard before each load that compares the requested bundle with the trace destination using the same `is_bundle_file` logic as the startup `--table` check. On a match the load is not performed and the reply is a failed load with `--latency-trace: <path> is the selected table bundle`; the archive is untouched and the menu shows the error. A missing or separate destination is unaffected (CodeRabbit comment 4703749453).
+
+**Rationale.** The check stays on the I/O worker (no file I/O on the main thread) and fires before the archive is read.
+
+**Alternatives.** Check on the main thread when the load reply arrives (extra main-thread file I/O, wasted load); refuse at trace commit (the archive would already be overwritten).
+
+## #163 gate round 9 — I/O worker scan coalescing and submission errors
+
+**Decision.** `IoWorker::request_scan` queues a scan when none is in flight; otherwise the latest directory becomes the single follow-up, queued when the in-flight scan's reply arrives. Load requests are never held back (comment 4703749467). `try_request` returns an error (`the I/O worker is not running` / `the I/O worker has stopped`) when no reply can come; for a load the app passes it to `finish_load(id, Err)` so the menu leaves Loading, and for a scan it logs on stderr (comment 4703749471). `request` keeps its `()` signature.
+
+**Rationale.** The coalescing state is main-thread only (no lock); a burst costs at most two scans and a load waits behind at most the scan in flight.
+
+**Alternatives.** An atomic cleared by the worker (cross-thread state for no gain); change `request` to return `Result` (touches every caller); drop scans while one is in flight (loses the requested follow-up).
+
+## #163 gate round 9 — `--table=` is rejected
+
+**Decision.** `--table=<path>` is refused with `pin_app: --table=<path> is not supported; use --table <path>` and exit status 1, at the start of the windowed run and before the headless path; the `browser_dir` doc comment says the same (CodeRabbit comment 4703749482).
+
+**Rationale.** Every reader of `--table` takes only the separate form; an early, clear error removes the silent "no table, no browser" run.
+
+**Alternatives.** Accept `--table=` in every reader; leave it unreported.
+
+## #163 gate round 10 — trace publication blocked after a bundle alias
+
+**Decision.** When the table browser's guard on the I/O worker refuses a selection because the `--latency-trace` destination is that bundle (a `.zip` file) or lies inside it (a folder bundle, any depth, compared as canonical path components on both the resolved destination and the directory entry the rename replaces), it sets a shared `Arc<AtomicBool>`. The shutdown step `finish_trace` runs on the main thread after the engine threads and the I/O worker are joined; if the flag is set, or the menu's selection still waiting for an answer (`LoadRequested`/`Loading`) collides by the same test, it does not publish the trace: the sink is dropped (temp file removed, destination untouched), one `pin_app: --latency-trace: <dest> ...: the trace was not published` line is printed and the same text is merged into the run's failure. Otherwise the trace is committed as before, also for a failed run. `--table <folder> --latency-trace <folder>/<member>` is refused at start-up (`--latency-trace: <dest> is in the --table bundle`). A destination that does not exist, a sibling with a common name prefix and a hard link outside the folder are not collisions (CodeRabbit comments 4704457456 and 4704516459).
+
+**Rationale.** Round 9 refused the load but left publication on, so the shutdown rename still replaced the bundle (data loss, gate-blocking). A flag set by the guard keeps the check on the I/O worker (R4) and needs no orchestrator API change (R1). The worker stops before running a queued request's guard, so the flag alone misses a load queued at shutdown; the main thread repeats the same alias test for the unanswered selection once, after every thread is joined, beside the commit's own file I/O. Failing the run makes the missing requested artifact visible. Symlinked destinations are refused when either the link or its target is inside the bundle (conservative).
+
+**Alternatives.** A new `IoReply` variant (changes the worker API and still misses requests dropped at stop); a main-thread pre-check at selection time (filesystem access on the event loop, R4, and racy); refusing the load only (round 9: does not prevent the overwrite); publishing to a fallback path (an unrequested file); a warning without failing the run (a requested artifact silently missing).
+
+## #163 gate round 10 — containment bounds the playfield above the body bottom
+
+**Decision.** `CabinetGeometry::validate` check 3 now requires every playfield corner (surface and glass top) to be at z >= 0 (body bottom) as well as at or below the side-wall top; the error names `mount.height`, the edge and side, and the height. It is not a contract change request: it tightens a validation rule inside REQ-CAB-005 with no type, field, signature or file-format change, in the same class as the round-9 roll fix.
+
+**Rationale.** The review (comment 4704516466) showed that `rolled(-45.0)` (mount height 80 mm, pitch 0) puts the right corners about 283.5 mm below the body bottom, and the wall-top-only check accepted it; a negative pitch can do the same at the rear (height 20 mm at -6.5 degrees gives about -101 mm). Level and mildly negative roll or pitch inside the body stay valid; every preset and fixture is unchanged.
+
+**Alternatives.** A CHANGE_REQUESTS entry (rejected: no contract shape changes). Checking the surface only (rejected: the review asked for both, and the glass check costs nothing; the glass top is never below its surface corner, which a unit test documents). Clamping the corners (rejected: it would hide an invalid mount instead of naming `mount.height`).
+
+## #163 gate round 11 — Gate review boundary is the reviewed head, not the merge commit
+
+**Decision.** The `reviewed <sha>` recorded for a gate is its reviewed head: the exact commit CodeRabbit last reviewed and approved on every review PR (for a split review, the gate-head SHA the area PRs were built from). It is captured before the gate issue PR merges. Only a documentation-only commit adding the gate's RUN_LOG row may sit on top of it at merge time; any other commit, including a merge of `main`, needs another review round. The merge commit into `main` is linked in the RUN_LOG for the record but is never recorded as `reviewed`. The routine re-sync rule (re-sync only when files overlap) is unchanged. pr-watch and work-issue merge only PRs whose base is `main`; review-only PRs are always closed unmerged.
+
+**Rationale.** The gate issue PR merges with a merge commit, so the reviewed head is an ancestor of it. The next gate's cumulative diff from the reviewed head therefore still contains every commit that reached `main` after or during the review, and no commit ever falls into an unreviewed gap. Recording the merge commit silently marked those commits as reviewed. This needs no extra review round, no change to the routine merge rules and no git tags (D39).
+
+**Alternatives.** Make re-syncing the gate branch with `main` and re-reviewing the intervening `main` changes mandatory before recording `reviewed <merge sha>` (rejected: every routine merge during an open gate review would force another CodeRabbit round and can starve the gate, and a merge landing between approval and the gate merge would still slip through). Record the merge commit and list the uncovered commits separately (rejected: the base would no longer be one SHA).
+
+## #163 gate round 11 — Windowed run.sh honours KP_GREYBOX_BUNDLE and fails closed on cleanup
+
+**Decision.** `scripts/windowed/run.sh` takes the bundle from `KP_GREYBOX_BUNDLE` (default `<target>/greybox`; a relative value is resolved against the repository root). It installs its EXIT failure trap, with stage `cleanup`, before it removes the previous artifacts. It removes `summary.txt` first and on its own, and treats any summary as stale until cleanup has finished.
+
+**Rationale.** docs/DEVELOPMENT.md already documented the variable as an override, so the script now honours it. A stale PASS summary must never survive a failed cleanup.
+
+**Alternatives.** Document that only the direct `cargo test` command honours the override (rejected: the documented behaviour was the intended one). Keep installing the trap after cleanup (rejected: a cleanup failure then exits with no summary at all).
+
+## #163 gate round 11 — Glass sheet length bound
+
+**Decision.** `CabinetGeometry::check_consistency` rejects a cabinet when `glass_panel.length * cos(mount.pitch_deg)` is greater than `body.length`, and the error names `glass_panel.length`. The check sits next to the existing width span check.
+
+**Rationale.** It mirrors the existing upper bound on width and does not depend on the table. The sheet rests on the body, so its run along the cabinet cannot exceed the body's outer length. SPEC Appendix A.4 does not imply a tighter bound. All three presets (a 1092 mm sheet in 1308–1315 mm bodies) still pass.
+
+**Alternatives.** `body.length - wall_thickness` (rejected: SPEC does not state it). Using the total playfield pitch (body plus mount) instead of `mount.pitch_deg` (rejected: the brief names the mount pitch, and the difference is under 0.7% at the presets' 6.5 degree pitch). A containment check in `validate` (rejected: it does not depend on the table and would change the containment error order).
+
+## #163 gate round 11 — trace destination vs configuration file
+
+**Decision.** `--latency-trace` is refused at startup with `--latency-trace: <dest> is the configuration file` when the destination is the configuration file (the `--config` value, else `pin_app::ui::default_config_path`), or when the configuration path is one of the trace's sibling temp-file names. When both files exist they are compared by device and inode, so a symlink or hard link counts; when either does not exist yet, they are compared by absolute, lexically normalised path, with the parent directory canonicalised when it exists.
+
+**Rationale.** The shutdown commit renames over the destination and the menu saves the configuration during the run, so either could destroy the other. Refusing before anything is created matches the bundle-alias refusal, and one message keeps the REQ-LAT-003 refusal wording uniform.
+
+**Alternatives.** A separate message for the temp-file case (rejected: rare, and the destination is still the path the user typed). Allowing a hard link to the configuration because the rename only replaces the link (rejected: being conservative matches the `.zip` bundle rule).
+
+## #163 gate round 11 — POSIX ACL fixture required in CI
+
+**Decision.** When the ACL test's fixture `setxattr` fails with `ENOTSUP`, `EOPNOTSUPP`, `EPERM` or `ENODATA`, the test fails if `GITHUB_ACTIONS=true` or `KP_REQUIRE_POSIX_ACL=1`. Otherwise it prints one `SKIPPED ... (set KP_REQUIRE_POSIX_ACL=1 to fail instead)` line, documented as an unsupported environment and not a pass of the property. The nonblocking direct device open (`O_NONBLOCK`, then `fstat` on the descriptor, then clear `O_NONBLOCK`) uses `sdl3::libc`, which sdl3 re-exports unconditionally.
+
+**Rationale.** CI Linux runners provide POSIX ACLs, so the gate must not pass without exercising the property (R10), while developers on filesystems without ACLs can still run the suite. The libc re-export avoids a new dependency.
+
+**Alternatives.** Always fail (rejected: breaks local runs on tmpfs or overlay filesystems). `#[ignore]` (forbidden by R10). A direct `[target.'cfg(unix)'.dependencies] libc` entry in pin_app (cleaner, but adds a manifest change; can follow later).
+
+## #163 gate round 11 — Mip mean tolerance for chained rounding
+
+**Decision.** The display-texture mip shader weights each source texel by its overlap with the destination span (odd sides reduce 2t+1 texels with integer weights t-d, t, d+1; exact 2:1 reductions keep the byte-identical `(sum + 2) / 4` average). The random-size mip property asserts that every reduction step keeps the mean of the level above within 0.5 (exact integers) and that the 1x1 mip is within 0.5 × (number of reductions) of the whole-image average; it does not assert "within 1 byte" for every size up to 65x65.
+
+**Rationale.** Each level rounds to nearest once, so error builds up by up to 0.5 per level. The proptest found a 16x1 image (an exact 2:1 power-of-two chain, which must stay byte-identical to the old shader) whose 1x1 mip is 28 against an average of 26.5625, so a "within 1" assertion would contradict the byte-identity requirement. The per-step check is the property that shows every texel contributes; the old shader fails it on edge-only images.
+
+**Alternatives.** Carry higher precision between levels (rejected: breaks exact 2:1 byte identity and needs a non-Rgba8 intermediate). A fixed looser tolerance (rejected: arbitrary). Assert only the final level (rejected: does not show which step loses texels).
+
+## #163 gate round 11 — Which rejected input events the forwarder retains
+
+**Decision.** The event forwarder retains every button release and every axis-to-0.0 event that the full input ring rejects, whatever produced it (menu toggle, router swap, router flush or a physical key-up), in a fixed store with one entry per cabinet button or axis; the first entry keeps its place and timestamp. Retained events are retried oldest first before any later push and on every poll. While anything is retained, later presses and non-zero motion are dropped and counted in `input_dropped`. `replace_channels` discards the store. `ForwardStats` gains no field; the store is exposed as `EventForwarder::retained_releases()`.
+
+**Rationale.** A rejected release is what leaves an input stuck in the simulation, whatever its origin. Dropping later presses while a release is owed is the only way to guarantee nothing overtakes it without unbounded storage, and the ring is full in that case anyway. After a table swap the old simulation is gone, so its owed releases have no target.
+
+**Alternatives.** Retain only menu- or router-generated releases (rejected: leaves the same stuck input for physical releases). Queue presses too (rejected: unbounded, and changes the documented drop semantics). Keep the store across `replace_channels` (rejected: sends releases for presses the new simulation never saw).
+
+## #163 gate round 11 — Neutral axis events when the input router is replaced
+
+**Decision.** `InputRouter::release_all` sends one neutral event per analog axis that any routed pad or the digital nudge left non-zero, in `CabinetAxis::ALL` order (Plunger, NudgeX, NudgeY, LeftFlipper, RightFlipper), after the pending flush and the button releases, and clears every pad's emitted state.
+
+**Rationale.** This matches the order `MenuController::toggle` uses, is deterministic, keeps the earlier digital-nudge-only output identical, and covers every analog axis the retiring router left non-zero.
+
+**Alternatives.** Plunger and nudge only (rejected: leaves an analog flipper trigger stuck the same way). Digital nudge first, then pad axes (rejected: order would depend on the source, with a risk of duplicate events).
+
+## #163 gate round 11 — Latency trace installs only before the first tick
+
+**Decision.** `SimLoop::set_latency_trace` installs the writer only while `tick() == 0`. A later call drops the writer without installing it, leaves any installed trace untouched and increments `late_trace_refusals()`. It never panics and its signature is unchanged. `set_epoch_ns` after a tick-0 install still restarts the writer at the new epoch.
+
+**Rationale.** The writer seeds its previous-tick marks from the epoch, which is correct only for tick 1. Every caller (the sim thread spawn and the windowed tests) installs at tick 0, so supporting late installs would add state with no user. Refusing keeps REQ-LAT-003/004 rows truthful and keeps the call allocation-free.
+
+**Alternatives.** Seed a late writer with the loop's last tick end and drain marks (rejected: the loop would need the last drain time even without a trace, a clock read on every tick). Panic or `debug_assert!` on a late install (rejected by the brief). Return a `Result` (rejected: changes the signature and every caller).
+
+## #163 gate round 11 — Captive Newton balls in the snapshot
+
+**Decision.** `Simulation::publish_snapshot` publishes every captive Newton ball as an ordinary `balls` entry, after the free balls (ascending handle), in `[[mechs]]` order and chain ball index, truncated at `MAX_BALLS`; each dropped captive counts once per tick in `SimCounters::captive_balls_unpublished` (saturating). Each entry takes its position from the path, velocity = unit path tangent × path speed, the chain's profile and the mech's `layer`, identity orientation and zero angular velocity (captive spin and orientation are not modelled). A captive with a non-finite position or velocity is skipped. `balls_in_play` and `HostView::balls_in_play` stay free-only, so `balls()[..balls_in_play()]` are exactly the free balls. The publish tests check the captive against the path start to 1e-6 m at load; after load they require the published position to equal the solver's chain position exactly, with y within 1e-3 m, because the captive settles about 2e-5 m along the path under the playfield pitch.
+
+**Rationale.** SPEC Appendix A and DECISIONS "#88 KP-008 — Newton captive ball range" require captive balls as ordinary `balls` entries; without them no consumer, renderer included, sees a collidable ball (reproduced on a one-Newton fixture and on greybox, sky_deck and apex_circuit). Free balls first keeps the free-ball prefix stable. The snapshot is not hashed, so the replay digest (`state_hash=25097c21c2c3adc1`) is unchanged.
+
+**Alternatives.** Change the contract so the cradle slot carries the ball (rejected: the slot holds only a swing angle, and #88 rejected extra slots). Derive spin from rolling (rejected: there is no orientation state to match). Count captives in `balls_in_play` (rejected: rules end a ball on `balls_in_play() == 0`). Count one per tick instead of one per dropped captive (rejected: less informative; equal for one chain). Note for KP-025/KP-027: the Newton assembly mesh must not contain the ball, or it is drawn twice.
+
+## #163 gate round 11 — Optional `[art]` in an unpreset cabinet.toml
+
+**Decision.** The round 11 finding that a cabinet.toml without `preset` must give every key, `[art]` included, is rejected for code. The schema and the acceptance test keep treating an absent `[art]` table as an empty art map. The SPEC wording is raised as a P8 erratum in `docs/HUMAN_QUEUE.md` (`[KP-009-art-optional]`): add "`[art]` may be omitted; absent means no entries" to Appendix A.4.
+
+**Rationale.** A.4 defines `[art]` entries as additive, so an empty map and an absent table mean the same thing. Requiring the table would break every committed cabinet that has no art and would add nothing. SPEC edits are owner-only (P8), so the wording waits for the owner, and the code follows the intent until then.
+
+**Alternatives.** Require `[art]` in unpreset cabinets (rejected: breaks valid cabinets for no behavioural gain). Edit SPEC directly (rejected: owner-only, P8).
+
+## #163 gate round 12 — Trace destination checked against the config by file identity at shutdown
+
+**Decision.** `normalised_path` canonicalises the deepest existing ancestor of the unfolded path, so the filesystem resolves symlinks and `..`, and folds `.` and `..` lexically only in the components that do not exist yet. The final file name is never resolved. The run's configuration path, computed once by `open_latency_trace` (`config_path(args)`), is kept in the `TraceSink` (`config: Option<PathBuf>`). Before publication, `finish_trace` compares it with the trace destination by file identity: fresh metadata, device and inode on Unix, canonical path elsewhere. When both exist and are the same file, the trace is not published, the configuration keeps its bytes, and the run fails with `--latency-trace: <dest> is the configuration file: the trace was not published`. `finish_trace`'s signature is unchanged.
+
+**Rationale.** CodeRabbit round 12 found two ways the startup check could pass while the two paths named one file. A symlinked directory followed by `..` was folded before the symlink was resolved. Two spellings that differ only in case, both missing at startup, compare unequal on a case-sensitive string check but are one entry on a case-insensitive volume. The shutdown identity check covers the only case with something to overwrite: a configuration file that exists by then. Keeping the startup value avoids recomputing it after the run.
+
+**Alternatives.** An extra `config` parameter on `finish_trace` (rejected: it touches every call site and test for no gain). Recomputing `config_path(args)` at shutdown (rejected: the startup value is the one the run used). Guessing case-insensitivity at startup (rejected: the volume's behaviour is not portable to detect, and the shutdown identity check is exact). Known limit: on Windows `same_file` compares canonical paths, so a hard link to the configuration is not detected (pre-existing).
+
+## #163 gate round 12 — Mid-run epoch change keeps the latency-trace marks
+
+**Decision.** `SimLoop::set_epoch_ns` accepts an epoch change at any time and always updates the epoch. It restarts an installed latency-trace writer at the new epoch only while no tick has run (`tick == 0`). After that, the writer's previous-tick marks and stall state are kept. In `SimTraceWriter::delivered`, a press of an input first retires every pending watch of the same input released in the same tick, so a same-tick re-press's raise is credited only to the new press.
+
+**Rationale.** Mid-run epoch changes are used by `tests/input_epoch.rs` and are a valid way to re-anchor simulated time. A writer restart after tick 1 replaced tick 1's real marks with startup marks and erased a recorded stall, which corrupted the `prev_tick_end_sdl_ns`, `prev_drain_sdl_ns` and `stall` columns that verdict checks a and b read. The same-tick retirement uses `retain` on the fixed-capacity pending list, so it is allocation-free (R4).
+
+**Alternatives.** Reject mid-run epoch changes (rejected: breaks existing callers). Always restart the writer (the defect). Shift the writer's marks onto the new epoch (rejected: they are SDL-clock times, which an epoch change does not move).
+
+## #163 gate round 12 — Windowed verdict: frames before the press, stall window and attempt-bounded tests
+
+**Decision.** Check b rejects a selected frame whose `present_ns` is earlier than the press's `sdl_ts_ns`; equal times pass, and the in-flight allowance is unchanged. The stall allowance in check a applies only to a flagged row whose timestamp lies in `[prev_drain_sdl_ns, drain_sdl_ns)` (`in_stall_window`). A flagged row outside that window gets one check-a failure naming the window, its own lateness messages are not listed again, and it still counts in `stalled_presses`. The windowed driver resolves the app path once (`std::path::absolute`) for both the preflight check and the launch. A failed `pin_app_stderr.log` write is reported, after the drive's own failure when there is one. `render_presented` in `app_menu_surfaces.rs` is bounded by `MAX_ATTEMPTS = 1_000_000` render calls, and the harness timeout test waits on a completion signal: no test waits on or asserts wall-clock time.
+
+**Rationale.** These are the CodeRabbit round 12 findings 3, 11, 12, 13, 14 and 17, each verified against the code with a test that fails on the previous logic where a test applies. Recording a window failure once keeps the summary counts unchanged. R6 forbids wall-clock assertions, and a count bound keeps a surface that never presents from spinning forever with no diagnostic.
+
+**Alternatives.** Listing both the window failure and the lateness failure for one row (rejected: double-counts). An unbounded present loop relying only on the job timeout (rejected: no diagnostic history). Keeping the 15 s deadline (rejected under R6).
+
+## #163 gate round 12 — Review fix issues of an open gate review are not gate issues
+
+**Decision.** While a gate review of gate G is open (a `review/G-missed` backstop PR or its area PRs, or G's step 2 review PR or area PRs), a `work-unit` issue created under P6 "Review PR" step 4 for one of that review's findings is not a gate issue for G. Its body names the review PR and the finding. This holds even when it is the last open issue of the phase or tracking issue. Its PR merges on the routine conditions: ordering rule (2) does not hold it, and the backstop (3) does not fire for G while the review is open. Its changes reach the review through a merge (or fast-forward) of `main` into the review branch, or by rebuilding the area PRs, and they are reviewed in the next round. For missed gates every fix goes through such an issue on a fresh branch off `main`, never a push to the review-only branch. Split missed gates read CI from the gate-head commit's check runs, and dispatch a `ci.yml` run on `review/<gate>-missed` when none exists.
+
+**Rationale.** Without the exception, a blocking fix for a missed phase gate becomes a gate issue that waits for the open review, while that review cannot be approved until the fix lands: a deadlock (CodeRabbit round 12 finding 6). Scoping the exception to issues that name the review and finding leaves every other gate detection unchanged. The same round's findings 4 and 5 showed pr-watch still used a `<P>` PR that a split missed gate does not have, and pushed fixes to a branch that never merges.
+
+**Alternatives.** Pushing fixes directly to the review branch (rejected: the review PR is never merged, so fixes would never reach `main`). Closing the missed review and opening a new one after each fix (rejected: multiplies review rounds and breaks "one review at a time"). Giving fix issues a later phase label (rejected: hides phase work and moves the gate).
+
+## #163 gate round 12 — The RUN_LOG-row commit is the only unreviewed commit allowed above the reviewed head
+
+**Decision.** A gate's reviewed head is the commit CodeRabbit approved on every review PR. The merging head may carry exactly one documentation-only commit on top of it, changing `docs/RUN_LOG.md` and, when its rendering changes, the regenerated `docs/HUMAN_ACCEPTANCE.md`. That commit is exempt from the reviewed-head requirement, but not from CI (`pr-checks`) or the work-verifier on the final head. `reviewed <sha>` records the approved commit. Any other later commit, a merge of `main` included, needs another review round.
+
+**Rationale.** The gate's RUN_LOG row records the approval, so it can only be written after it; requiring a re-review of that log-only commit would never end (CodeRabbit round 12 finding 7). The commit falls inside the next gate's cumulative diff.
+
+**Alternatives.** Re-review after the log commit (rejected: never terminates). Committing the row in the next PR only (rejected: P6 step 7 and work-issue §6 step 4 require it on the gate branch before the final verifier run).
+
+## #163 gate round 12 — Display renderers use their owning queue; a foreign context is not rejected
+
+**Decision.** Every display renderer and display texture (`QuadRenderer`, `DmdRenderer`, and the `MipTexture` behind `BackglassTexture` and `ScoreTexture`) keeps the `wgpu::Queue` of the context it was created with. `MipTexture` also keeps the `wgpu::Device`. They use these for every upload, encoder and submit. The public `ctx`/`queue` arguments are kept and documented as "must come from the creating context". They are not checked: a different context is accepted, and the work runs on the owning queue. `needs_redraw` walks the lamp ids in place, with no allocation on an unchanged frame.
+
+**Rationale.** CodeRabbit round 12 finding 21: an upload through another context's queue made wgpu-core panic ("Cannot get non-existent resource"). An upload through the owning queue is correct whatever context is passed. `update`, `set_frame` and `set_draw_list` return `bool` and cannot report an error, so a rejection would not apply the same way across the API. D25 says rendering never aborts.
+
+**Alternatives.** Reject a foreign context with `GpuError::InvalidArgument` (rejected: `update` cannot report it, and accepting is always correct). A `debug_assert!` on device identity (rejected: panics in debug builds). Dropping the arguments (rejected: public signatures are frozen this round). Known limit: `encode(encoder, ..)` still records into the caller's encoder, which must come from the creating device (documented precondition).
+
+## #163 gate round 12 — Glass top checked at its own y
+
+**Decision.** `CabinetGeometry::validate` checks each playfield corner's glass sheet top against the side wall top at the glass top's own cabinet-frame y. The glass top lies along the playfield normal at `glass_y = y - g·sin(pitch)·cos(roll)`, where g is the glass height plus the sheet thickness. The surface corner is still checked at its own y. A glass y outside the body (in front of 0, or behind `body.length` under negative pitch) is checked against the wall at the nearest body end; it is neither rejected nor extrapolated. The backbox "behind" test compares `backbox.front_y` with the rearmost point over all surface and glass-top corners. The "above" test is unchanged. At pitch ±0 the offset is ±0, so every level result is bit-identical. For pitch ≥ 0 the backbox rear y is bit-identical to before.
+
+**Rationale.** It implements the round 9 decision: every corner, surface and glass top, is checked at its own y. CodeRabbit round 12 finding 20: classic_standard with `mount.inset` 50 and `mount.height` 290.7 put the glass top at 406.7 mm where the wall is 405.7 mm (y 36.8 mm), and the check passed against the 407.8 mm wall at y 50. An investigation measured every shipped preset, table and fixture: none changes verdict, and the smallest glass margin goes from 58.7 to 56.5 mm. Only private items change, so no contract change request is needed.
+
+**Alternatives.** Reject a glass top whose y lies outside the body (rejected: a new rule not in SPEC, and it would newly reject accepted mounts such as inset 19 at pitch 10°). Extrapolate the wall line beyond the body (rejected: no wall exists there). Known limit: for steep, minimal-inset mounts the glass top's front can lie over the front wall (y < wall thickness). Containment does not model the front wall's own height there; the side wall at y = 0 is used.
+
+## #163 gate round 12 — fmath std oracle stays bit-exact on x86_64
+
+**Decision.** CodeRabbit round 12 finding 18 is rejected. `crates/pin_core/tests/fmath_props.rs` keeps comparing `min_f32`/`max_f32`/`min_f64`/`max_f64` with std's `min`/`max` by exact bits on x86_64. No value-only assertion replaces it.
+
+**Rationale.** The reviewer's premise is correct: std documents no signed-zero or NaN-payload rule. But the test exists for D9 and REQ-WEB-002. `fmath` must return, bit for bit, what std returns on x86_64, so the x86_64-linux replay goldens hold on aarch64, Windows and wasm32 (fmath.rs module docs, with a measured table for rustc 1.97.0). A different zero sign or NaN payload changes the bits the simulation hashes (R3). The exact-bit check is the regression oracle that fails if a toolchain changes them. Weakening it is what R10 forbids. The portable reference rule already fixes operand selection on every target.
+
+**Alternatives.** A value-only std comparison (rejected: it removes the only bit-level link to the committed x86_64 digests). A comment-only note in the test (not needed; the module docs already say it).
+
+## #163 gate round 12 — #83 coverage recorded by a new row; row 575 stays
+
+**Decision.** CodeRabbit round 12 finding 23 is valid. The `#83` verifier row (row 575, `pass` at 0fcbfcb, "coverage not measured (cargo-llvm-cov missing)") stays byte-for-byte unchanged, because RUN_LOG is append-only. Coverage was measured with `cargo llvm-cov` 0.9.2 on the gate #163 round 12 tree, and one new `#83` verifier row records it: pin_render 97.16 %, pin_app 94.94 % lines; the files #83 owned, gpu/quality.rs 100.00 %, gpu/mod.rs 91.59 %, gpu/surfaces.rs 93.15 % and orchestrator/present.rs 93.66 %, are all above the 60 % floor. The row says the tool was missing at the 0fcbfcb pass and that the figures are of the later tree. A missing coverage tool is not an exception: a verifier run without it reports `blocked`, never `pass`.
+
+**Rationale.** Editing row 575 would rewrite history. Measuring the later tree is the honest, checkable substitute, and the #83 code is unchanged in it apart from later reviewed work. Had a floor been missed, the new row would record `fail` and the gap would become a work-unit issue (P7).
+
+**Alternatives.** Reply "pre-existing" and leave the gap (rejected: P5 has no exception, and the tool is available now). Edit row 575 (rejected: append-only). Measure at 0fcbfcb in a scratch worktree (not needed, since every floor is met on the current tree).
+
+
+## #163 gate round 13 — Windows hard-link identity stays a documented limit
+
+**Decision.** `same_file` keeps comparing canonical paths off Unix (device and inode on Unix). A hard link to the configuration or bundle on Windows is not detected by the shutdown identity check. The limit recorded in "#163 gate round 12 - Trace destination checked against the config by file identity at shutdown" stands.
+
+**Rationale.** Stable `std` has no Windows file-identity accessor (`file_index` and `volume_serial_number` are behind the unstable `windows_by_handle` feature), so a correct check needs `GetFileInformationByHandle` through a new dependency or unsafe code in `pin_app`. The rename that publishes the trace replaces only the destination's directory entry, so a second hard link to the configuration keeps its bytes: nothing is destroyed. The names that matter (two spellings of one entry on a case-insensitive volume) already compare equal through the canonical path. CodeRabbit round 13 finding 3 asked for the identity check; it concerns only an opt-in case-sensitive NTFS directory.
+
+**Alternatives.** Add `windows-sys` and compare volume serial and file index on Windows (rejected for now: a dependency and `unsafe` for a case without data loss; revisit if Windows hard-link aliasing of a configuration or bundle is ever shown to lose data). Skip or `cfg`-out the hard-link branch of the regression on Windows (rejected: weakens a test, R10).
+
+## #163 gate round 13 — Run limits count the current engine across table swaps
+
+**Decision.** `--run-frames N` and `--run-ticks M` keep counting the current engine's frames and ticks; `stop_for_swap` discards the stopped engine's counters for the run limits. The decision in "#85 - Table swap by restarting the engine threads" stands.
+
+**Rationale.** The new table runs from tick 0, and the limits exist so supervised and CI runs end after a known amount of simulation of the table they started or the one now running. Summing engines would make `--run-ticks` mean "ticks of all tables" and would let a swap satisfy a limit with the previous table's ticks. The stopped engines' counters are still reported (shutdown line and the banked trace). CodeRabbit round 13 finding 4 proposed accumulating.
+
+**Alternatives.** Accumulate the stopped engines' counters in the run loop (rejected: contradicts the #85 decision and changes the meaning of the flags for the swap tests). A separate flag for run totals (rejected: nothing needs it).
+
+## #163 gate round 13 — ACL fixture EPERM stays a local skip
+
+**Decision.** The ACL regression keeps the round 11 rule: an `EPERM` (with ENOTSUP, EOPNOTSUPP, ENODATA) from the fixture `setxattr` fails the test when `GITHUB_ACTIONS=true` or `KP_REQUIRE_POSIX_ACL=1`, and otherwise prints one `SKIPPED` line and returns.
+
+**Rationale.** `EPERM` is returned by filesystems that do not support the ACL attribute for the calling user, which is the same condition as "unsupported", so it cannot fail unconditionally without breaking local runs on tmpfs and overlay filesystems. The gate cannot pass without the property being exercised, because CI and `KP_REQUIRE_POSIX_ACL=1` make it fail. This is the documented trade-off of "#163 gate round 11 - POSIX ACL fixture required in CI" (R10 satisfied by the required branch, not weakened). CodeRabbit round 13 finding 5 asked for an unconditional failure.
+
+**Alternatives.** Fail on `EPERM` everywhere (rejected in round 11: breaks local runs). `#[ignore]` (forbidden, R10). Remove `EPERM` from the unsupported list (rejected: the CI and required-ACL branches already fail on it, and a local EPERM on an unsupported filesystem is the case the skip exists for).
+
+## #163 gate round 13 — Frame join and frame count across a same-tick re-press and an engine swap
+
+**Decision.** The latency-trace join bounds a press's frames by its next release of the same input inclusively, except when that release is followed, in delivery order, by a press of the same input in the same tick; then the bound is exclusive (`snap_tick < release tick`). After a table swap, `CollectedTrace::append` recomputes `frames_to_photon` of the later engine's rows over the combined frame table; F0 is the last frame of the longest leading run of the table presented at or before the press (equal to `last_frame_at_or_before` on a table in present order, which the monotonic SDL clock guarantees).
+
+**Rationale.** CodeRabbit round 13 findings 6 and 7. The release tick's snapshot after a same-tick re-press shows the re-press's bat, which the sim writer (round 12) already credits only to the re-press; the join must agree. REQ-LAT-001 counts frames from the press, and a press can be stamped before the earlier engine's last present; the windowed verdict checks against the combined table, and the leading-run rule is the verdict's own, so both agree even on a non-monotone table. The `append_merges_engines_in_order` fixture's presses were moved 500 ns before their presents so its hard-coded `frames_to_photon` values are self-consistent; a new loop asserts every row equals the recomputed value (R10: nothing weakened).
+
+**Alternatives.** Join across engines (rejected: round 9 keeps each engine's join local). Keep the engine-local count (rejected: disagrees with the combined table the file publishes). Fall back to the engine-local value on a non-monotone table (rejected: would disagree with the verdict).
+
+## #163 gate round 13 — Input forwarding reports only events that reached the ring
+
+**Decision.** `InputPath::push` and `EventForwarder::push_input` return whether the event was enqueued. The forwarder updates `last` and returns `Translated::Input` only on enqueue; an event that was dropped (ring full) or retained as a pending release returns `Translated::Ignored`.
+
+**Rationale.** CodeRabbit round 13 finding 8: the caller counted and traced events that never reached the sim, so the trace and the dropped-event count disagreed with what the sim applied. Reporting only enqueued events keeps both exact.
+
+**Alternatives.** A separate drop counter at the caller (rejected: duplicates the ring's own count). Report a retained release as `Input` (rejected: it has not reached the ring yet and is forwarded later).
+
+## #163 gate round 13 — Score texture validates the DMD spec before allocating
+
+**Decision.** `check_score_config` validates a DMD score display through `DmdSpec::new` and checks the texture against the device's maximum texture dimension, returning `GpuError::InvalidArgument` instead of panicking. `set_image` documents that an LCD with height 0 takes its height from the image, while an explicit height is checked. A GPU test samples the view's mip 1 through the single binding.
+
+**Rationale.** CodeRabbit round 13 findings 16, 17 and the body nitpick on `displays_textures_gpu.rs`: an invalid or oversized spec reached wgpu and panicked; the auto-height rule was undocumented; mip 1 sampling was not covered.
+
+**Alternatives.** Clamp an oversized spec (rejected: silently shows the wrong display). Validate only in the loader (rejected: the texture API is public to other callers).
+
+## #163 gate round 13 — Windowed verdict: run-end marker, drain bound and frame count
+
+**Decision.** (1) A press stamped after `# run_end_ns` (equal is fine) is reported once per row in check d (trace consistency), naming the press and the marker. That row gets neither the check-a tail excuse nor the check-b end exclusion, so a missing move also fails checks a and b on its own terms. (2) Check b rejects a selected frame presented before the row's `drain_sdl_ns`, for every row kind (equal passes; the present-before-press check runs first, one failure per row). (3) Check d compares the frame-row count with the shutdown line's `F frames` only when no overflow was recorded, and only for the windowed run (one playfield surface). (4) The driver's cleanup errors stop the preflight; a failed summary write is appended after the failure; the bounded-runner self-check runs after the cleanup (`driver::prepare`). (5) The finding-13 control uses a press at 57.095 s against a 57.1 s marker, plus a marker equal to the press stamp, rather than a press at 57 s against 57.1 s. Under the unchanged check-a tail rule (10 ticks), a press whose bat never moved and whose tick ended 99.7 ms before the marker correctly fails check a.
+
+**Rationale.** CodeRabbit round 13 findings 9 to 15. The marker is read after the last pump, so a later press stamp shows the marker itself is wrong; check d already holds the trace-integrity checks. The trace writer records the applying tick's drain (or a stall end at or before it), and the drawn snapshot is published after that drain on the same clock. The app counts any-surface presents while the trace counts playfield presents; they are equal only with one surface (round 12: 1534/1534; round 13: 1482/1482). The tail rule is outside this round's findings, so the control was adapted rather than loosening it.
+
+**Alternatives.** Reporting the marker contradiction in check a. Rejected: it is not a key-to-coil property, and check a still fails the unexcused row. Comparing against a playfield-only counter in the shutdown line. Rejected: that would change the app output, which is outside the owned paths. Widening the tail excuse to make the literal 57 s / 57.1 s control pass. Rejected: it would weaken check a (REQ-LAT-004).
+
+## #163 gate round 13 — Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes
+
+**Decision.** (1) A gate issue PR merges when CodeRabbit approved the gate's reviewed head on every review PR. The merging head is that reviewed head, or the reviewed head plus the single documentation-only RUN_LOG-row commit. CI with `pr-checks`, the work-verifier `pass` and the phase's automated gates are required on the final head, and the merge names it (work-issue §7 now matches P6 step 6). (2) A missed gate (no gate issue PR) has its reviewed head as its candidate head, with nothing above it. Before the approval is recorded, CI (from that commit's check runs, dispatching `ci.yml` on `review/<gate>-missed` when none exists), `main`'s last push CI, the work-verifier `pass` and the phase's automated gates must hold on it. Its RUN_LOG row goes through an ordinary documentation-only PR off `main`, which closes no `work-unit` issue and does not re-trigger the backstop. Its close-out replaces step 7's merge: close the review PRs unmerged with a comment naming the reviewed head and linking the fix PRs, delete the review branches, unblock dependents (P6 "Review PR" step 6, "Missed gate"). (3) For a gate review's verifier runs, owned paths are the union of the gate issue's owned paths and every gate-review fix brief's OWNED PATHS. The Orchestrator records the latter as `fix paths` in the gate's RUN_LOG round rows on the gate branch. Anything outside the union and the shared files still fails, and fix briefs never list `pin_core` contract paths (R2). A missed gate's review head must have the tree of the `main` commit last merged into it (P5 unit gate item 8). pr-watch and the work-verifier role prompt follow the same rules. `docs/DEVELOPMENT.md` "Owned paths and shared files" states the gate-review exception. For gate #163 itself, the `fix paths` of rounds 1 to 12 are backfilled in one round 13 row (the union of files the round commits changed), because those rows predate the rule.
+
+**Rationale.** CodeRabbit round 13 findings 1, 19 and 20. The skill demanded approval of the log-only commit, which the round 12 decision exempts, so a finished gate would loop forever. The missed-gate flow pointed at a close-out that starts by merging a PR that does not exist, and named no head for CI and the verifier. The final verifier run on a gate PR would fail on fix paths that P6 step 4 explicitly permits. RUN_LOG rows are versioned on the gate branch and lie inside the next gate's diff, so the recorded paths can be audited and recomputed. A PR description is editable and unversioned.
+
+**Alternatives.** Re-review after the log commit (rejected: never terminates; round 12). Record the fix paths in the review PR description (rejected: unversioned, and absent for split reviews whose oversized PR is closed). Extend each gate issue's OWNED PATHS in its body (rejected: rewrites the issue after the fact and loses which round added which path). Let the next work-unit PR carry the missed gate's RUN_LOG row (rejected for the brief's explicit documentation-only PR; it would tie the record to an unrelated issue's merge). Push the row to the review branch (rejected: that branch never merges).
+
+## #163 gate round 13 — GPU-leg build step bounded by the cache-save reserve
+
+**Decision.** On the Windows and macOS GPU legs the build step's timeout is min(32, JOB_TIMEOUT_MIN - reserve - elapsed), computed by a `Build-step budget` step before the build with the same reserve (8 min on a cache miss, 1 min on an exact hit) and elapsed formula (rounded up plus 1 min) as the Test-step budget, clamped to at least 1 minute. This amends the #205 entry: the 32 minute build ceiling stays but is now a ceiling, not a fixed value. The job cap (45), cache-on-failure and MIN_TEST_MIN (10) are unchanged.
+
+**Rationale.** The reserve was applied only by the budget step after the build, which is skipped when the build times out, so with set-up over 5 minutes a timed-out build left under 8 minutes and the cache save could be cut off, leaving the next run cold.
+
+**Alternatives.** Raise the job cap (rejected: #205 fixes 45); lower the fixed ceiling (rejected: wastes time on fast set-up); one shared script for both steps (rejected: two short steps with a cross-reference are enough).
+
+Also (finding 18): the lavapipe worker cap is chosen only among settings that pass checks a to d, using the dropped ratio only to compare those.
+
+The spec test `tests/spec_ci/tests/spec_ci_gpu_cross_cache.rs` pinned the literal 32; it now pins the `build_budget` expression, the step order, the shared reserve formula, the clamp and `MAX_BUILD_MIN` = 32 (a one-file owned-path extension of brief F, made after the round 13 verifier run found the stale assertion; CodeRabbit round 13 finding 2).
+
+
+## #163 gate round 14 — merge of main: I/O worker budget seam and cabinet on a cancelled swap
+
+**Decision.** `main` (a211feb) is merged into the gate branch because #196 conflicted with it (P6 "Review PR" step 5). Every conflict keeps both sides. The I/O worker loop is `spawn_with_budget(handler(req, &AtomicU64))`: `spawn` and `spawn_guarded` both pass `serve(req, mixer, budget)`, and the gate's `spawn_with(handler(req))` test seam wraps it and is `#[cfg(test)]`. On `Swap::Closed` (a close pending at the swap) the cabinet is not detached in `swap_table`; `Cabinet::finish` on the shutdown path detaches it after every engine thread has been joined.
+
+**Rationale.** This keeps the gate's coalesced `(reply, coalesced)` protocol and main's per-load atomic budget read on one loop, and the guarded worker gets the budget too. No test-seam signature changes, so the gate's worker tests stay as they are. A cancelled swap ends the run, so detaching at shutdown gives main's single flush and single telemetry line.
+
+**Alternatives.** Passing the budget into `spawn_with` (rejected: it changes every gate test call site). Detaching in `swap_table` before returning `Closed` (equivalent result, but splits the detach across two places).
+
+## #163 gate round 14 — Trace never published over the config save scratch, the config recovery copy, or a file of the loaded bundle
+
+**Decision.** (1) `AppConfig::save_scratch_path` (`.<name>.tmp`) is the single computation of the config save's scratch file, used by `AppConfig::save` and `open_latency_trace`. A trace temp-file candidate that is that scratch file is skipped for the next candidate. (2) `AppConfig::recovery_path` (`<name>.bak`) is the single computation of the recovery copy a malformed configuration's load makes, used by `AppConfig::load`. The start-up `config_alias` refuses it, whether or not it exists yet, with `--latency-trace: <dest> is the configuration recovery copy`. The shutdown `config_identity_alias` refuses it by file identity. (3) `TraceSink` records the bundle loaded now: the `--table` path, then each bundle a browser swap started. At shutdown `finish_trace` applies the load guard's bundle-membership rule to it, alongside the unanswered-selection check.
+
+**Rationale.** CodeRabbit round 14 findings 4713880926, 4713880930 and 4713880925. Each lets the opt-in trace replace user data: the saved configuration, its only recovery copy, or a file added to the loaded bundle. The classifier first deferred them as contrived triggers under the round limit. They were reclassified as blocking because the round limit fixes verified correctness defects and data loss is one, however contrived the trigger. Sharing the path computations keeps the guard and the writer from drifting apart. All checks run on the main thread after the engine joins (R4).
+
+**Alternatives.** Fail start-up on a scratch collision (rejected: the candidate loop already moves on, and a later candidate always works). Recheck every bundle loaded during the run (not required by the finding: a swapped-out bundle's engine is joined, and a later issue can extend it). Known limit: paths that do not exist yet are compared as normalised paths, which are case-sensitive, as in rounds 11 and 12.
+
+## #163 gate round 14 — Windowed proptest oracle follows the round 13 release-tick rule
+
+**Decision.** The windowed proptest `req_lat_004_first_executed_tick_and_req_lat_001_frames` takes its frame bound from `oracle_frame_bound`. The bound is the release tick, exclusive, when a later row of the same input is a press in the same apply tick. Otherwise the release tick is included, and with no later release there is no bound. A fixed regression covers the finding's case.
+
+**Rationale.** CodeRabbit round 14 finding 4713880962: the oracle admitted the release tick in every case, which contradicts "#163 gate round 13 — Frame join and frame count across a same-tick re-press and an engine swap". The generator can produce that case, so the required windowed test could fail without a product regression. That made it a blocking failing-required-check risk under the round limit. The verifier reproduced the failure with the old bound (after 850 cases).
+
+**Alternatives.** Reuse `verdict::release_ticks` (rejected: it is inclusive, and changing the verdict's check b is deferred to #246 with finding 4713880969).
+
+## #163 gate round 14 — Config save scratch matched ignoring case; recovery-copy regression portable
+
+**Decision.** `open_latency_trace` also skips a trace temp-file candidate that has the same normalised parent directory as the config's save scratch file and a file name equal to it ignoring ASCII case (`same_entry_ignoring_case`; a name that is not UTF-8 is compared exactly). The regression `gate163_r14_config_recovery_copy_is_never_replaced_by_the_trace` uses a case variant of the recovery copy as its shutdown destination. On a case-insensitive volume that variant is the same entry, and start-up refusal is asserted. Otherwise a hard link stands in for the alias, on Unix only.
+
+**Rationale.** CodeRabbit round 14 follow-ups. 4714559537: on a case-insensitive volume, the default on macOS and Windows, a config named `KP-TRACE.<pid>.0` saves through `.KP-TRACE.<pid>.0.tmp`, which is the same entry as the trace candidate `.kp-trace.<pid>.0.tmp`. The exact comparison missed it, so the config could still be corrupted. Skipping a candidate costs nothing because the loop moves on, so matching conservatively is safe. 4714558269: non-Unix `same_file` compares canonical paths, a documented limit (DECISIONS "#163 gate round 13 — Windows hard-link identity stays a documented limit"). The unconditional hard-link assertion would therefore fail on the Windows CI leg after the merge. The Unix assertion is unchanged (R10).
+
+**Alternatives.** Detect the volume's case sensitivity at run time (rejected: more code for no gain over the conservative skip). Make the whole regression Unix-only (rejected: the case-insensitive branch exercises the start-up refusal on Windows and macOS).
+
+## #163 gate round 14 — Trace temp file suffix `.part`
+
+**Decision.** The `--latency-trace` sibling temp file is named `.kp-trace.<pid>.<n>.part`. The config save scratch (`AppConfig::save_scratch_path`) always ends in `.tmp`, so the two can never be the same directory entry, whatever the case folding or symlinked parent spelling. The exact and ASCII-case-insensitive same-parent skips stay as defence in depth. With `.part` they can no longer trigger, so their earlier regression no longer exercises them. The new `gate163_r14_trace_temp_suffix_is_never_a_config_scratch` pins the name separation instead. This supersedes the `.tmp` temp name in the earlier entry at the "#163 gate round 10" trace section.
+
+**Rationale.** CodeRabbit round 14 follow-up 4714804098 found a further alias: a case-insensitive Unix volume combined with a symlinked parent directory spelling defeats the same-parent comparison. Every comparison-based guard has another alias. Separating the two name classes closes the whole class without touching the filesystem.
+
+**Alternatives.** Keep adding path-comparison guards (rejected: unbounded). Canonicalise both paths (rejected: racy, and fails for files not created yet). Put the trace temp in another directory (rejected: breaks the same-filesystem atomic rename).
+
+## #163 gate — third merge of main: check b gates the raw count with the gate's frame-validity rules
+
+**Decision.** Merging origin/main 13714be (#149 late snapshot latch, #136 tablegen backbox CLI) into the gate branch keeps #149's check b. The raw count `n_raw <= 2` is the only frame gate, and `frame_count`, `a_failed`, `in_flight_shifted` and the adjusted max/p99 are removed. Every gate rule from rounds 12–14 is kept around that count:
+- the run-end marker in check d, with no tail excuse or end exclusion;
+- the stall-window check;
+- rejection of a selected frame presented before `sdl_ts_ns` or before `drain_sdl_ns` (equal times pass);
+- the frame-row count against the shutdown `F frames`.
+
+In threads.rs the gate's `record_close` and #149's `record_latch` sit side by side, and the trace records `latch.drawn()`. Some of #149's new windowed test fixtures broke the round 13 rules, so their timings were made consistent: `F frames` equals the fixture's frame-table rows (`ok_shutdown_for`, and the unit tests' `verdict()` helper), the in-flight table drains 0.1 ms after the press, and the property generator drains at the applying tick's end. No assertion changed.
+
+**Rationale.** #149 removes an allowance on the count. The gate rejects frames that cannot have shown the press. A real trace satisfies both: the verified 60 s run shows raw max 2 with every check PASS. #149 supersedes the round 12 phrase "the in-flight allowance is unchanged". The fixtures described impossible traces (frames presented before the drain they draw, and a shutdown line that disagrees with the frame table), so they were corrected rather than loosening the rules (R10).
+
+**Alternatives.** Keep the in-flight allowance (rejected by #149 and its DECISIONS entry). Exempt #149's fixtures from the drain or frame-count rules (rejected: it weakens round 13).

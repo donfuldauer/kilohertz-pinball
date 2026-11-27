@@ -79,3 +79,19 @@ proptest! {
         prop_assert_eq!(mip_level_count(n, 0), 0);
     }
 }
+
+/// #97 / #163 gate comment 4703749506 (API shape, GPU-free): the score
+/// display renderer and the score texture both register LCD images with
+/// `set_image(ctx, file, image) -> Result<(), GpuError>`. Behaviour (an
+/// LCD draws the image, a DMD refuses with `InvalidArgument`) is covered by
+/// the `req_view_002_lcd_*image*` tests in `displays_textures_gpu.rs`.
+#[test]
+fn req_view_002_score_set_image_api_shape() {
+    use pin_render::displays::{RgbaImage, ScoreRenderer, ScoreTexture};
+    use pin_render::gpu::{GpuContext, GpuError};
+    type SetImage<T> = fn(&mut T, &GpuContext, &str, &RgbaImage) -> Result<(), GpuError>;
+    let texture: SetImage<ScoreTexture> = ScoreTexture::set_image;
+    let renderer: SetImage<ScoreRenderer> = ScoreRenderer::set_image;
+    assert_ne!(texture as usize, 0);
+    assert_ne!(renderer as usize, 0);
+}

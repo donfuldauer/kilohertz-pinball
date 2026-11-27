@@ -6,14 +6,24 @@
 //! screenshots of the root window, and returns the app's stderr and its
 //! latency trace. Every helper process runs bounded ([`run_bounded`]: killed
 //! and reaped at its deadline) and shell-free; a hung app is killed and
-//! reported. Every exit path after the app started writes a fresh
-//! `pin_app_stderr.log`, and every failure a `summary.txt`
-//! ([`failure_summary`]); a run starts by removing the previous run's
-//! artifacts ([`ARTIFACTS`]).
+//! reported. A run starts by creating the artifact directory and removing
+//! the previous run's artifacts ([`ARTIFACTS`]) before any check
+//! ([`preflight`]): an artifact that is already absent is fine, one that
+//! cannot be removed stops the run with its path named, so old evidence
+//! never sits next to a new run's. The bounded-runner self-check
+//! ([`self_check_bounded_runner`]) runs after that cleanup ([`prepare`]).
+//! Every exit path after the app started writes a fresh
+//! `pin_app_stderr.log` (the stderr drain is bounded by
+//! [`STDERR_DRAIN_TIMEOUT`]), and every failure, the preflight's and the
+//! self-check's included, a `summary.txt` ([`failure_summary`],
+//! [`write_failure_summary`]); when that summary cannot be written, the
+//! returned error says so after the failure itself (path and I/O error).
 //!
 //! Environment (all optional):
 //! * `KP_PIN_APP`: the app binary (default: this build's `pin_app`;
-//!   `cargo test --release` makes it the release binary);
+//!   `cargo test --release` makes it the release binary); a relative value
+//!   is resolved against the current directory once ([`resolve_app`]), and
+//!   the preflight check and the launch use that same absolute path;
 //! * `KP_GREYBOX_BUNDLE`: the grey-box bundle (default
 //!   `<target>/greybox`, built by `tables/greybox/build.sh`);
 //! * `KP_WINDOWED_OUT`: the artifact directory (default
@@ -21,7 +31,8 @@
 //! * `KP_WINDOWED_RUN_MS`: the run length (default 60 000 ms);
 //! * `KP_WINDOWED_SEED`: the press schedule's seed;
 //! * `KP_WINDOWED_FRAME_MS`: the frame interval the press holds are sized
-//!   for (default [`DEFAULT_FRAME_INTERVAL_MS`]);
+//!   for (default [`DEFAULT_FRAME_INTERVAL_MS`]; the hold is three
+//!   intervals capped at 1 s, [`base_hold_us`], saturating for any value);
 //! * `LP_NUM_THREADS`: lavapipe's worker threads (default
 //!   [`DEFAULT_LP_NUM_THREADS`]);
 //! * `DISPLAY`: an X server to use; without it the driver starts its own
@@ -87,15 +98,32 @@ fn target_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from("target"), Path::to_path_buf)
 }
 
+/// The app path as launched: `app` made absolute against the current
+/// directory (`std::path::absolute`, no symlink resolution), so the
+/// preflight's file check and `Command::new` name the same file (a bare name
+/// would otherwise be searched on `PATH` by `Command::new`). An absolute
+/// path is returned as is; if the current directory cannot be read, `app`
+/// is returned unchanged.
+pub fn resolve_app(app: &Path) -> PathBuf {
+    std::path::absolute(app).unwrap_or_else(|_| app.to_path_buf())
+}
+
 impl DriverConfig {
     /// The configuration from the environment (see the module docs).
     pub fn from_env() -> Self {
-        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        Self::from_lookup(&|k: &str| std::env::var(k).ok())
+    }
+
+    /// The configuration from `lookup` (an environment-variable reader; an
+    /// empty value counts as unset). `app` is resolved with
+    /// [`resolve_app`].
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let var = |k: &str| lookup(k).filter(|v| !v.is_empty());
         Self {
-            app: var("KP_PIN_APP").map_or_else(
+            app: resolve_app(&var("KP_PIN_APP").map_or_else(
                 || PathBuf::from(env!("CARGO_BIN_EXE_pin_app")),
                 PathBuf::from,
-            ),
+            )),
             bundle: var("KP_GREYBOX_BUNDLE")
                 .map_or_else(|| target_dir().join("greybox"), PathBuf::from),
             out_dir: var("KP_WINDOWED_OUT")
@@ -194,8 +222,13 @@ pub struct Action {
 /// The base hold of every press: three frame intervals, capped at 1 s, so a
 /// presented frame reads its snapshot while the bat is still raised
 /// (check b counts only frames that showed the bat raised while held).
+/// Saturating: any `frame_interval_ms` (`KP_WINDOWED_FRAME_MS` accepts every
+/// `u64` above 0) gives at most the 1 s cap, never an overflow.
 pub fn base_hold_us(frame_interval_ms: u64) -> u64 {
-    (3 * frame_interval_ms).min(1000) * 1000
+    frame_interval_ms
+        .saturating_mul(3)
+        .min(1000)
+        .saturating_mul(1000)
 }
 
 /// The press plan over `span_us` microseconds (DECISIONS "#82 — Windowed
@@ -518,9 +551,14 @@ pub fn xvfb_args() -> Vec<&'static str> {
 }
 
 fn xdotool(display: &str, args: &[&str]) -> Result<String, String> {
+    xdotool_within(display, args, HELPER_TIMEOUT)
+}
+
+/// [`xdotool`] bounded by `timeout` instead of [`HELPER_TIMEOUT`].
+fn xdotool_within(display: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let out = run_bounded(
         Command::new("xdotool").args(args).env("DISPLAY", display),
-        HELPER_TIMEOUT,
+        timeout,
     )
     .map_err(|e| format!("xdotool {args:?}: {e}"))?;
     if out.status.success() {
@@ -641,18 +679,51 @@ pub fn missing_captures(shots: &[PathBuf]) -> Option<String> {
     ))
 }
 
-/// Removes a previous run's artifacts from `dir`.
-fn clean_artifacts(dir: &Path) {
-    for f in ARTIFACTS {
-        let _ = std::fs::remove_file(dir.join(f));
+/// Removes `path` unless it is already absent; any other failure is
+/// recorded in `errors` as `removing <path>: <io error>`.
+fn remove_old(path: &Path, errors: &mut Vec<String>) {
+    if let Err(e) = std::fs::remove_file(path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        errors.push(format!("removing {}: {e}", path.display()));
     }
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("frame_") && n.ends_with(".png") {
-                let _ = std::fs::remove_file(e.path());
+}
+
+/// Removes a previous run's artifacts from `dir` ([`ARTIFACTS`] and every
+/// `frame_*.png`). An artifact that is already absent (or a `dir` that does
+/// not exist) is fine; every other removal or listing error is collected,
+/// so an old file never stays silently next to the new run's evidence.
+///
+/// # Errors
+/// One line per artifact that could not be removed
+/// (`removing <path>: <io error>`) or listing failure
+/// (`listing <dir>: <io error>`).
+fn clean_artifacts(dir: &Path) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for f in ARTIFACTS {
+        remove_old(&dir.join(f), &mut errors);
+    }
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            for e in rd {
+                match e {
+                    Ok(e) => {
+                        let n = e.file_name().to_string_lossy().into_owned();
+                        if n.starts_with("frame_") && n.ends_with(".png") {
+                            remove_old(&e.path(), &mut errors);
+                        }
+                    }
+                    Err(e) => errors.push(format!("listing {}: {e}", dir.display())),
+                }
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => errors.push(format!("listing {}: {e}", dir.display())),
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
     }
 }
 
@@ -692,35 +763,79 @@ pub fn key_up(
     Ok(())
 }
 
-/// Total time [`release_held`] may spend retrying failed key-ups at the
-/// end of a run.
+/// Total time [`release_held`] may spend on the key-ups at the end of a
+/// run: one shared deadline for every attempt and retry.
 pub const KEY_RELEASE_BUDGET: Duration = Duration::from_millis(400);
+/// The shortest bound a key's first key-up attempt gets, even when the
+/// shared budget is spent (so the second key's first attempt still runs).
+/// A retry of a key that already had an attempt gets no such floor: it is
+/// bounded by the budget left ([`key_up_retry_timeout`]) and skipped once
+/// the budget is spent.
+pub const KEY_RELEASE_MIN_TIMEOUT: Duration = Duration::from_millis(50);
 /// Pause between two rounds of [`release_held`] retries.
 pub const KEY_RELEASE_PAUSE: Duration = Duration::from_millis(50);
 /// Most rounds of key-ups [`release_held`] sends, whatever the clock says.
 pub const KEY_RELEASE_MAX_ROUNDS: u32 = 16;
 
+/// The bound of one key-up attempt at `now` within the shared `budget`:
+/// what is left of it, never above [`HELPER_TIMEOUT`] and never below
+/// [`KEY_RELEASE_MIN_TIMEOUT`]. Only a key's first attempt uses it
+/// (retries use [`key_up_retry_timeout`]).
+pub fn key_up_timeout(budget: Duration, now: Duration) -> Duration {
+    budget
+        .saturating_sub(now)
+        .clamp(KEY_RELEASE_MIN_TIMEOUT, HELPER_TIMEOUT)
+}
+
+/// The bound of a key-up retry (a key that already had an attempt) at `now`
+/// within the shared `budget`: what is left of it, never above
+/// [`HELPER_TIMEOUT`], with no minimum, so a retry never runs past the
+/// shared deadline.
+pub fn key_up_retry_timeout(budget: Duration, now: Duration) -> Duration {
+    budget.saturating_sub(now).min(HELPER_TIMEOUT)
+}
+
 /// Attempts a key-up for every key in `held` (never stopping at the first
 /// failure; [`key_up`]: a key is cleared only when its key-up succeeded).
-/// While a key is still held, retries it after `pause` until `now()` (a
-/// monotonic time since a fixed start) reaches `budget` or
-/// [`KEY_RELEASE_MAX_ROUNDS`] rounds were sent. Returns the releases that
-/// still failed after the last round (their keys stay marked held).
+/// One shared deadline: `now()` (a monotonic time since the release
+/// started) against `budget`. A key's first `send(key, timeout)` is bounded
+/// by [`key_up_timeout`] (the budget left, floored at
+/// [`KEY_RELEASE_MIN_TIMEOUT`]), so every held key gets a first attempt.
+/// While a key is still held and budget remains, retries it after `pause`,
+/// at most [`KEY_RELEASE_MAX_ROUNDS`] rounds, each retry bounded by
+/// [`key_up_retry_timeout`] (the budget left, no floor); a key that already
+/// had an attempt is not sent again once `now() >= budget` (it stays in the
+/// failed list with its last error). The whole release therefore never
+/// exceeds the budget by more than the first attempts' floor. Returns the releases that still
+/// failed after the last round (their keys stay marked held).
 pub fn release_held(
     held: &mut [bool; 2],
-    mut send: impl FnMut(Key) -> Result<(), String>,
+    mut send: impl FnMut(Key, Duration) -> Result<(), String>,
     budget: Duration,
     now: &mut dyn FnMut() -> Duration,
     pause: &mut dyn FnMut(),
 ) -> Vec<(Key, String)> {
     let mut round = 0;
+    let mut last_err: [Option<String>; 2] = [None, None];
     loop {
         round += 1;
         let mut failed = Vec::new();
         for k in [Key::Left, Key::Right] {
-            if held[usize::from(k == Key::Right)]
-                && let Err(e) = key_up(held, k, &mut send)
-            {
+            let i = usize::from(k == Key::Right);
+            if !held[i] {
+                continue;
+            }
+            let t = now();
+            let t = match &last_err[i] {
+                Some(prev) if t >= budget => {
+                    failed.push((k, prev.clone()));
+                    continue;
+                }
+                Some(_) => key_up_retry_timeout(budget, t),
+                None => key_up_timeout(budget, t),
+            };
+            if let Err(e) = key_up(held, k, |k| send(k, t)) {
+                last_err[i] = Some(e.clone());
                 failed.push((k, e));
             }
         }
@@ -728,6 +843,9 @@ pub fn release_held(
             return failed;
         }
         pause();
+        if now() >= budget {
+            return failed;
+        }
     }
 }
 
@@ -829,13 +947,12 @@ fn drive(
     // that may be down is released before `drive` returns.
     let injection = (|| -> Result<(), String> {
         for a in &plan {
-            let due = plan_start + Duration::from_micros(a.at_us) + slip;
-            let now = Instant::now();
-            if now < due {
-                std::thread::sleep(due - now);
-            } else {
-                slip += now - due;
-            }
+            schedule_step(
+                Duration::from_micros(a.at_us),
+                &mut slip,
+                &mut || plan_start.elapsed(),
+                &mut std::thread::sleep,
+            );
             match a.step {
                 Step::Down(k) => {
                     if Instant::now() >= press_end {
@@ -863,7 +980,7 @@ fn drive(
     let release_start = Instant::now();
     let failed = release_held(
         &mut held,
-        |k| send("keyup", k),
+        |k, t| xdotool_within(display, &["keyup", k.keycode()], t).map(drop),
         KEY_RELEASE_BUDGET,
         &mut || release_start.elapsed(),
         &mut || std::thread::sleep(KEY_RELEASE_PAUSE),
@@ -894,70 +1011,56 @@ fn drive(
     }
 }
 
-/// Runs the app once (see the module docs).
-///
-/// # Errors
-/// A missing tool, bundle or binary, no first frame, no window, a failed
-/// key injection, an app that did not exit in time (killed), or too few
-/// screenshots. Every error after the app started has written
-/// `pin_app_stderr.log` and a failure `summary.txt`, and carries the stderr
-/// tail.
-pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
-    for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
-        if !have(tool) {
-            return Err(format!(
-                "{tool} not found (apt-get install xvfb xdotool x11-apps imagemagick)"
-            ));
+/// Longest wait for the app's stderr to reach its end after the app was
+/// reaped (a process the app started may still hold the pipe).
+pub const STDERR_DRAIN_TIMEOUT: Duration = HELPER_TIMEOUT;
+
+/// Waits until `finished()` or `now()` (a monotonic time since a fixed
+/// start) reaches `limit`, calling `pause` between polls. Returns whether it
+/// finished (a seam so the bounded stderr drain runs under a controlled
+/// clock in the headless tests, PROCESS.md R6).
+pub fn wait_until(
+    finished: &mut dyn FnMut() -> bool,
+    limit: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
+) -> bool {
+    loop {
+        if finished() {
+            return true;
         }
+        if now() >= limit {
+            return false;
+        }
+        pause();
     }
-    if !cfg.app.is_file() {
-        return Err(format!("no app binary at {}", cfg.app.display()));
-    }
-    if !cfg.bundle.join("table.toml").is_file() {
-        return Err(format!(
-            "no grey-box bundle at {} (run tables/greybox/build.sh {})",
-            cfg.bundle.display(),
-            cfg.bundle.display()
-        ));
-    }
-    std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
-    clean_artifacts(&cfg.out_dir);
-    let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
-        Some(d) => (d, Reaper(None)),
-        None => start_xvfb()?,
-    };
-    eprintln!(
-        "windowed: display {display}, LP_NUM_THREADS={}, app {}, run {} ms",
-        cfg.lp_num_threads,
-        cfg.app.display(),
-        cfg.run_ms
-    );
-    let trace_path = cfg.trace_path();
-    let started = Instant::now();
-    let mut child = Command::new(&cfg.app)
-        .arg("--table")
-        .arg(&cfg.bundle)
-        .arg("--latency-trace")
-        .arg(&trace_path)
-        .args(["--run-ms", &cfg.run_ms.to_string()])
-        .env("DISPLAY", &display)
-        .env("LP_NUM_THREADS", &cfg.lp_num_threads)
-        .env("WGPU_BACKEND", "vulkan")
-        .env(FORCE_FALLBACK_ENV, "1")
-        .env("SDL_VIDEODRIVER", "x11")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("starting {}: {e}", cfg.app.display()))?;
-    let pid = child.id();
-    let stderr_pipe = child.stderr.take().ok_or("no stderr pipe")?;
-    let mut app = Reaper(Some(child));
-    let log = Arc::new(Mutex::new(String::new()));
-    let reader = {
-        let log = Arc::clone(&log);
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
+}
+
+/// Reads `r` line by line into `log` on a thread (each line ends `\n`);
+/// lines starting `pin_app: render on` are also echoed to stderr. Lines are
+/// read as bytes and decoded lossily (a non-UTF-8 line from a launcher or a
+/// native dependency never stops the capture); a trailing `\n` and a
+/// preceding `\r` are stripped. EOF ends the capture silently; a read error
+/// appends one `windowed: stderr read failed: <error>` line and ends it.
+pub fn capture_lines(
+    r: impl Read + Send + 'static,
+    log: Arc<Mutex<String>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(r);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            let res = reader.read_until(b'\n', &mut buf);
+            let eof = matches!(res, Ok(0));
+            if !eof && !buf.is_empty() {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                let line = String::from_utf8_lossy(&buf);
                 if line.starts_with("pin_app: render on") {
                     eprintln!("windowed: {line}");
                 }
@@ -967,8 +1070,252 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
                 l.push_str(&line);
                 l.push('\n');
             }
-        })
+            match res {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(e) => {
+                    let mut l = log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    l.push_str(&format!("windowed: stderr read failed: {e}\n"));
+                    return;
+                }
+            }
+        }
+    })
+}
+
+/// Waits for one plan step planned `at` after the plan start, shifted by
+/// `slip` (the delay accumulated so far). `now` is the time since the plan
+/// start and `sleep` waits for a duration. A step that is already late grows
+/// `slip` by its lateness; a step that waits grows `slip` by how late the
+/// wait returned (an oversleep). Exactly one of the two per step, so every
+/// later step, a key release included, keeps its planned distance from the
+/// step before it.
+pub fn schedule_step(
+    at: Duration,
+    slip: &mut Duration,
+    now: &mut dyn FnMut() -> Duration,
+    sleep: &mut dyn FnMut(Duration),
+) {
+    let due = at + *slip;
+    let t = now();
+    if t < due {
+        sleep(due - t);
+        *slip += now().saturating_sub(due);
+    } else {
+        *slip += t - due;
+    }
+}
+
+/// The note added to the captured stderr when the drain timed out.
+pub fn drain_timeout_note(limit: Duration) -> String {
+    format!(
+        "windowed: stderr drain timed out after {} s (a process still holds the app's stderr; \
+         the log ends here)\n",
+        limit.as_secs()
+    )
+}
+
+/// Waits at most `limit` for the capture thread `reader` to reach the end
+/// of the stream. On time it is joined and the complete log is returned
+/// with `true`. Otherwise the reader is left detached and the result is
+/// `false` with a snapshot of `log` taken under its lock (every line
+/// captured so far) with [`drain_timeout_note`] appended to the copy, so
+/// a line the detached reader appends later is not in it.
+pub fn finish_capture(
+    reader: std::thread::JoinHandle<()>,
+    log: &Mutex<String>,
+    limit: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
+) -> (bool, String) {
+    let snapshot = || {
+        log.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     };
+    if wait_until(&mut || reader.is_finished(), limit, now, pause) {
+        let _ = reader.join();
+        return (true, snapshot());
+    }
+    let mut text = snapshot();
+    text.push_str(&drain_timeout_note(limit));
+    (false, text)
+}
+
+/// The run's preflight: creates `cfg.out_dir`, removes the previous run's
+/// artifacts ([`ARTIFACTS`], `frame_*.png`), then checks the tools (`have`),
+/// the app binary and the grey-box bundle. An artifact that cannot be
+/// removed (an absent one is fine) stops the preflight before the checks,
+/// naming its path. A failed cleanup or check writes a fresh `summary.txt`
+/// ([`write_failure_summary`]), so a stale summary of an earlier run never
+/// survives a run that could not start; a failure to write it is appended
+/// to the error.
+///
+/// # Errors
+/// The artifact directory cannot be created, an old artifact cannot be
+/// removed, or a check failed.
+pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
+    clean_artifacts(&cfg.out_dir).map_err(|what| write_failure_summary(cfg, &what, ""))?;
+    let check = || -> Result<(), String> {
+        for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
+            if !have(tool) {
+                return Err(format!(
+                    "{tool} not found (apt-get install xvfb xdotool x11-apps imagemagick)"
+                ));
+            }
+        }
+        let app = resolve_app(&cfg.app);
+        if !app.is_file() {
+            return Err(format!("no app binary at {}", app.display()));
+        }
+        if !cfg.bundle.join("table.toml").is_file() {
+            return Err(format!(
+                "no grey-box bundle at {} (run tables/greybox/build.sh {})",
+                cfg.bundle.display(),
+                cfg.bundle.display()
+            ));
+        }
+        Ok(())
+    };
+    check().map_err(|what| write_failure_summary(cfg, &what, ""))
+}
+
+/// Writes the failure `summary.txt` ([`failure_summary`] of `what` and
+/// `stderr`) into `cfg.out_dir` and returns the error text to report: `what`
+/// unchanged when the summary was written; otherwise `what` (first) followed
+/// by a line `writing <summary path>: <io error>`, so the operator learns
+/// why the summary is missing. Used by every failure path of the driver.
+pub fn write_failure_summary(cfg: &DriverConfig, what: &str, stderr: &str) -> String {
+    let path = cfg.out_dir.join("summary.txt");
+    match std::fs::write(&path, failure_summary(what, stderr)) {
+        Ok(()) => what.to_owned(),
+        Err(e) => format!("{what}\nwriting {}: {e}", path.display()),
+    }
+}
+
+/// Records a failure after the preflight but before the app ran (Xvfb or the
+/// app did not start, or the bounded-runner self-check failed): writes the
+/// failure `summary.txt` (`verdict: FAIL (windowed driver: <what>)`) through
+/// [`write_failure_summary`] and returns its text (`what`, plus the write
+/// error if the summary could not be written). No app stderr log is
+/// written, as the app never started.
+pub fn startup_failed(cfg: &DriverConfig, what: &str) -> String {
+    write_failure_summary(cfg, what, "")
+}
+
+/// The run's start: [`preflight`] (the previous run's artifacts are removed
+/// first), then `self_check` (the real run passes
+/// [`self_check_bounded_runner`]); a failed self-check is recorded with
+/// [`startup_failed`], so a stale `verdict: PASS` never survives it.
+///
+/// # Errors
+/// The preflight failed, or `self_check` did
+/// (`bounded-runner self-check: <error>`).
+pub fn prepare(
+    cfg: &DriverConfig,
+    have: &dyn Fn(&str) -> bool,
+    self_check: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    preflight(cfg, have)?;
+    self_check().map_err(|e| startup_failed(cfg, &format!("bounded-runner self-check: {e}")))
+}
+
+/// Starts the app under `display`, writing its trace to `trace_path`, with
+/// stderr piped. The executable is [`resolve_app`] of `cfg.app`, the path
+/// [`preflight`] checked.
+///
+/// # Errors
+/// `starting <app>: <io error>` (the resolved path) when the process cannot
+/// be spawned.
+pub fn spawn_app(
+    cfg: &DriverConfig,
+    display: &str,
+    trace_path: &Path,
+) -> Result<std::process::Child, String> {
+    let app = resolve_app(&cfg.app);
+    Command::new(&app)
+        .arg("--table")
+        .arg(&cfg.bundle)
+        .arg("--latency-trace")
+        .arg(trace_path)
+        .args(["--run-ms", &cfg.run_ms.to_string()])
+        .env("DISPLAY", display)
+        .env("LP_NUM_THREADS", &cfg.lp_num_threads)
+        .env("WGPU_BACKEND", "vulkan")
+        .env(FORCE_FALLBACK_ENV, "1")
+        .env("SDL_VIDEODRIVER", "x11")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("starting {}: {e}", app.display()))
+}
+
+/// Combines the drive result with the result of writing the stderr log to
+/// `log_path`. A write failure is never dropped: with a successful drive it
+/// is the failure (`writing <path>: <error>`); with a failed drive the drive
+/// failure stays first (primary) and the write failure follows on its own
+/// line.
+///
+/// # Errors
+/// The drive failed, or the log could not be written.
+pub fn with_log_write<T>(
+    driven: Result<T, String>,
+    log_write: std::io::Result<()>,
+    log_path: &Path,
+) -> Result<T, String> {
+    let log_err = log_write
+        .err()
+        .map(|e| format!("writing {}: {e}", log_path.display()));
+    match (driven, log_err) {
+        (Ok(d), None) => Ok(d),
+        (Ok(_), Some(l)) => Err(l),
+        (Err(d), None) => Err(d),
+        (Err(d), Some(l)) => Err(format!("{d}\n{l}")),
+    }
+}
+
+/// Runs the app once (see the module docs).
+///
+/// # Errors
+/// A missing tool, bundle or binary, no first frame, no window, a failed
+/// key injection, an app that did not exit in time (killed), or too few
+/// screenshots. The run starts with [`prepare`] (the preflight, then the
+/// bounded-runner self-check). Every error has written a failure
+/// `summary.txt` (the preflight's after removing the previous run's
+/// artifacts, or [`startup_failed`] when the self-check failed or Xvfb or
+/// the app did not start), or carries a `writing <summary path>: <io
+/// error>` line after the failure when it could not; every error after
+/// the app started has also written `pin_app_stderr.log` and carries the
+/// stderr tail. A failure to write `pin_app_stderr.log` is itself an error
+/// naming the path ([`with_log_write`]; after a failed drive it follows the
+/// drive failure).
+pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
+    prepare(cfg, &have, &self_check_bounded_runner)?;
+    let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
+        Some(d) => (d, Reaper(None)),
+        None => start_xvfb().map_err(|e| startup_failed(cfg, &e))?,
+    };
+    eprintln!(
+        "windowed: display {display}, LP_NUM_THREADS={}, app {}, run {} ms",
+        cfg.lp_num_threads,
+        resolve_app(&cfg.app).display(),
+        cfg.run_ms
+    );
+    let trace_path = cfg.trace_path();
+    let started = Instant::now();
+    let mut child = spawn_app(cfg, &display, &trace_path).map_err(|e| startup_failed(cfg, &e))?;
+    let pid = child.id();
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| startup_failed(cfg, "no stderr pipe"))?;
+    let mut app = Reaper(Some(child));
+    let log = Arc::new(Mutex::new(String::new()));
+    let reader = capture_lines(stderr_pipe, Arc::clone(&log));
     let stderr_now = || {
         log.lock()
             .map(|l| l.clone())
@@ -976,20 +1323,28 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     };
     let driven = drive(cfg, &display, pid, started, &mut app, &stderr_now);
     // Every path: the app is gone (killed if still running), the stderr
-    // capture is complete, and the log is written fresh.
+    // capture is complete or bounded (a process the app started may hold
+    // the pipe open: after STDERR_DRAIN_TIMEOUT the reader is left
+    // detached and the log keeps what it captured, with a note), and the
+    // log is written fresh.
     if let Some(c) = app.0.as_mut() {
         let _ = c.kill();
         let _ = c.wait();
     }
     app.0 = None;
-    let _ = reader.join();
-    let stderr = stderr_now();
-    let _ = std::fs::write(cfg.out_dir.join("pin_app_stderr.log"), &stderr);
+    let drain_start = Instant::now();
+    let (_, stderr) = finish_capture(
+        reader,
+        &log,
+        STDERR_DRAIN_TIMEOUT,
+        &mut || drain_start.elapsed(),
+        &mut || std::thread::sleep(Duration::from_millis(5)),
+    );
+    let log_path = cfg.out_dir.join("pin_app_stderr.log");
+    let driven = with_log_write(driven, std::fs::write(&log_path, &stderr), &log_path);
     let failed = |what: String| -> String {
-        let _ = std::fs::write(
-            cfg.out_dir.join("summary.txt"),
-            failure_summary(&what, &stderr),
-        );
+        // The drive failure first, then a failure to write the summary.
+        let what = write_failure_summary(cfg, &what, &stderr);
         format!(
             "{what}\n--- pin_app stderr (tail) ---\n{}",
             tail(&stderr, 40)
